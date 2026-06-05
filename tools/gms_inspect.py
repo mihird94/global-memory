@@ -7,7 +7,17 @@ import sqlite3
 from pathlib import Path
 
 
-MEM_ROOT = Path(os.environ.get("MEMORY_ROOT", "/home/mihir/memories"))
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _default_mem_root() -> Path:
+    memory_root = os.environ.get("MEMORY_ROOT")
+    if memory_root:
+        return Path(memory_root).expanduser()
+    return Path.home() / "memories"
+
+
+MEM_ROOT = _default_mem_root()
 DB_PATH = MEM_ROOT / "gms_trust.sqlite"
 
 

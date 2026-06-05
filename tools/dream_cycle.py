@@ -14,7 +14,7 @@ LLM Cascade (tried in order, first success wins):
 Run via cron at 3am daily:
     0 3 * * * <repo>/.venv/bin/python \\
               <repo>/tools/dream_cycle.py \\
-              >> /home/mihir/memories/logs/dream_cycle.log 2>&1
+              >> ${MEMORY_ROOT:-$HOME/memories}/logs/dream_cycle.log 2>&1
 
 Design principles:
 - Fully idempotent: safe to run multiple times in the same day.
@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -38,7 +39,29 @@ from urllib import request
 # ──────────────────────────────────────────────────────────────────────────────
 REPO_ROOT    = Path(__file__).resolve().parent.parent
 TOOLS_DIR    = REPO_ROOT / "tools"
-MEM_ROOT     = Path(os.environ.get("MEMORY_ROOT", "/home/mihir/memories"))
+
+
+def _default_mem_root() -> Path:
+    memory_root = os.environ.get("MEMORY_ROOT")
+    if memory_root:
+        return Path(memory_root).expanduser()
+    return Path.home() / "memories"
+
+
+def _resolve_binary_path(env_var: str, *fallbacks: Path | str | None) -> str:
+    configured = os.environ.get(env_var)
+    if configured:
+        return str(Path(configured).expanduser())
+    for candidate in fallbacks:
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        if path.exists():
+            return str(path)
+    return str(Path(next(candidate for candidate in fallbacks if candidate)).expanduser())
+
+
+MEM_ROOT     = _default_mem_root()
 OLLAMA_URL   = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 EMBED_MODEL  = os.environ.get("MEMORY_EMBED_MODEL", "qwen3-embedding:0.6b")
 LOG_PREFIX   = "[dream_cycle]"
@@ -57,8 +80,13 @@ ENABLED_PROVIDERS = [
 ]
 
 # CLI paths — resolved at startup
-AGY_BIN    = os.environ.get("AGY_BIN",    "/home/mihir/.local/bin/agy")
-GEMINI_BIN = os.environ.get("GEMINI_BIN", "/home/mihir/.nvm/versions/node/v22.22.2/bin/gemini")
+AGY_BIN    = _resolve_binary_path("AGY_BIN", shutil.which("agy"), Path.home() / ".local" / "bin" / "agy")
+GEMINI_BIN = _resolve_binary_path(
+    "GEMINI_BIN",
+    shutil.which("gemini"),
+    Path.home() / ".local" / "bin" / "gemini",
+    Path.home() / ".nvm" / "versions" / "node" / "current" / "bin" / "gemini",
+)
 OLLAMA_LLM = os.environ.get("DREAM_LLM_MODEL", "qwen3:0.6b")
 
 # Model selection — low-credit, high-value defaults
@@ -269,7 +297,7 @@ def rebuild_faiss_index() -> bool:
     """Invoke memoryctl index-build via subprocess."""
     memoryctl = TOOLS_DIR / "memoryctl"
     if not memoryctl.exists():
-        memoryctl = Path("/home/mihir/.local/bin/memoryctl")
+        memoryctl = Path.home() / ".local" / "bin" / "memoryctl"
 
     try:
         result = subprocess.run(

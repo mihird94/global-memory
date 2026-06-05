@@ -34,7 +34,7 @@ This repository is the project home for the current `v2.1.x` line.
 - Python 3.11+ recommended
 - Optional local virtualenv at `.venv/`
 - Optional Ollama endpoint for embeddings and Dream Cycle fallback LLM work
-- A writable memory root, defaulting to `/home/mihir/memories`
+- A writable memory root, defaulting to `~/memories`
 
 Important environment variables:
 
@@ -48,7 +48,7 @@ Important environment variables:
 Use the wrapper directly from the repo:
 
 ```bash
-cd /home/mihir/projects/global-memory
+cd /path/to/global-memory
 tools/memoryctl --help
 ```
 
@@ -57,7 +57,7 @@ The wrapper prefers `.venv/bin/python` when present and falls back to `python3`.
 If you want `memoryctl` on your shell `PATH`, symlink the wrapper:
 
 ```bash
-ln -sf /home/mihir/projects/global-memory/tools/memoryctl ~/.local/bin/memoryctl
+ln -sf /path/to/global-memory/tools/memoryctl ~/.local/bin/memoryctl
 ```
 
 ## MCP Usage
@@ -69,7 +69,7 @@ Example `~/.codex/config.toml` shape:
 ```toml
 [[mcp_servers]]
 name = "memory"
-command = ["/home/mihir/projects/global-memory/.venv/bin/python", "/home/mihir/projects/global-memory/tools/memory_mcp_server.py"]
+command = ["/path/to/global-memory/.venv/bin/python", "/path/to/global-memory/tools/memory_mcp_server.py"]
 ```
 
 Core MCP tools:
@@ -99,7 +99,7 @@ Common commands:
 tools/memoryctl start-context
 tools/memoryctl find trust
 tools/memoryctl log --agent Codex --title "Docs update" --note "Added README and system design documentation."
-tools/memoryctl fact-set gms_repo_path "/home/mihir/projects/global-memory"
+tools/memoryctl fact-set gms_repo_path "/path/to/global-memory"
 tools/memoryctl trust-list
 tools/memoryctl quarantine-list
 tools/memoryctl claims-list --limit 20

@@ -53,7 +53,16 @@ from urllib import request
 # ──────────────────────────────────────────────────────────────────────────────
 REPO_ROOT   = Path(__file__).resolve().parent.parent
 VENV_PYTHON = REPO_ROOT / ".venv" / "bin" / "python"
-MEM_ROOT    = Path(os.environ.get("MEMORY_ROOT", "/home/mihir/memories"))
+
+
+def _default_mem_root() -> Path:
+    memory_root = os.environ.get("MEMORY_ROOT")
+    if memory_root:
+        return Path(memory_root).expanduser()
+    return Path.home() / "memories"
+
+
+MEM_ROOT    = _default_mem_root()
 OLLAMA_URL  = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 EMBED_MODEL = os.environ.get("MEMORY_EMBED_MODEL", "qwen3-embedding:0.6b")
 MEMORYCTL   = Path(os.environ.get(
@@ -492,7 +501,7 @@ def _detect_branch() -> str:
 
 def log_security_event(event_type: str, message: str):
     try:
-        log_dir = Path("/home/mihir/.codex/log")
+        log_dir = Path.home() / ".codex" / "log"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / "gms_security.log"
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

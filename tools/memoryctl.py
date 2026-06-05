@@ -14,7 +14,17 @@ import subprocess
 from typing import Dict, List, Tuple
 from urllib import request
 
-MEM_ROOT = Path(os.environ.get("MEMORY_ROOT", "/home/mihir/memories"))
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _default_mem_root() -> Path:
+    memory_root = os.environ.get("MEMORY_ROOT")
+    if memory_root:
+        return Path(memory_root).expanduser()
+    return Path.home() / "memories"
+
+
+MEM_ROOT = _default_mem_root()
 INDEX_ROOT = MEM_ROOT / "episodic" / "index"
 DRIFT_ROOT = INDEX_ROOT / "drift"
 DEFAULT_EMBED_MODEL = os.environ.get("MEMORY_EMBED_MODEL", "qwen3-embedding:0.6b")

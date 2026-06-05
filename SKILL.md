@@ -10,13 +10,13 @@ This skill provides the logic and protocols for a "Unified Memory Layer" across 
 
 ## <instructions>
 ### 1. Unified Interface Protocol
-- ALWAYS use `/home/mihir/memories/` as the root of the unified memory.
+- ALWAYS use `${MEMORY_ROOT:-$HOME/memories}` as the root of the unified memory.
 - USE the `memoryctl` command-line tool for all standard memory operations.
 
 ### 2. Identity Alignment & Dissolution
 - **Facet Mentality:** You are one of many "facets" or "workers" of the Personal AI OS.
-- **Identity:** Your persona and behavioral rules are derived from `~/memories/preferences.md`.
-- **Shared History:** Your past experiences are stored in `~/memories/episodic/history/`.
+- **Identity:** Your persona and behavioral rules are derived from `${MEMORY_ROOT:-$HOME/memories}/preferences.md`.
+- **Shared History:** Your past experiences are stored in `${MEMORY_ROOT:-$HOME/memories}/episodic/history/`.
 
 ### 3. Core Interaction Flow (The "OS Loop")
 #### Phase A: Initialization (Read First)
@@ -26,8 +26,8 @@ Before starting any work, you MUST run:
 
 #### Phase B: Execution
 - **Keyword Search**: `memoryctl find <pattern>` (Search semantic facts and technical contracts).
-- **Metric Retrieval**: `cat ~/memories/semantic/facts.json` (Get verified numeric/data constants).
-- **Deep-Dive**: Read specialized files linked in `~/memories/semantic/knowledge_base.md`.
+- **Metric Retrieval**: `cat ${MEMORY_ROOT:-$HOME/memories}/semantic/facts.json` (Get verified numeric/data constants).
+- **Deep-Dive**: Read specialized files linked in `${MEMORY_ROOT:-$HOME/memories}/semantic/knowledge_base.md`.
 
 #### Phase C: Finalization (Record Last)
 Before ending your task, you MUST run:
@@ -39,17 +39,17 @@ Before ending your task, you MUST run:
 ### 4. Updating Protocols
 - **Daily History Entry:** Use the `memoryctl log` command.
 - **Semantic Expansion:**
-  - Create NEW files in `~/memories/semantic/` for detailed project contracts.
-  - Link them in `~/memories/semantic/knowledge_base.md` (Index).
+  - Create NEW files in `${MEMORY_ROOT:-$HOME/memories}/semantic/` for detailed project contracts.
+  - Link them in `${MEMORY_ROOT:-$HOME/memories}/semantic/knowledge_base.md` (Index).
 
 ## </instructions>
 
 ## <available_resources>
-- `/home/mihir/memories/` (Root)
+- `${MEMORY_ROOT:-$HOME/memories}/` (Root)
 - `memoryctl` (Primary CLI operator - in system PATH)
-- `/home/mihir/memories/preferences.md` (Stylistic Rules)
-- `/home/mihir/memories/projects.md` (Active Tracking)
-- `/home/mihir/memories/lessons/global.md` (Override Rules)
-- `/home/mihir/memories/episodic/history/` (Daily logs)
-- `/home/mihir/memories/semantic/facts.json` (Structured KV Store)
+- `${MEMORY_ROOT:-$HOME/memories}/preferences.md` (Stylistic Rules)
+- `${MEMORY_ROOT:-$HOME/memories}/projects.md` (Active Tracking)
+- `${MEMORY_ROOT:-$HOME/memories}/lessons/global.md` (Override Rules)
+- `${MEMORY_ROOT:-$HOME/memories}/episodic/history/` (Daily logs)
+- `${MEMORY_ROOT:-$HOME/memories}/semantic/facts.json` (Structured KV Store)
 </available_resources>
