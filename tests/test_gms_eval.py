@@ -16,14 +16,21 @@ class TestGMSEvalHarness(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             report = gms_eval.run_evaluation(Path(temp_dir))
 
-        self.assertEqual(report["suite"], "gms_phase8_foundation")
-        self.assertEqual(report["summary"]["total"], 4)
+        self.assertEqual(report["suite"], "gms_foundation_plus_guardrails")
+        self.assertEqual(report["summary"]["total"], 6)
         self.assertEqual(report["summary"]["failed"], 0)
 
         categories = {result["category"] for result in report["results"]}
         self.assertEqual(
             categories,
-            {"knowledge_update", "quarantine", "episodic_recall", "abstention"},
+            {
+                "knowledge_update",
+                "quarantine",
+                "poisoning_resistance",
+                "episodic_recall",
+                "abstention",
+                "retention",
+            },
         )
 
     def test_main_emits_machine_readable_json(self):
@@ -32,7 +39,7 @@ class TestGMSEvalHarness(unittest.TestCase):
 
         payload = json.dumps(report)
         parsed = json.loads(payload)
-        self.assertEqual(parsed["summary"]["passed"], 4)
+        self.assertEqual(parsed["summary"]["passed"], 6)
         self.assertTrue(all("details" in result for result in parsed["results"]))
 
 

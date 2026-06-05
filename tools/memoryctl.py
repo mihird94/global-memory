@@ -7,7 +7,7 @@ import os
 import re
 import shutil
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import math
 import subprocess
@@ -16,6 +16,7 @@ from urllib import request
 
 MEM_ROOT = Path(os.environ.get("MEMORY_ROOT", "/home/mihir/memories"))
 INDEX_ROOT = MEM_ROOT / "episodic" / "index"
+DRIFT_ROOT = INDEX_ROOT / "drift"
 DEFAULT_EMBED_MODEL = os.environ.get("MEMORY_EMBED_MODEL", "qwen3-embedding:0.6b")
 OLLAMA_EMBED_URL = os.environ.get("OLLAMA_EMBED_URL", "http://127.0.0.1:11434/api/embeddings")
 EMBED_TIMEOUT_SEC = int(os.environ.get("MEMORY_EMBED_TIMEOUT_SEC", "180"))
@@ -56,6 +57,21 @@ def _json_update(path: Path, key: str, value: str) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True))
 
 
+def _write_json(path: Path, payload: dict) -> None:
+    _ensure_parent(path)
+    path.write_text(json.dumps(payload, indent=2))
+
+
+def _load_json(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _chunk_text(text: str, max_chars: int = 800) -> List[str]:
     chunks: List[str] = []
     buf = ""
@@ -88,6 +104,101 @@ def _iter_episodic_texts() -> List[Tuple[str, str]]:
         if text:
             out.append((str(journal), text))
     return out
+
+
+def _build_drift_snapshot(mat, model: str, doc_count: int, chunk_count: int) -> dict:
+    import numpy as np
+
+    centroid = np.mean(mat, axis=0)
+    return {
+        "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "embedding_model": model,
+        "doc_count": doc_count,
+        "vector_count": chunk_count,
+        "dimension": int(mat.shape[1]),
+        "centroid": centroid.astype(float).tolist(),
+        "centroid_norm": float(np.linalg.norm(centroid)),
+    }
+
+
+def _compute_drift_report(current: dict, previous: dict | None, threshold: float) -> dict:
+    report = {
+        "status": "baseline",
+        "threshold": threshold,
+        "current": current,
+        "previous": None,
+        "drift": None,
+    }
+    if previous is None:
+        return report
+
+    current_centroid = current.get("centroid") or []
+    previous_centroid = previous.get("centroid") or []
+    if len(current_centroid) != len(previous_centroid) or not current_centroid:
+        report["status"] = "incompatible"
+        report["previous"] = {
+            "created_at": previous.get("created_at"),
+            "embedding_model": previous.get("embedding_model"),
+            "vector_count": previous.get("vector_count"),
+            "dimension": previous.get("dimension"),
+        }
+        report["drift"] = {"reason": "dimension_mismatch_or_empty_centroid"}
+        return report
+
+    import numpy as np
+
+    current_vec = np.array(current_centroid, dtype=np.float32)
+    previous_vec = np.array(previous_centroid, dtype=np.float32)
+    current_norm = float(np.linalg.norm(current_vec))
+    previous_norm = float(np.linalg.norm(previous_vec))
+    if current_norm == 0.0 or previous_norm == 0.0:
+        cosine_similarity = 1.0
+    else:
+        cosine_similarity = float(np.dot(current_vec, previous_vec) / (current_norm * previous_norm))
+        cosine_similarity = max(-1.0, min(1.0, cosine_similarity))
+    angular_distance = float(math.acos(cosine_similarity))
+    l2_distance = float(np.linalg.norm(current_vec - previous_vec))
+
+    report["previous"] = {
+        "created_at": previous.get("created_at"),
+        "embedding_model": previous.get("embedding_model"),
+        "vector_count": previous.get("vector_count"),
+        "dimension": previous.get("dimension"),
+    }
+    report["drift"] = {
+        "cosine_similarity": cosine_similarity,
+        "angular_distance": angular_distance,
+        "l2_distance": l2_distance,
+    }
+    report["status"] = "alert" if angular_distance > threshold else "ok"
+    return report
+
+
+def _persist_drift_snapshot(snapshot: dict, threshold: float) -> dict:
+    latest_path = DRIFT_ROOT / "latest.json"
+    previous_path = DRIFT_ROOT / "latest.previous.json"
+    previous = _load_json(latest_path)
+    report = _compute_drift_report(snapshot, previous, threshold)
+
+    DRIFT_ROOT.mkdir(parents=True, exist_ok=True)
+    if previous is not None:
+        _write_json(previous_path, previous)
+    _write_json(DRIFT_ROOT / f"{snapshot['created_at'].replace(':', '-').replace('Z', '')}.json", snapshot)
+    _write_json(latest_path, snapshot)
+    _write_json(DRIFT_ROOT / "status.json", report)
+    return report
+
+
+def _read_drift_status(threshold: float) -> dict:
+    latest = _load_json(DRIFT_ROOT / "latest.json")
+    if latest is None:
+        return {
+            "status": "missing",
+            "threshold": threshold,
+            "message": "No drift snapshot found. Run index-build first.",
+        }
+    previous = _load_json(DRIFT_ROOT / "latest.previous.json")
+    return _compute_drift_report(latest, previous, threshold)
 
 
 def _embed(text: str, model: str) -> List[float]:
@@ -236,9 +347,14 @@ def cmd_index_build(args: argparse.Namespace) -> int:
     meta_path = INDEX_ROOT / "episodic_meta.json"
     faiss.write_index(index, str(idx_path))
     meta_path.write_text(json.dumps(meta, indent=2))
+    drift_report = _persist_drift_snapshot(
+        _build_drift_snapshot(mat, args.model, len(docs), len(texts)),
+        args.drift_threshold,
+    )
     print(f"built: {idx_path}")
     print(f"meta:  {meta_path}")
     print(f"docs={len(docs)} chunks={len(texts)} dim={mat.shape[1]} model={args.model}")
+    print(f"drift_status={drift_report['status']} threshold={args.drift_threshold}")
     return 0
 
 
@@ -437,6 +553,12 @@ def cmd_index_query(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_drift_status(args: argparse.Namespace) -> int:
+    report = _read_drift_status(args.threshold)
+    print(json.dumps(report, indent=2))
+    return 0 if report.get("status") != "missing" else 1
+
+
 def cmd_trust_list(args: argparse.Namespace) -> int:
     DB_PATH = MEM_ROOT / "gms_trust.sqlite"
     if not DB_PATH.exists():
@@ -512,6 +634,84 @@ def cmd_quarantine_resolve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_quarantine_review_add(args: argparse.Namespace) -> int:
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import memory_mcp_server
+        res = memory_mcp_server.tool_mem_record_review({
+            "key": args.key,
+            "agent_id": args.agent_id,
+            "reviewer_id": args.reviewer,
+            "rating": args.rating,
+            "rationale": args.rationale
+        })
+        print(res)
+        if res.startswith("ERROR"):
+            return 1
+    except Exception as e:
+        print(f"Error recording review: {e}")
+        return 1
+    return 0
+
+
+def cmd_quarantine_review_list(args: argparse.Namespace) -> int:
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import memory_mcp_server
+        res = memory_mcp_server.tool_mem_get_reviews({
+            "key": args.key,
+            "agent_id": args.agent_id
+        })
+        if res.startswith("ERROR"):
+            print(res)
+            return 1
+        reviews = json.loads(res)
+        if not reviews:
+            print("No reviews found for this item.")
+            return 0
+        print(f"{'Reviewer':<20} | {'Trust':<8} | {'Rating':<10} | {'Rationale'}")
+        print("-" * 90)
+        for r in reviews:
+            print(f"{r['reviewer_id']:<20} | {r['trust']:<8.4f} | {r['rating']:<10} | {r['rationale']}")
+    except Exception as e:
+        print(f"Error listing reviews: {e}")
+        return 1
+    return 0
+
+
+def cmd_quarantine_recommendation(args: argparse.Namespace) -> int:
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import memory_mcp_server
+        res = memory_mcp_server.tool_mem_get_recommendation_summary({
+            "key": args.key,
+            "agent_id": args.agent_id
+        })
+        if res.startswith("ERROR"):
+            print(res)
+            return 1
+        summary = json.loads(res)
+        print(f"Recommendation: {summary['recommendation'].upper()}")
+        print(f"Confidence Score: {summary['score']}")
+        print(f"Reviewer Count: {summary['reviewer_count']}")
+        print(f"Endorse Weight: {summary['endorse_weight']}")
+        print(f"Reject Weight: {summary['reject_weight']}")
+        print(f"Abstain Weight: {summary['abstain_weight']}")
+        if summary['reviews']:
+            print("\nWitness Details:")
+            print(f"{'Reviewer':<20} | {'Trust':<8} | {'Rating':<10}")
+            print("-" * 45)
+            for r in summary['reviews']:
+                print(f"{r['reviewer_id']:<20} | {r['trust']:<8.4f} | {r['rating']:<10}")
+    except Exception as e:
+        print(f"Error getting recommendation: {e}")
+        return 1
+    return 0
+
+
 def cmd_claims_list(args: argparse.Namespace) -> int:
     DB_PATH = MEM_ROOT / "gms_trust.sqlite"
     if not DB_PATH.exists():
@@ -556,6 +756,122 @@ def cmd_claims_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_calibration_report(args: argparse.Namespace) -> int:
+    DB_PATH = MEM_ROOT / "gms_trust.sqlite"
+    if not DB_PATH.exists():
+        if args.json:
+            print(json.dumps({"overlapping_keys_count": 0, "agents": {}}))
+        else:
+            print("Trust database does not exist yet.")
+        return 0
+
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import dream_cycle
+        report = dream_cycle.generate_calibration_report(DB_PATH)
+    except Exception as e:
+        if args.json:
+            print(json.dumps({"error": str(e), "overlapping_keys_count": 0, "agents": {}}))
+        else:
+            print(f"Error generating calibration report: {e}")
+        return 1
+
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return 0
+
+    if "error" in report:
+        print(f"Error: {report['error']}")
+        return 1
+
+    print(f"Overlapping Keys: {report['overlapping_keys_count']}")
+    agents = report.get("agents", {})
+    if not agents:
+        print("No agents with calibration data.")
+        return 0
+
+    print(f"{'Agent':<30} | {'Overlap':<10} | {'Agreement':<10} | {'Disagreement':<12} | {'Agree Rate':<10}")
+    print("-" * 80)
+    for agent, stats in sorted(agents.items()):
+        rate_str = f"{stats['agreement_rate']:.3f}"
+        print(f"{agent:<30} | {stats['overlap_count']:<10} | {stats['agreement_count']:<10} | {stats['disagreement_count']:<12} | {rate_str:<10}")
+
+    return 0
+
+
+def cmd_retention_report(args: argparse.Namespace) -> int:
+    DB_PATH = MEM_ROOT / "gms_trust.sqlite"
+    if not DB_PATH.exists():
+        payload = {
+            "generated_at": None,
+            "thresholds": {
+                "low_confidence": args.low_confidence,
+                "stale_active_days": args.stale_active_days,
+                "stale_quarantine_days": args.stale_quarantine_days,
+            },
+            "stale_active_claims": [],
+            "stale_quarantines": [],
+            "summary": {"active_claim_candidates": 0, "quarantine_candidates": 0},
+        }
+        print(json.dumps(payload, indent=2) if args.json else "Trust database does not exist yet.")
+        return 0
+
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import dream_cycle
+        report = dream_cycle.generate_retention_report(
+            DB_PATH,
+            low_confidence_threshold=args.low_confidence,
+            stale_active_days=args.stale_active_days,
+            stale_quarantine_days=args.stale_quarantine_days,
+        )
+    except Exception as e:
+        if args.json:
+            print(json.dumps({"error": str(e)}))
+        else:
+            print(f"Error generating retention report: {e}")
+        return 1
+
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return 0
+
+    summary = report["summary"]
+    print(
+        f"Retention candidates: active={summary['active_claim_candidates']} "
+        f"quarantine={summary['quarantine_candidates']}"
+    )
+    return 0
+
+
+def cmd_retention_prune(args: argparse.Namespace) -> int:
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import dream_cycle
+        report = dream_cycle.run_retention_pruning(
+            low_confidence_threshold=args.low_confidence,
+            stale_active_days=args.stale_active_days,
+            stale_quarantine_days=args.stale_quarantine_days,
+        )
+    except Exception as e:
+        print(f"Error applying retention pruning: {e}")
+        return 1
+
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return 0
+
+    applied = report.get("applied", {})
+    print(
+        f"Retention pruning applied: archived_active={applied.get('archived_active_claims', 0)} "
+        f"discarded_quarantine={applied.get('discarded_quarantines', 0)}"
+    )
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Memory control CLI for global-memory skill.")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -584,6 +900,7 @@ def main() -> int:
 
     p5 = sub.add_parser("index-build", help="Build FAISS episodic index using Ollama embeddings.")
     p5.add_argument("--model", default=DEFAULT_EMBED_MODEL)
+    p5.add_argument("--drift-threshold", type=float, default=0.05, help="Angular-distance alert threshold for drift snapshots.")
     p5.set_defaults(fn=cmd_index_build)
 
     p6 = sub.add_parser("index-query", help="Query FAISS episodic index.")
@@ -610,11 +927,52 @@ def main() -> int:
     p9.add_argument("--resolver", default="CLI", help="The resolving agent identity.")
     p9.set_defaults(fn=cmd_quarantine_resolve)
 
+    p9_1 = sub.add_parser("quarantine-review-add", help="Add a reviewer endorsement, rejection, or abstention for a quarantined item.")
+    p9_1.add_argument("key", help="The fact key.")
+    p9_1.add_argument("agent_id", help="The agent who proposed the fact.")
+    p9_1.add_argument("rating", choices=["endorse", "reject", "abstain"], help="Witness stance for the quarantined item.")
+    p9_1.add_argument("--reviewer", required=True, help="The reviewer agent identity.")
+    p9_1.add_argument("--rationale", default="", help="Optional rationale.")
+    p9_1.set_defaults(fn=cmd_quarantine_review_add)
+
+    p9_2 = sub.add_parser("quarantine-review-list", help="List all reviews for a quarantined item.")
+    p9_2.add_argument("key", help="The fact key.")
+    p9_2.add_argument("agent_id", help="The agent who proposed the fact.")
+    p9_2.set_defaults(fn=cmd_quarantine_review_list)
+
+    p9_3 = sub.add_parser("quarantine-recommendation", help="Get a weighted recommendation summary for a quarantined item.")
+    p9_3.add_argument("key", help="The fact key.")
+    p9_3.add_argument("agent_id", help="The agent who proposed the fact.")
+    p9_3.set_defaults(fn=cmd_quarantine_recommendation)
+
     p10 = sub.add_parser("claims-list", help="List all recorded claims in the versioned claim ledger.")
     p10.add_argument("--kind", help="Filter by memory kind.")
     p10.add_argument("--key", help="Filter by memory key.")
     p10.add_argument("--status", help="Filter by claim status.")
     p10.set_defaults(fn=cmd_claims_list)
+
+    p11 = sub.add_parser("drift-status", help="Report semantic drift status from the latest index snapshots.")
+    p11.add_argument("--threshold", type=float, default=0.05, help="Angular-distance alert threshold.")
+    p11.add_argument("--json", action="store_true", help="Retained for compatibility; output is always JSON.")
+    p11.set_defaults(fn=cmd_drift_status)
+
+    p12 = sub.add_parser("calibration-report", help="Summarize observer overlap, agreement, and disagreement from the claim ledger.")
+    p12.add_argument("--json", action="store_true", help="Output raw JSON.")
+    p12.set_defaults(fn=cmd_calibration_report)
+
+    p13 = sub.add_parser("retention-report", help="Report stale low-confidence active facts and stale quarantines.")
+    p13.add_argument("--low-confidence", type=float, default=0.35, help="Confidence threshold for archival candidates.")
+    p13.add_argument("--stale-active-days", type=int, default=30, help="Minimum age in days for low-confidence active claims.")
+    p13.add_argument("--stale-quarantine-days", type=int, default=14, help="Minimum age in days for stale quarantines.")
+    p13.add_argument("--json", action="store_true", help="Output raw JSON.")
+    p13.set_defaults(fn=cmd_retention_report)
+
+    p14 = sub.add_parser("retention-prune", help="Archive stale low-confidence active facts and flush stale quarantines.")
+    p14.add_argument("--low-confidence", type=float, default=0.35, help="Confidence threshold for archival candidates.")
+    p14.add_argument("--stale-active-days", type=int, default=30, help="Minimum age in days for low-confidence active claims.")
+    p14.add_argument("--stale-quarantine-days", type=int, default=14, help="Minimum age in days for stale quarantines.")
+    p14.add_argument("--json", action="store_true", help="Output raw JSON.")
+    p14.set_defaults(fn=cmd_retention_prune)
 
     args = parser.parse_args()
     return args.fn(args)

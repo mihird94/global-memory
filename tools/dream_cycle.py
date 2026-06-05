@@ -29,7 +29,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib import request
 
@@ -43,6 +43,9 @@ OLLAMA_URL   = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 EMBED_MODEL  = os.environ.get("MEMORY_EMBED_MODEL", "qwen3-embedding:0.6b")
 LOG_PREFIX   = "[dream_cycle]"
 DRY_RUN      = os.environ.get("DREAM_DRY_RUN", "0") == "1"
+RETENTION_LOW_CONFIDENCE = float(os.environ.get("DREAM_RETENTION_LOW_CONFIDENCE", "0.35"))
+RETENTION_STALE_ACTIVE_DAYS = int(os.environ.get("DREAM_RETENTION_STALE_ACTIVE_DAYS", "30"))
+RETENTION_STALE_QUARANTINE_DAYS = int(os.environ.get("DREAM_RETENTION_STALE_QUARANTINE_DAYS", "14"))
 
 # ── Cascade config ────────────────────────────────────────────────────────────
 # Each tier: (name, callable) — tried in order, first success wins.
@@ -404,46 +407,129 @@ def record_fact_provenance(fact_key: str, agent_id: str) -> None:
         log(f"Error recording provenance for key '{fact_key}': {e}")
 
 
+def generate_calibration_report(db_path: Path) -> dict:
+    """
+    Generate a deterministic calibration report from gms_claims in the trust database.
+    Group claims by (memory_kind, memory_key) where > 1 distinct agent_id has assertions.
+    """
+    if not db_path.exists():
+        return {"overlapping_keys_count": 0, "agents": {}}
+
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+        
+        # Check if table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='gms_claims'")
+        if not cursor.fetchone():
+            conn.close()
+            return {"overlapping_keys_count": 0, "agents": {}}
+            
+        # Select active/quarantined claims to build the report from
+        cursor.execute("""
+            SELECT claim_id, memory_kind, memory_key, value, agent_id, status 
+            FROM gms_claims 
+            WHERE status IN ('active', 'quarantined')
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+    except Exception as e:
+        return {"error": str(e), "overlapping_keys_count": 0, "agents": {}}
+
+    # Group claims by (memory_kind, memory_key)
+    groups = {}
+    for claim_id, kind, key, val, agent, status in rows:
+        g_key = (kind, key)
+        if g_key not in groups:
+            groups[g_key] = {}
+        # Keep the latest claim_id per agent to avoid duplicates
+        if agent not in groups[g_key] or claim_id > groups[g_key][agent]["claim_id"]:
+            groups[g_key][agent] = {
+                "value": val,
+                "claim_id": claim_id,
+                "status": status
+            }
+
+    # Filter to groups with > 1 distinct agent_id (overlapping keys)
+    overlapping_keys = {k: v for k, v in groups.items() if len(v) > 1}
+
+    # Initialize agent statistics
+    agent_stats = {}
+    all_agents = sorted(list({agent_id for _, _, _, _, agent_id, _ in rows}))
+    for agent in all_agents:
+        agent_stats[agent] = {
+            "overlap_count": 0,
+            "agreement_count": 0,
+            "disagreement_count": 0,
+            "agreement_rate": 0.0
+        }
+
+    # Calculate pairwise agreement/disagreement for overlapping keys
+    for g_key, agent_claims in overlapping_keys.items():
+        agents_in_group = list(agent_claims.keys())
+        for i, agent_a in enumerate(agents_in_group):
+            val_a = agent_claims[agent_a]["value"]
+            for agent_b in agents_in_group:
+                if agent_a == agent_b:
+                    continue
+                val_b = agent_claims[agent_b]["value"]
+                
+                # Pairwise comparison
+                agent_stats[agent_a]["overlap_count"] += 1
+                if val_a == val_b:
+                    agent_stats[agent_a]["agreement_count"] += 1
+                else:
+                    agent_stats[agent_a]["disagreement_count"] += 1
+
+    # Calculate agreement rates
+    for agent, stats in agent_stats.items():
+        overlap = stats["overlap_count"]
+        if overlap > 0:
+            stats["agreement_rate"] = float(stats["agreement_count"]) / float(overlap)
+        else:
+            stats["agreement_rate"] = 0.0
+
+    return {
+        "overlapping_keys_count": len(overlapping_keys),
+        "agents": agent_stats
+    }
+
+
 def run_beta_binomial_trust_calibration() -> None:
     db_path = MEM_ROOT / "gms_trust.sqlite"
     if not db_path.exists():
         log("Trust database not found — skipping reputation calibration")
         return
         
+    report = generate_calibration_report(db_path)
+    if "error" in report:
+        log(f"Error generating calibration report: {report['error']}")
+        return
+        
+    overlapping_keys_count = report.get("overlapping_keys_count", 0)
+    # Check if there is enough multi-observer overlap (at least 1 overlapping key)
+    if overlapping_keys_count < 1:
+        log(f"Skipping reputation calibration: insufficient multi-observer overlap (overlapping keys: {overlapping_keys_count})")
+        return
+
     import sqlite3
     try:
         conn = sqlite3.connect(str(db_path))
         cursor = conn.cursor()
         
-        cursor.execute("SELECT fact_key, agent_id FROM gms_fact_provenance")
-        active = cursor.fetchall()
-        cursor.execute("SELECT fact_key, agent_id FROM gms_quarantined_facts")
-        quar = cursor.fetchall()
-        
-        assertions = [(k, a, 0) for k, a in active] + [(k, a, 1) for k, a in quar]
-        conn.close()
-        
-        if not assertions:
-            log("No assertions found for reputation calibration")
-            return
-            
-        agent_counts = {}
-        for key, agent, is_quarantined in assertions:
-            if agent not in agent_counts:
-                agent_counts[agent] = {"total": 0, "quarantined": 0}
-            agent_counts[agent]["total"] += 1
-            if is_quarantined:
-                agent_counts[agent]["quarantined"] += 1
+        calibrated_count = 0
+        for agent, stats in report.get("agents", {}).items():
+            overlap = stats.get("overlap_count", 0)
+            if overlap < 1:
+                log(f"Skipping calibration for agent '{agent}' due to sparse single-observer data (no overlap)")
+                continue
                 
-        conn = sqlite3.connect(str(db_path))
-        cursor = conn.cursor()
-        for agent, counts in agent_counts.items():
-            total = counts["total"]
-            quar_count = counts["quarantined"]
-            correct_count = total - quar_count
+            agreement = stats.get("agreement_count", 0)
+            disagreement = stats.get("disagreement_count", 0)
             
-            alpha = float(correct_count) + 1.0
-            beta = float(quar_count) + 0.0
+            alpha = float(agreement) + 1.0
+            beta = float(disagreement) + 0.0
             
             cursor.execute("""
                 INSERT INTO gms_agent_reputation (agent_id, alpha, beta, last_updated)
@@ -454,12 +540,207 @@ def run_beta_binomial_trust_calibration() -> None:
                     last_updated = CURRENT_TIMESTAMP
             """, (agent, alpha, beta))
             log(f"Calibrated agent '{agent}': alpha={alpha:.1f}, beta={beta:.1f} (Trust: {(alpha+1)/(alpha+beta+2):.3f})")
+            calibrated_count += 1
             
         conn.commit()
         conn.close()
-        log("Beta-binomial reputation calibration completed.")
+        if calibrated_count > 0:
+            log(f"Beta-binomial reputation calibration completed for {calibrated_count} agent(s).")
+        else:
+            log("No agents had sufficient overlap to calibrate.")
     except Exception as e:
         log(f"Error during reputation calibration: {e}")
+
+
+def generate_retention_report(
+    db_path: Path,
+    *,
+    now: datetime | None = None,
+    low_confidence_threshold: float = RETENTION_LOW_CONFIDENCE,
+    stale_active_days: int = RETENTION_STALE_ACTIVE_DAYS,
+    stale_quarantine_days: int = RETENTION_STALE_QUARANTINE_DAYS,
+) -> dict:
+    now = now or datetime.now(UTC).replace(tzinfo=None)
+    report = {
+        "generated_at": now.replace(microsecond=0).isoformat(),
+        "thresholds": {
+            "low_confidence": low_confidence_threshold,
+            "stale_active_days": stale_active_days,
+            "stale_quarantine_days": stale_quarantine_days,
+        },
+        "stale_active_claims": [],
+        "stale_quarantines": [],
+        "summary": {
+            "active_claim_candidates": 0,
+            "quarantine_candidates": 0,
+        },
+    }
+    if not db_path.exists():
+        return report
+
+    import sqlite3
+
+    active_cutoff = now - timedelta(days=stale_active_days)
+    quarantine_cutoff = now - timedelta(days=stale_quarantine_days)
+
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='gms_claims'")
+    if cursor.fetchone():
+        cursor.execute(
+            """
+            SELECT claim_id, memory_kind, memory_key, value, agent_id, confidence, created_at
+            FROM gms_claims
+            WHERE status = 'active'
+              AND memory_kind IN ('semantic', 'operational', 'procedural')
+              AND confidence IS NOT NULL
+              AND confidence <= ?
+            """,
+            (low_confidence_threshold,),
+        )
+        for claim_id, kind, key, value, agent_id, confidence, created_at in cursor.fetchall():
+            try:
+                created_dt = datetime.fromisoformat(str(created_at).replace("Z", ""))
+            except ValueError:
+                continue
+            if created_dt > active_cutoff:
+                continue
+            age_days = max(0, (now - created_dt).days)
+            report["stale_active_claims"].append({
+                "claim_id": claim_id,
+                "memory_kind": kind,
+                "memory_key": key,
+                "value": value,
+                "agent_id": agent_id,
+                "confidence": float(confidence),
+                "created_at": created_at,
+                "age_days": age_days,
+            })
+
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='gms_quarantined_facts'")
+    if cursor.fetchone():
+        cursor.execute(
+            """
+            SELECT fact_key, value, agent_id, branch, timestamp
+            FROM gms_quarantined_facts
+            """
+        )
+        for fact_key, value, agent_id, branch, timestamp in cursor.fetchall():
+            try:
+                created_dt = datetime.fromisoformat(str(timestamp).replace("Z", ""))
+            except ValueError:
+                continue
+            if created_dt > quarantine_cutoff:
+                continue
+            age_days = max(0, (now - created_dt).days)
+            report["stale_quarantines"].append({
+                "fact_key": fact_key,
+                "value": value,
+                "agent_id": agent_id,
+                "branch": branch,
+                "created_at": timestamp,
+                "age_days": age_days,
+            })
+
+    conn.close()
+    report["summary"]["active_claim_candidates"] = len(report["stale_active_claims"])
+    report["summary"]["quarantine_candidates"] = len(report["stale_quarantines"])
+    return report
+
+
+def run_retention_pruning(
+    *,
+    now: datetime | None = None,
+    low_confidence_threshold: float = RETENTION_LOW_CONFIDENCE,
+    stale_active_days: int = RETENTION_STALE_ACTIVE_DAYS,
+    stale_quarantine_days: int = RETENTION_STALE_QUARANTINE_DAYS,
+) -> dict:
+    db_path = MEM_ROOT / "gms_trust.sqlite"
+    report = generate_retention_report(
+        db_path,
+        now=now,
+        low_confidence_threshold=low_confidence_threshold,
+        stale_active_days=stale_active_days,
+        stale_quarantine_days=stale_quarantine_days,
+    )
+    report["applied"] = {
+        "archived_active_claims": 0,
+        "discarded_quarantines": 0,
+    }
+    if not db_path.exists():
+        return report
+
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    facts_cache: dict[str, dict] = {}
+
+    for item in report["stale_active_claims"]:
+        kind = item["memory_kind"]
+        key = item["memory_key"]
+        claim_id = item["claim_id"]
+        facts = facts_cache.setdefault(kind, load_existing_facts() if kind == "semantic" else {})
+        if kind != "semantic" and not facts:
+            path = MEM_ROOT / kind / "facts.json"
+            if path.exists():
+                try:
+                    facts_cache[kind] = json.loads(path.read_text())
+                except Exception:
+                    facts_cache[kind] = {}
+            facts = facts_cache[kind]
+        if facts.get(key) == item["value"]:
+            del facts[key]
+        cursor.execute(
+            "UPDATE gms_claims SET status = 'archived', confidence = 0.0 WHERE claim_id = ? AND status = 'active'",
+            (claim_id,),
+        )
+        cursor.execute(
+            "DELETE FROM gms_fact_provenance WHERE fact_key = ?",
+            (f"{kind}:{key}" if kind != "semantic" else key,),
+        )
+        report["applied"]["archived_active_claims"] += 1
+
+    for kind, facts in facts_cache.items():
+        path = MEM_ROOT / ("semantic" if kind == "semantic" else kind) / "facts.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(facts, indent=2, sort_keys=True))
+
+    for item in report["stale_quarantines"]:
+        fact_key = item["fact_key"]
+        agent_id = item["agent_id"]
+        cursor.execute(
+            "DELETE FROM gms_quarantined_facts WHERE fact_key = ? AND agent_id = ?",
+            (fact_key, agent_id),
+        )
+        cursor.execute(
+            "DELETE FROM gms_quarantine_reviews WHERE fact_key = ? AND agent_id = ?",
+            (fact_key, agent_id),
+        )
+        kind, real_key = ("semantic", fact_key)
+        if ":" in fact_key:
+            kind, real_key = fact_key.split(":", 1)
+        cursor.execute(
+            """
+            UPDATE gms_claims
+            SET status = 'discarded', confidence = 0.0
+            WHERE memory_kind = ? AND memory_key = ? AND agent_id = ? AND status = 'quarantined'
+            """,
+            (kind, real_key, agent_id),
+        )
+        report["applied"]["discarded_quarantines"] += 1
+
+    conn.commit()
+    conn.close()
+    if report["applied"]["archived_active_claims"] or report["applied"]["discarded_quarantines"]:
+        log(
+            "Retention pruning applied: "
+            f"archived_active={report['applied']['archived_active_claims']} "
+            f"discarded_quarantine={report['applied']['discarded_quarantines']}"
+        )
+    else:
+        log("Retention pruning found no candidates.")
+    return report
 
 
 def main() -> int:
@@ -526,7 +807,11 @@ def main() -> int:
     if not DRY_RUN:
         run_beta_binomial_trust_calibration()
 
-    # 9. Git commit
+    # 9. Apply retention pruning to stale low-confidence and quarantined items
+    if not DRY_RUN:
+        run_retention_pruning()
+
+    # 10. Git commit
     if not DRY_RUN:
         git_commit_memories()
     else:

@@ -153,6 +153,17 @@ def init_db():
             FOREIGN KEY(source_claim_id) REFERENCES gms_claims(claim_id)
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS gms_quarantine_reviews (
+            review_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fact_key TEXT,
+            agent_id TEXT,
+            reviewer_id TEXT,
+            rating TEXT,
+            rationale TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     try:
         cursor.execute("ALTER TABLE gms_claims ADD COLUMN confidence REAL DEFAULT 1.0")
     except sqlite3.OperationalError:
@@ -161,6 +172,18 @@ def init_db():
         cursor.execute("ALTER TABLE gms_claims ADD COLUMN contradiction_type TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        cursor.execute("ALTER TABLE gms_quarantine_reviews ADD COLUMN claim_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE gms_quarantine_reviews ADD COLUMN weight_snapshot REAL")
+    except sqlite3.OperationalError:
+        pass
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_gms_quarantine_reviews_identity
+        ON gms_quarantine_reviews (fact_key, agent_id, reviewer_id)
+    """)
     conn.commit()
     conn.close()
 
@@ -307,6 +330,145 @@ def record_claim(kind: str, key: str, value: str, agent_id: str, branch: str, st
     conn.commit()
     conn.close()
     return claim_id
+
+
+def get_latest_quarantined_claim_id(kind: str, key: str, agent_id: str) -> int | None:
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT claim_id
+        FROM gms_claims
+        WHERE memory_kind = ? AND memory_key = ? AND agent_id = ? AND status = 'quarantined'
+        ORDER BY claim_id DESC
+        LIMIT 1
+        """,
+        (kind, key, agent_id),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def record_quarantine_review(fact_key: str, agent_id: str, reviewer_id: str, rating: str, rationale: str):
+    kind, real_key = parse_prov_key(fact_key)
+    claim_id = get_latest_quarantined_claim_id(kind, real_key, agent_id)
+    trust = get_agent_trust(reviewer_id)
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO gms_quarantine_reviews (
+            fact_key, agent_id, reviewer_id, claim_id, rating, rationale,
+            weight_snapshot, timestamp
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(fact_key, agent_id, reviewer_id) DO UPDATE SET
+            claim_id = excluded.claim_id,
+            rating = excluded.rating,
+            rationale = excluded.rationale,
+            weight_snapshot = excluded.weight_snapshot,
+            timestamp = CURRENT_TIMESTAMP
+    """, (fact_key, agent_id, reviewer_id, claim_id, rating, rationale, trust))
+    conn.commit()
+    conn.close()
+
+
+def get_quarantine_reviews(fact_key: str, agent_id: str) -> list[dict]:
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT reviewer_id, rating, rationale, weight_snapshot, claim_id, timestamp
+        FROM gms_quarantine_reviews
+        WHERE fact_key = ? AND agent_id = ?
+        ORDER BY timestamp DESC, review_id DESC
+    """, (fact_key, agent_id))
+    rows = cursor.fetchall()
+    conn.close()
+
+    reviews = []
+    for reviewer_id, rating, rationale, weight_snapshot, claim_id, timestamp in rows:
+        reviews.append({
+            "reviewer_id": reviewer_id,
+            "rating": rating,
+            "rationale": rationale or "",
+            "trust": round(get_agent_trust(reviewer_id), 4),
+            "weight_snapshot": round(weight_snapshot, 4) if weight_snapshot is not None else None,
+            "claim_id": claim_id,
+            "timestamp": timestamp,
+        })
+    return reviews
+
+
+def get_quarantine_recommendation(fact_key: str, agent_id: str) -> dict:
+    reviews = get_quarantine_reviews(fact_key, agent_id)
+    if not reviews:
+        return {
+            "recommendation": "neutral",
+            "score": 0.5,
+            "reviewer_count": 0,
+            "endorse_weight": 0.0,
+            "reject_weight": 0.0,
+            "abstain_weight": 0.0,
+            "total_weight": 0.0,
+            "reviews": [],
+        }
+
+    endorse_weight = 0.0
+    reject_weight = 0.0
+    abstain_weight = 0.0
+    decisive_weight = 0.0
+
+    for review in reviews:
+        trust = review["trust"]
+        if review["rating"] == "endorse":
+            endorse_weight += trust
+            decisive_weight += trust
+        elif review["rating"] == "reject":
+            reject_weight += trust
+            decisive_weight += trust
+        else:
+            abstain_weight += trust
+
+    final_score = endorse_weight / decisive_weight if decisive_weight > 0 else 0.5
+    if decisive_weight == 0:
+        rec = "neutral"
+    elif final_score >= 0.6:
+        rec = "promote"
+    elif final_score <= 0.4:
+        rec = "discard"
+    else:
+        rec = "neutral"
+
+    return {
+        "recommendation": rec,
+        "score": round(final_score, 4),
+        "reviewer_count": len(reviews),
+        "endorse_weight": round(endorse_weight, 4),
+        "reject_weight": round(reject_weight, 4),
+        "abstain_weight": round(abstain_weight, 4),
+        "total_weight": round(decisive_weight, 4),
+        "reviews": reviews,
+    }
+
+
+def apply_review_outcome(fact_key: str, agent_id: str, action: str) -> None:
+    apply_review_outcome_from_reviews(get_quarantine_reviews(fact_key, agent_id), action)
+
+
+def apply_review_outcome_from_reviews(reviews: list[dict], action: str) -> None:
+    for review in reviews:
+        rating = review["rating"]
+        reviewer_id = review["reviewer_id"]
+        if rating == "abstain":
+            continue
+        aligned = (
+            (action == "promote" and rating == "endorse")
+            or (action == "discard" and rating == "reject")
+        )
+        if aligned:
+            increment_agent_alpha(reviewer_id, 0.5)
+        else:
+            increment_agent_beta(reviewer_id, 0.5)
 
 
 def parse_prov_key(prov_key: str) -> tuple[str, str]:
@@ -758,6 +920,96 @@ def tool_mem_index_rebuild(_: dict) -> str:
     return out if out else ("Index rebuilt." if code == 0 else "Rebuild failed.")
 
 
+def tool_mem_drift_status(args: dict) -> str:
+    """Report semantic drift status from the latest index snapshots."""
+    cmd_args = ["drift-status"]
+    if "threshold" in args:
+        cmd_args += ["--threshold", str(args["threshold"])]
+    code, out = _run_memoryctl(*cmd_args)
+    return out if out else ("No drift data." if code == 0 else "Drift status unavailable.")
+
+
+def tool_mem_calibration_report(_: dict) -> str:
+    """Retrieve the trust-calibration report summarizing observer overlap, agreement, and disagreement."""
+    code, out = _run_memoryctl("calibration-report", "--json")
+    return out if out else ("No calibration data." if code == 0 else "Calibration report unavailable.")
+
+
+def tool_mem_retention_report(args: dict) -> str:
+    """Report stale low-confidence active facts and stale quarantines."""
+    cmd_args = ["retention-report", "--json"]
+    if "low_confidence" in args:
+        cmd_args += ["--low-confidence", str(args["low_confidence"])]
+    if "stale_active_days" in args:
+        cmd_args += ["--stale-active-days", str(args["stale_active_days"])]
+    if "stale_quarantine_days" in args:
+        cmd_args += ["--stale-quarantine-days", str(args["stale_quarantine_days"])]
+    code, out = _run_memoryctl(*cmd_args)
+    return out if out else ("No retention data." if code == 0 else "Retention report unavailable.")
+
+
+def tool_mem_record_review(args: dict) -> str:
+    """Record a review/endorsement for a quarantined fact."""
+    key = args.get("key", "").strip()
+    agent_id = args.get("agent_id", "").strip()
+    reviewer_id = args.get("reviewer_id", "").strip()
+    rating = args.get("rating", "").strip().lower()
+    rationale = args.get("rationale", "").strip()
+    
+    if not key or not agent_id or not reviewer_id or not rating:
+        return "ERROR: 'key', 'agent_id', 'reviewer_id', and 'rating' are required"
+        
+    if rating not in ("endorse", "reject", "abstain"):
+        return "ERROR: 'rating' must be 'endorse', 'reject', or 'abstain'"
+        
+    try:
+        init_db()
+        # Verify quarantine exists
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM gms_quarantined_facts WHERE fact_key = ? AND agent_id = ?", (key, agent_id))
+        if not cursor.fetchone():
+            conn.close()
+            return f"ERROR: No quarantined entry found for key '{key}' and agent '{agent_id}'"
+        conn.close()
+        
+        record_quarantine_review(key, agent_id, reviewer_id, rating, rationale)
+        return f"SUCCESS: Review recorded from '{reviewer_id}' for quarantined fact '{key}'."
+    except Exception as e:
+        return f"ERROR: Failed to record review: {e}"
+
+
+def tool_mem_get_reviews(args: dict) -> str:
+    """Retrieve all reviews for a quarantined fact."""
+    key = args.get("key", "").strip()
+    agent_id = args.get("agent_id", "").strip()
+    
+    if not key or not agent_id:
+        return "ERROR: 'key' and 'agent_id' are required"
+        
+    try:
+        init_db()
+        return json.dumps(get_quarantine_reviews(key, agent_id), indent=2)
+    except Exception as e:
+        return f"ERROR: Could not retrieve reviews: {e}"
+
+
+def tool_mem_get_recommendation_summary(args: dict) -> str:
+    """Get a weighted recommendation summary for a quarantined fact based on witness reviews."""
+    key = args.get("key", "").strip()
+    agent_id = args.get("agent_id", "").strip()
+    
+    if not key or not agent_id:
+        return "ERROR: 'key' and 'agent_id' are required"
+        
+    try:
+        init_db()
+        summary = get_quarantine_recommendation(key, agent_id)
+        return json.dumps(summary, indent=2)
+    except Exception as e:
+        return f"ERROR: Could not retrieve recommendation: {e}"
+
+
 def tool_mem_resolve_quarantine(args: dict) -> str:
     """Resolve a quarantined fact by promoting it or discarding it."""
     key = args.get("key", "").strip()
@@ -782,6 +1034,18 @@ def tool_mem_resolve_quarantine(args: dict) -> str:
             return f"ERROR: No quarantined entry found for key '{key}' and agent '{agent_id}'"
             
         value, branch = row
+        
+        # Get recommendation context
+        rec_summary = get_quarantine_recommendation(key, agent_id)
+        review_snapshot = rec_summary["reviews"]
+        rec_text = ""
+        if rec_summary["reviewer_count"] > 0:
+            rec_text = (
+                "\nRecommendation: "
+                f"{rec_summary['recommendation']} "
+                f"(Score: {rec_summary['score']}, Reviewers: {rec_summary['reviewer_count']}, "
+                f"Endorse: {rec_summary['endorse_weight']}, Reject: {rec_summary['reject_weight']})"
+            )
         
         kind, real_key = parse_prov_key(key)
         if action == "promote":
@@ -830,8 +1094,10 @@ def tool_mem_resolve_quarantine(args: dict) -> str:
                 """, (kind, real_key, value, agent_id, branch, prior_active_id, trust))
             
             cursor.execute("DELETE FROM gms_quarantined_facts WHERE fact_key = ? AND agent_id = ?", (key, agent_id))
+            cursor.execute("DELETE FROM gms_quarantine_reviews WHERE fact_key = ? AND agent_id = ?", (key, agent_id))
             conn.commit()
             conn.close()
+            apply_review_outcome_from_reviews(review_snapshot, "promote")
             
             resolver = args.get("agent", "unknown")
             increment_agent_alpha(resolver, 1.0)
@@ -841,22 +1107,24 @@ def tool_mem_resolve_quarantine(args: dict) -> str:
                 increment_agent_beta(existing_owner, 1.0)
                 
             log_security_event("PROMOTION", f"Fact '{key}' promoted from quarantine for agent '{agent_id}' by resolver '{resolver}'")
-            return f"SUCCESS: Fact '{key}' promoted. Owner is now '{agent_id}'."
+            return f"SUCCESS: Fact '{key}' promoted. Owner is now '{agent_id}'.{rec_text}"
             
         else: # discard
             conn = sqlite3.connect(str(DB_PATH))
             cursor = conn.cursor()
             cursor.execute("DELETE FROM gms_quarantined_facts WHERE fact_key = ? AND agent_id = ?", (key, agent_id))
+            cursor.execute("DELETE FROM gms_quarantine_reviews WHERE fact_key = ? AND agent_id = ?", (key, agent_id))
             cursor.execute(
                 "UPDATE gms_claims SET status = 'discarded', confidence = 0.0 WHERE memory_kind = ? AND memory_key = ? AND agent_id = ? AND status = 'quarantined'",
                 (kind, real_key, agent_id)
             )
             conn.commit()
             conn.close()
+            apply_review_outcome_from_reviews(review_snapshot, "discard")
             
             increment_agent_beta(agent_id, 0.5)
             log_security_event("DISCARD", f"Quarantined fact '{key}' from agent '{agent_id}' discarded")
-            return f"SUCCESS: Quarantined fact '{key}' from agent '{agent_id}' discarded."
+            return f"SUCCESS: Quarantined fact '{key}' from agent '{agent_id}' discarded.{rec_text}"
             
     except Exception as e:
         return f"ERROR: Failed to resolve quarantine: {e}"
@@ -1625,6 +1893,24 @@ TOOLS = {
         "description": "Rebuild the FAISS vector index. Run after adding many new memories.",
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
+    "mem_calibration_report": {
+        "fn": tool_mem_calibration_report,
+        "description": "Retrieve the trust-calibration report summarizing observer overlap, agreement, and disagreement.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    "mem_retention_report": {
+        "fn": tool_mem_retention_report,
+        "description": "Report stale low-confidence active facts and stale quarantines.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "low_confidence": {"type": "number", "description": "Confidence threshold for archival candidates."},
+                "stale_active_days": {"type": "integer", "description": "Minimum age in days for low-confidence active claims."},
+                "stale_quarantine_days": {"type": "integer", "description": "Minimum age in days for stale quarantines."},
+            },
+            "required": [],
+        },
+    },
     "mem_get_reputations": {
         "fn": tool_mem_get_reputations,
         "description": "Retrieve the trust score and reputation counts of all registered agents.",
@@ -1649,6 +1935,45 @@ TOOLS = {
             "required": ["key", "agent_id", "action"],
         },
     },
+    "mem_record_review": {
+        "fn": tool_mem_record_review,
+        "description": "Record a witness review for a quarantined fact.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "key":         {"type": "string", "description": "Fact key"},
+                "agent_id":    {"type": "string", "description": "The agent who proposed the fact"},
+                "reviewer_id": {"type": "string", "description": "The agent making the review"},
+                "rating":      {"type": "string", "description": "'endorse', 'reject', or 'abstain'"},
+                "rationale":   {"type": "string", "description": "Reasoning for the review"},
+            },
+            "required": ["key", "agent_id", "reviewer_id", "rating"],
+        },
+    },
+    "mem_get_reviews": {
+        "fn": tool_mem_get_reviews,
+        "description": "Retrieve all reviews for a quarantined fact.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "key":      {"type": "string", "description": "Fact key"},
+                "agent_id": {"type": "string", "description": "The agent who proposed the fact"},
+            },
+            "required": ["key", "agent_id"],
+        },
+    },
+    "mem_get_recommendation_summary": {
+        "fn": tool_mem_get_recommendation_summary,
+        "description": "Get a weighted recommendation summary for a quarantined fact based on witness reviews.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "key":      {"type": "string", "description": "Fact key"},
+                "agent_id": {"type": "string", "description": "The agent who proposed the fact"},
+            },
+            "required": ["key", "agent_id"],
+        },
+    },
     "mem_get_claims": {
         "fn": tool_mem_get_claims,
         "description": "Retrieve claims from the versioned claim ledger, optionally filtered by kind, key, and status.",
@@ -1657,7 +1982,7 @@ TOOLS = {
             "properties": {
                 "kind":   {"type": "string", "description": "Filter by memory kind (semantic, operational, procedural)"},
                 "key":    {"type": "string", "description": "Filter by memory key"},
-                "status": {"type": "string", "description": "Filter by claim status (active, superseded, quarantined, discarded)"},
+                "status": {"type": "string", "description": "Filter by claim status (active, superseded, quarantined, discarded, archived)"},
             },
             "required": [],
         },
@@ -1756,6 +2081,17 @@ TOOLS = {
                 "date":   {"type": "string", "description": "Optional date of history file (YYYY-MM-DD)"},
                 "source": {"type": "string", "description": "Optional file path or filename"},
                 "mode":   {"type": "string", "description": "Retrieval mode ('summary' or 'deep')", "default": "summary"},
+            },
+            "required": [],
+        },
+    },
+    "mem_drift_status": {
+        "fn": tool_mem_drift_status,
+        "description": "Analyze semantic drift of embeddings over time.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "threshold": {"type": "number", "description": "Optional threshold for warning classification (default: 0.05)"}
             },
             "required": [],
         },
