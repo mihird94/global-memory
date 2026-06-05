@@ -785,17 +785,20 @@ def cmd_calibration_report(args: argparse.Namespace) -> int:
         print(f"Error: {report['error']}")
         return 1
 
+    print(f"Model: {report.get('model', 'unknown')}")
+    print(f"Iterations: {report.get('iterations', 0)} | Converged: {report.get('converged', False)}")
     print(f"Overlapping Keys: {report['overlapping_keys_count']}")
     agents = report.get("agents", {})
     if not agents:
         print("No agents with calibration data.")
         return 0
 
-    print(f"{'Agent':<30} | {'Overlap':<10} | {'Agreement':<10} | {'Disagreement':<12} | {'Agree Rate':<10}")
-    print("-" * 80)
+    print(f"{'Agent':<30} | {'Overlap':<10} | {'Agreement':<10} | {'Disagreement':<12} | {'DS Acc':<8} | {'Agree Rate':<10}")
+    print("-" * 100)
     for agent, stats in sorted(agents.items()):
         rate_str = f"{stats['agreement_rate']:.3f}"
-        print(f"{agent:<30} | {stats['overlap_count']:<10} | {stats['agreement_count']:<10} | {stats['disagreement_count']:<12} | {rate_str:<10}")
+        acc_str = f"{stats.get('inferred_accuracy', 0.0):.3f}"
+        print(f"{agent:<30} | {stats['overlap_count']:<10} | {stats['agreement_count']:<10} | {stats['disagreement_count']:<12} | {acc_str:<8} | {rate_str:<10}")
 
     return 0
 

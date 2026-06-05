@@ -104,6 +104,8 @@ class TestBoundedTrustCalibration(unittest.TestCase):
         conn.close()
 
         report = dream_cycle.generate_calibration_report(self.db_path)
+        self.assertEqual(report["model"], "symmetric_dawid_skene")
+        self.assertTrue(report["iterations"] >= 1)
         self.assertEqual(report["overlapping_keys_count"], 2) # k1 and k2 have >1 observers
         
         agents = report["agents"]
@@ -128,6 +130,16 @@ class TestBoundedTrustCalibration(unittest.TestCase):
         self.assertEqual(agents["agent_C"]["agreement_count"], 0)
         self.assertEqual(agents["agent_C"]["disagreement_count"], 0)
         self.assertEqual(agents["agent_C"]["agreement_rate"], 0.0)
+        self.assertEqual(agents["agent_C"]["rated_items"], 0)
+
+        # DS latent consensus should be definite for k1 and ambiguous for k2
+        self.assertEqual(report["items"]["semantic:k1"]["consensus_value"], "v1")
+        self.assertEqual(report["items"]["semantic:k1"]["posterior"]["v1"], 1.0)
+        self.assertEqual(report["items"]["semantic:k2"]["consensus_value"], "val_A")
+        self.assertAlmostEqual(report["items"]["semantic:k2"]["posterior"]["val_A"], 0.5, places=2)
+        self.assertAlmostEqual(report["items"]["semantic:k2"]["posterior"]["val_B"], 0.5, places=2)
+        self.assertAlmostEqual(agents["agent_A"]["expected_correct_count"], 1.5, places=2)
+        self.assertAlmostEqual(agents["agent_B"]["expected_correct_count"], 1.5, places=2)
 
     def test_calibration_skips_on_insufficient_overlap(self):
         # Insert non-overlapping claims only
@@ -246,6 +258,41 @@ class TestBoundedTrustCalibration(unittest.TestCase):
         mcp_data = json.loads(mcp_res)
         self.assertEqual(mcp_data["overlapping_keys_count"], 1)
         self.assertIn("agent_A", mcp_data["agents"])
+
+    def test_calibration_uses_expected_correctness_for_disagreement(self):
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        cursor.executemany(
+            """
+            INSERT INTO gms_claims (memory_kind, memory_key, value, agent_id, status)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                ("semantic", "k1", "shared", "agent_A", "active"),
+                ("semantic", "k1", "shared", "agent_B", "active"),
+                ("semantic", "k2", "va", "agent_A", "active"),
+                ("semantic", "k2", "vb", "agent_B", "active"),
+            ]
+        )
+        conn.commit()
+        conn.close()
+
+        dream_cycle.run_beta_binomial_trust_calibration()
+
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        cursor.execute("SELECT alpha, beta FROM gms_agent_reputation WHERE agent_id = ?", ("agent_A",))
+        row_A = cursor.fetchone()
+        cursor.execute("SELECT alpha, beta FROM gms_agent_reputation WHERE agent_id = ?", ("agent_B",))
+        row_B = cursor.fetchone()
+        conn.close()
+
+        self.assertIsNotNone(row_A)
+        self.assertIsNotNone(row_B)
+        self.assertAlmostEqual(row_A[0], 2.5, places=2)
+        self.assertAlmostEqual(row_A[1], 0.5, places=2)
+        self.assertAlmostEqual(row_B[0], 2.5, places=2)
+        self.assertAlmostEqual(row_B[1], 0.5, places=2)
 
 
 if __name__ == "__main__":

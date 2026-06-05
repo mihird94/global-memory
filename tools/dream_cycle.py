@@ -437,62 +437,195 @@ def generate_calibration_report(db_path: Path) -> dict:
     except Exception as e:
         return {"error": str(e), "overlapping_keys_count": 0, "agents": {}}
 
-    # Group claims by (memory_kind, memory_key)
     groups = {}
     for claim_id, kind, key, val, agent, status in rows:
         g_key = (kind, key)
         if g_key not in groups:
             groups[g_key] = {}
-        # Keep the latest claim_id per agent to avoid duplicates
         if agent not in groups[g_key] or claim_id > groups[g_key][agent]["claim_id"]:
             groups[g_key][agent] = {
                 "value": val,
                 "claim_id": claim_id,
-                "status": status
+                "status": status,
             }
 
-    # Filter to groups with > 1 distinct agent_id (overlapping keys)
     overlapping_keys = {k: v for k, v in groups.items() if len(v) > 1}
-
-    # Initialize agent statistics
-    agent_stats = {}
     all_agents = sorted(list({agent_id for _, _, _, _, agent_id, _ in rows}))
-    for agent in all_agents:
-        agent_stats[agent] = {
+    agent_stats = {
+        agent: {
             "overlap_count": 0,
             "agreement_count": 0,
             "disagreement_count": 0,
-            "agreement_rate": 0.0
+            "agreement_rate": 0.0,
         }
+        for agent in all_agents
+    }
 
-    # Calculate pairwise agreement/disagreement for overlapping keys
-    for g_key, agent_claims in overlapping_keys.items():
+    for agent_claims in overlapping_keys.values():
         agents_in_group = list(agent_claims.keys())
-        for i, agent_a in enumerate(agents_in_group):
+        for agent_a in agents_in_group:
             val_a = agent_claims[agent_a]["value"]
             for agent_b in agents_in_group:
                 if agent_a == agent_b:
                     continue
                 val_b = agent_claims[agent_b]["value"]
-                
-                # Pairwise comparison
                 agent_stats[agent_a]["overlap_count"] += 1
                 if val_a == val_b:
                     agent_stats[agent_a]["agreement_count"] += 1
                 else:
                     agent_stats[agent_a]["disagreement_count"] += 1
 
-    # Calculate agreement rates
     for agent, stats in agent_stats.items():
         overlap = stats["overlap_count"]
-        if overlap > 0:
-            stats["agreement_rate"] = float(stats["agreement_count"]) / float(overlap)
-        else:
-            stats["agreement_rate"] = 0.0
+        stats["agreement_rate"] = float(stats["agreement_count"]) / float(overlap) if overlap > 0 else 0.0
+
+    ds_report = _run_symmetric_dawid_skene(overlapping_keys, all_agents)
+    for agent, stats in agent_stats.items():
+        ds_stats = ds_report["agents"].get(agent, {})
+        stats.update(ds_stats)
 
     return {
+        "model": ds_report["model"],
+        "iterations": ds_report["iterations"],
+        "converged": ds_report["converged"],
         "overlapping_keys_count": len(overlapping_keys),
-        "agents": agent_stats
+        "items": ds_report["items"],
+        "agents": agent_stats,
+    }
+
+
+def _run_symmetric_dawid_skene(
+    overlapping_keys: dict[tuple[str, str], dict[str, dict]],
+    all_agents: list[str],
+    *,
+    max_iter: int = 25,
+    tol: float = 1e-6,
+) -> dict:
+    """
+    Run a symmetric Dawid-Skene EM procedure.
+    Each agent has one latent reliability parameter p_correct.
+    For an item with K candidate labels, incorrect mass is spread uniformly across K-1 labels.
+    """
+    agents = {
+        agent: {
+            "expected_correct_count": 0.0,
+            "expected_incorrect_count": 0.0,
+            "inferred_accuracy": 0.0,
+            "rated_items": 0,
+        }
+        for agent in all_agents
+    }
+    if not overlapping_keys:
+        return {
+            "model": "symmetric_dawid_skene",
+            "iterations": 0,
+            "converged": True,
+            "items": {},
+            "agents": agents,
+        }
+
+    item_posteriors: dict[tuple[str, str], dict[str, float]] = {}
+    for g_key, claims in overlapping_keys.items():
+        labels = sorted({entry["value"] for entry in claims.values()})
+        total = float(len(claims))
+        counts = {label: 0.0 for label in labels}
+        for entry in claims.values():
+            counts[entry["value"]] += 1.0
+        if len(labels) == 1:
+            item_posteriors[g_key] = {labels[0]: 1.0}
+        else:
+            item_posteriors[g_key] = {
+                label: counts[label] / total for label in labels
+            }
+
+    reliability = {}
+    for agent in all_agents:
+        overlap_items = sum(1 for claims in overlapping_keys.values() if agent in claims)
+        reliability[agent] = 0.7 if overlap_items > 0 else 0.0
+
+    converged = False
+    iterations_run = 0
+    for iteration in range(1, max_iter + 1):
+        iterations_run = iteration
+        prev_reliability = dict(reliability)
+
+        for agent in all_agents:
+            expected_correct = 0.0
+            rated_items = 0
+            for g_key, claims in overlapping_keys.items():
+                if agent not in claims:
+                    continue
+                rated_items += 1
+                observed = claims[agent]["value"]
+                expected_correct += item_posteriors[g_key].get(observed, 0.0)
+            if rated_items > 0:
+                reliability[agent] = min(0.999, max(0.501, (expected_correct + 1.0) / (rated_items + 2.0)))
+            else:
+                reliability[agent] = 0.0
+
+        for g_key, claims in overlapping_keys.items():
+            labels = sorted({entry["value"] for entry in claims.values()})
+            if len(labels) == 1:
+                item_posteriors[g_key] = {labels[0]: 1.0}
+                continue
+
+            scores = {}
+            for candidate in labels:
+                score = 1.0 / float(len(labels))
+                for agent, entry in claims.items():
+                    p_correct = reliability.get(agent, 0.5)
+                    if entry["value"] == candidate:
+                        score *= p_correct
+                    else:
+                        score *= max(1e-9, (1.0 - p_correct) / float(len(labels) - 1))
+                scores[candidate] = score
+
+            total_score = sum(scores.values())
+            if total_score <= 0:
+                item_posteriors[g_key] = {label: 1.0 / float(len(labels)) for label in labels}
+            else:
+                item_posteriors[g_key] = {
+                    label: score / total_score for label, score in scores.items()
+                }
+
+        max_delta = max(abs(reliability[a] - prev_reliability[a]) for a in all_agents) if all_agents else 0.0
+        if max_delta < tol:
+            converged = True
+            break
+
+    for agent in all_agents:
+        expected_correct = 0.0
+        rated_items = 0
+        for g_key, claims in overlapping_keys.items():
+            if agent not in claims:
+                continue
+            rated_items += 1
+            expected_correct += item_posteriors[g_key].get(claims[agent]["value"], 0.0)
+        expected_incorrect = max(0.0, rated_items - expected_correct)
+        agents[agent].update({
+            "expected_correct_count": round(expected_correct, 4),
+            "expected_incorrect_count": round(expected_incorrect, 4),
+            "inferred_accuracy": round(reliability.get(agent, 0.0), 4) if rated_items > 0 else 0.0,
+            "rated_items": rated_items,
+        })
+
+    item_results = {}
+    for (kind, key), claims in overlapping_keys.items():
+        posterior = item_posteriors[(kind, key)]
+        consensus_value = max(posterior.items(), key=lambda kv: kv[1])[0]
+        item_results[f"{kind}:{key}"] = {
+            "observer_count": len(claims),
+            "candidate_values": sorted(posterior.keys()),
+            "consensus_value": consensus_value,
+            "posterior": {label: round(prob, 4) for label, prob in posterior.items()},
+        }
+
+    return {
+        "model": "symmetric_dawid_skene",
+        "iterations": iterations_run,
+        "converged": converged,
+        "items": item_results,
+        "agents": agents,
     }
 
 
@@ -520,16 +653,15 @@ def run_beta_binomial_trust_calibration() -> None:
         
         calibrated_count = 0
         for agent, stats in report.get("agents", {}).items():
-            overlap = stats.get("overlap_count", 0)
-            if overlap < 1:
+            rated_items = stats.get("rated_items", 0)
+            if rated_items < 1:
                 log(f"Skipping calibration for agent '{agent}' due to sparse single-observer data (no overlap)")
                 continue
-                
-            agreement = stats.get("agreement_count", 0)
-            disagreement = stats.get("disagreement_count", 0)
-            
-            alpha = float(agreement) + 1.0
-            beta = float(disagreement) + 0.0
+
+            expected_correct = float(stats.get("expected_correct_count", 0.0))
+            expected_incorrect = float(stats.get("expected_incorrect_count", 0.0))
+            alpha = expected_correct + 1.0
+            beta = expected_incorrect
             
             cursor.execute("""
                 INSERT INTO gms_agent_reputation (agent_id, alpha, beta, last_updated)
@@ -539,7 +671,10 @@ def run_beta_binomial_trust_calibration() -> None:
                     beta = excluded.beta,
                     last_updated = CURRENT_TIMESTAMP
             """, (agent, alpha, beta))
-            log(f"Calibrated agent '{agent}': alpha={alpha:.1f}, beta={beta:.1f} (Trust: {(alpha+1)/(alpha+beta+2):.3f})")
+            log(
+                f"Calibrated agent '{agent}': alpha={alpha:.3f}, beta={beta:.3f} "
+                f"(Trust: {(alpha+1)/(alpha+beta+2):.3f}, DS acc: {stats.get('inferred_accuracy', 0.0):.3f})"
+            )
             calibrated_count += 1
             
         conn.commit()
