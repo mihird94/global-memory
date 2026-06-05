@@ -882,6 +882,19 @@ def cmd_retention_prune(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_tui(_: argparse.Namespace) -> int:
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import gms_tui
+        return gms_tui.main()
+    except KeyboardInterrupt:
+        return 130
+    except Exception as e:
+        print(f"Error launching TUI: {e}")
+        return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Memory control CLI for global-memory skill.")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -983,6 +996,9 @@ def main() -> int:
     p14.add_argument("--stale-quarantine-days", type=int, default=14, help="Minimum age in days for stale quarantines.")
     p14.add_argument("--json", action="store_true", help="Output raw JSON.")
     p14.set_defaults(fn=cmd_retention_prune)
+
+    p15 = sub.add_parser("tui", help="Launch the SSH-friendly terminal UI.")
+    p15.set_defaults(fn=cmd_tui)
 
     args = parser.parse_args()
     return args.fn(args)
