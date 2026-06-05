@@ -2,6 +2,7 @@ import argparse
 import importlib
 import io
 import json
+import math
 import sys
 import tempfile
 import unittest
@@ -13,12 +14,58 @@ tools_dir = str(Path(__file__).parent.parent / "tools")
 if tools_dir not in sys.path:
     sys.path.insert(0, tools_dir)
 
-try:
-    import numpy as np
-except ModuleNotFoundError:  # pragma: no cover - environment-dependent
-    np = None
-
 import memoryctl
+
+
+class _FakeVector:
+    def __init__(self, values):
+        self.values = [float(v) for v in values]
+
+    def __iter__(self):
+        return iter(self.values)
+
+    def __getitem__(self, idx):
+        return self.values[idx]
+
+    def __len__(self):
+        return len(self.values)
+
+    def tolist(self):
+        return list(self.values)
+
+
+class _FakeMatrix:
+    def __init__(self, rows):
+        self.rows = [[float(v) for v in row] for row in rows]
+        width = len(self.rows[0]) if self.rows else 0
+        self.shape = (len(self.rows), width)
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def __getitem__(self, idx):
+        if isinstance(idx, tuple):
+            row_idx, col_idx = idx
+            if isinstance(row_idx, slice):
+                selected = self.rows[row_idx]
+                return [row[col_idx] for row in selected]
+            return self.rows[row_idx][col_idx]
+        return self.rows[idx]
+
+    def __setitem__(self, idx, value):
+        if isinstance(idx, tuple):
+            row_idx, col_idx = idx
+            if isinstance(row_idx, slice):
+                selected = range(*row_idx.indices(len(self.rows)))
+                for offset, row_num in enumerate(selected):
+                    self.rows[row_num][col_idx] = value[offset]
+                return
+            self.rows[row_idx][col_idx] = value
+            return
+        self.rows[idx] = value
+
+    def tolist(self):
+        return [list(row) for row in self.rows]
 
 
 class _FakeIndex:
@@ -33,9 +80,12 @@ class _FakeIndex:
 class _FakeFaissModule:
     @staticmethod
     def normalize_L2(mat):
-        norms = np.linalg.norm(mat, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        mat /= norms
+        for row in mat.rows:
+            norm = math.sqrt(sum(value * value for value in row))
+            if norm == 0.0:
+                continue
+            for idx, value in enumerate(row):
+                row[idx] = value / norm
 
     @staticmethod
     def IndexFlatIP(dim: int):
@@ -46,7 +96,16 @@ class _FakeFaissModule:
         Path(path).write_text(json.dumps({"dim": index.dim, "rows": index.rows}))
 
 
-@unittest.skipUnless(np is not None, "numpy is required for drift-foundation tests")
+class _FakeNumpyModule:
+    float32 = float
+
+    @staticmethod
+    def array(values, dtype=None):
+        if values and isinstance(values[0], (list, tuple)):
+            return _FakeMatrix(values)
+        return _FakeVector(values)
+
+
 class TestDriftFoundation(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -69,9 +128,10 @@ class TestDriftFoundation(unittest.TestCase):
         args = argparse.Namespace(model="test-embed", drift_threshold=threshold)
         docs = [("history/2026-06-04.md", "alpha"), ("history/2026-06-05.md", "beta")]
         fake_faiss = _FakeFaissModule()
+        fake_numpy = _FakeNumpyModule()
         with patch.object(memoryctl, "_iter_episodic_texts", return_value=docs), \
              patch.object(memoryctl, "_embed", side_effect=embeddings), \
-             patch.dict(sys.modules, {"faiss": fake_faiss}):
+             patch.dict(sys.modules, {"faiss": fake_faiss, "numpy": fake_numpy}):
             buffer = io.StringIO()
             with redirect_stdout(buffer):
                 code = memoryctl.cmd_index_build(args)

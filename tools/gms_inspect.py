@@ -46,6 +46,7 @@ def _db_counts() -> dict:
     counts = {
         "claims_by_status": {},
         "quarantined_facts": 0,
+        "quarantine_reviews": 0,
         "procedures": 0,
         "entities": 0,
         "relationships": 0,
@@ -63,6 +64,7 @@ def _db_counts() -> dict:
 
     for table_name, key in (
         ("gms_quarantined_facts", "quarantined_facts"),
+        ("gms_quarantine_reviews", "quarantine_reviews"),
         ("gms_procedures", "procedures"),
         ("gms_entities", "entities"),
         ("gms_relationships", "relationships"),
@@ -75,6 +77,37 @@ def _db_counts() -> dict:
 
     conn.close()
     return counts
+
+
+def _recent_quarantine_items(limit: int = 5) -> list[dict]:
+    if not DB_PATH.exists():
+        return []
+
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT fact_key, agent_id, branch, timestamp
+            FROM gms_quarantined_facts
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = cursor.fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    conn.close()
+    return [
+        {
+            "fact_key": fact_key,
+            "agent_id": agent_id,
+            "branch": branch,
+            "timestamp": timestamp,
+        }
+        for fact_key, agent_id, branch, timestamp in rows
+    ]
 
 
 def build_snapshot() -> dict:
@@ -96,6 +129,9 @@ def build_snapshot() -> dict:
             "latest": latest_episodes,
         },
         "db": db_counts,
+        "quarantine": {
+            "recent": _recent_quarantine_items(),
+        },
     }
 
 

@@ -17,7 +17,7 @@ class TestGMSEvalHarness(unittest.TestCase):
             report = gms_eval.run_evaluation(Path(temp_dir))
 
         self.assertEqual(report["suite"], "gms_foundation_plus_guardrails")
-        self.assertEqual(report["summary"]["total"], 6)
+        self.assertEqual(report["summary"]["total"], 7)
         self.assertEqual(report["summary"]["failed"], 0)
 
         categories = {result["category"] for result in report["results"]}
@@ -39,7 +39,7 @@ class TestGMSEvalHarness(unittest.TestCase):
 
         payload = json.dumps(report)
         parsed = json.loads(payload)
-        self.assertEqual(parsed["summary"]["passed"], 6)
+        self.assertEqual(parsed["summary"]["passed"], 7)
         self.assertTrue(all("details" in result for result in parsed["results"]))
 
 

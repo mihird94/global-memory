@@ -37,15 +37,19 @@ class TestGMSInspect(unittest.TestCase):
                 conn = sqlite3.connect(str(gms_inspect.DB_PATH))
                 cursor = conn.cursor()
                 cursor.execute("CREATE TABLE gms_claims (status TEXT)")
-                cursor.execute("CREATE TABLE gms_quarantined_facts (fact_key TEXT)")
+                cursor.execute("CREATE TABLE gms_quarantined_facts (fact_key TEXT, agent_id TEXT, branch TEXT, timestamp TEXT)")
+                cursor.execute("CREATE TABLE gms_quarantine_reviews (reviewer_id TEXT)")
                 cursor.execute("CREATE TABLE gms_procedures (name TEXT)")
                 cursor.execute("CREATE TABLE gms_entities (name TEXT)")
                 cursor.execute("CREATE TABLE gms_relationships (predicate TEXT)")
                 cursor.executemany(
                     "INSERT INTO gms_claims (status) VALUES (?)",
-                    [("active",), ("active",), ("quarantined",)],
+                    [("active",), ("active",), ("quarantined",), ("archived",)],
                 )
-                cursor.execute("INSERT INTO gms_quarantined_facts (fact_key) VALUES ('bad_fact')")
+                cursor.execute(
+                    "INSERT INTO gms_quarantined_facts (fact_key, agent_id, branch, timestamp) VALUES ('bad_fact', 'agent_bad', 'main', '2026-06-04 12:00:00')"
+                )
+                cursor.execute("INSERT INTO gms_quarantine_reviews (reviewer_id) VALUES ('reviewer_1')")
                 cursor.execute("INSERT INTO gms_procedures (name) VALUES ('proc_1')")
                 cursor.execute("INSERT INTO gms_entities (name) VALUES ('entity_1')")
                 cursor.execute("INSERT INTO gms_relationships (predicate) VALUES ('uses')")
@@ -62,10 +66,13 @@ class TestGMSInspect(unittest.TestCase):
         self.assertEqual(snapshot["facts"]["procedural"], 1)
         self.assertEqual(snapshot["episodes"]["count"], 2)
         self.assertEqual(snapshot["db"]["claims_by_status"]["active"], 2)
+        self.assertEqual(snapshot["db"]["claims_by_status"]["archived"], 1)
         self.assertEqual(snapshot["db"]["quarantined_facts"], 1)
+        self.assertEqual(snapshot["db"]["quarantine_reviews"], 1)
         self.assertEqual(snapshot["db"]["procedures"], 1)
         self.assertEqual(snapshot["db"]["entities"], 1)
         self.assertEqual(snapshot["db"]["relationships"], 1)
+        self.assertEqual(snapshot["quarantine"]["recent"][0]["fact_key"], "bad_fact")
 
 
 if __name__ == "__main__":

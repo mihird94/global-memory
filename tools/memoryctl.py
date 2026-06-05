@@ -107,17 +107,25 @@ def _iter_episodic_texts() -> List[Tuple[str, str]]:
 
 
 def _build_drift_snapshot(mat, model: str, doc_count: int, chunk_count: int) -> dict:
-    import numpy as np
-
-    centroid = np.mean(mat, axis=0)
+    rows = mat.tolist() if hasattr(mat, "tolist") else [list(row) for row in mat]
+    if not rows:
+        centroid = []
+        dimension = 0
+    else:
+        dimension = len(rows[0])
+        centroid = [
+            sum(row[i] for row in rows) / float(len(rows))
+            for i in range(dimension)
+        ]
+    centroid_norm = math.sqrt(sum(value * value for value in centroid))
     return {
         "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "embedding_model": model,
         "doc_count": doc_count,
         "vector_count": chunk_count,
-        "dimension": int(mat.shape[1]),
-        "centroid": centroid.astype(float).tolist(),
-        "centroid_norm": float(np.linalg.norm(centroid)),
+        "dimension": dimension if dimension else int(getattr(mat, "shape", [0, 0])[1] if getattr(mat, "shape", None) else 0),
+        "centroid": [float(value) for value in centroid],
+        "centroid_norm": float(centroid_norm),
     }
 
 
@@ -145,19 +153,18 @@ def _compute_drift_report(current: dict, previous: dict | None, threshold: float
         report["drift"] = {"reason": "dimension_mismatch_or_empty_centroid"}
         return report
 
-    import numpy as np
-
-    current_vec = np.array(current_centroid, dtype=np.float32)
-    previous_vec = np.array(previous_centroid, dtype=np.float32)
-    current_norm = float(np.linalg.norm(current_vec))
-    previous_norm = float(np.linalg.norm(previous_vec))
+    current_norm = math.sqrt(sum(value * value for value in current_centroid))
+    previous_norm = math.sqrt(sum(value * value for value in previous_centroid))
     if current_norm == 0.0 or previous_norm == 0.0:
         cosine_similarity = 1.0
     else:
-        cosine_similarity = float(np.dot(current_vec, previous_vec) / (current_norm * previous_norm))
+        dot = sum(cur * prev for cur, prev in zip(current_centroid, previous_centroid))
+        cosine_similarity = float(dot / (current_norm * previous_norm))
         cosine_similarity = max(-1.0, min(1.0, cosine_similarity))
     angular_distance = float(math.acos(cosine_similarity))
-    l2_distance = float(np.linalg.norm(current_vec - previous_vec))
+    l2_distance = math.sqrt(
+        sum((cur - prev) * (cur - prev) for cur, prev in zip(current_centroid, previous_centroid))
+    )
 
     report["previous"] = {
         "created_at": previous.get("created_at"),

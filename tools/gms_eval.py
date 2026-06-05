@@ -260,11 +260,62 @@ def _scenario_retention_archival() -> dict:
     )
 
 
+def _scenario_collusive_low_trust_reviewers() -> dict:
+    server = _server()
+    _set_agent_reputation("agent_trusted", 12.0, 0.0)
+    _set_agent_reputation("agent_untrusted", 1.0, 6.0)
+    _set_agent_reputation("reviewer_guardian", 12.0, 0.0)
+    _set_agent_reputation("reviewer_colluder_1", 1.0, 10.0)
+    _set_agent_reputation("reviewer_colluder_2", 1.0, 10.0)
+    server.tool_mem_save_fact(
+        {"key": "secrets_backend", "value": "vault", "agent": "agent_trusted"}
+    )
+    quarantine_result = server.tool_mem_save_fact(
+        {"key": "secrets_backend", "value": "plaintext", "agent": "agent_untrusted"}
+    )
+    server.tool_mem_record_review(
+        {
+            "key": "secrets_backend",
+            "agent_id": "agent_untrusted",
+            "reviewer_id": "reviewer_guardian",
+            "rating": "reject",
+            "rationale": "Violates production controls.",
+        }
+    )
+    for reviewer in ("reviewer_colluder_1", "reviewer_colluder_2"):
+        server.tool_mem_record_review(
+            {
+                "key": "secrets_backend",
+                "agent_id": "agent_untrusted",
+                "reviewer_id": reviewer,
+                "rating": "endorse",
+                "rationale": "Looks fine.",
+            }
+        )
+    summary = json.loads(
+        server.tool_mem_get_recommendation_summary(
+            {"key": "secrets_backend", "agent_id": "agent_untrusted"}
+        )
+    )
+    passed = (
+        "CONFLICT/QUARANTINE" in quarantine_result
+        and summary["recommendation"] == "discard"
+        and summary["reject_weight"] > summary["endorse_weight"]
+    )
+    return _make_result(
+        "collusive_low_trust_reviewers",
+        "poisoning_resistance",
+        passed,
+        json.dumps(summary),
+    )
+
+
 def run_evaluation(memory_root: Path | None = None) -> dict:
     scenario_fns: list[Callable[[], dict]] = [
         _scenario_trusted_overwrite,
         _scenario_quarantine_rejection,
         _scenario_weighted_quarantine_resolution,
+        _scenario_collusive_low_trust_reviewers,
         _scenario_episodic_summary_recall,
         _scenario_missing_episode_abstention,
         _scenario_retention_archival,
