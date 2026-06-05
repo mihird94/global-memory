@@ -14,7 +14,7 @@ import subprocess
 from typing import Dict, List, Tuple
 from urllib import request
 
-MEM_ROOT = Path("/home/mihir/memories")
+MEM_ROOT = Path(os.environ.get("MEMORY_ROOT", "/home/mihir/memories"))
 INDEX_ROOT = MEM_ROOT / "episodic" / "index"
 DEFAULT_EMBED_MODEL = os.environ.get("MEMORY_EMBED_MODEL", "qwen3-embedding:0.6b")
 OLLAMA_EMBED_URL = os.environ.get("OLLAMA_EMBED_URL", "http://127.0.0.1:11434/api/embeddings")
@@ -437,6 +437,125 @@ def cmd_index_query(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_trust_list(args: argparse.Namespace) -> int:
+    DB_PATH = MEM_ROOT / "gms_trust.sqlite"
+    if not DB_PATH.exists():
+        print("Trust database does not exist yet.")
+        return 0
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute("SELECT agent_id, alpha, beta, last_updated FROM gms_agent_reputation")
+        rows = cursor.fetchall()
+        conn.close()
+        
+        if not rows:
+            print("No agent reputations recorded.")
+            return 0
+            
+        print(f"{'Agent ID':<20} | {'Alpha (Success)':<15} | {'Beta (Penalties)':<15} | {'Trust Score':<12} | {'Last Updated'}")
+        print("-" * 80)
+        for agent_id, alpha, beta, last_updated in rows:
+            trust = (alpha + 1.0) / (alpha + beta + 2.0)
+            print(f"{agent_id:<20} | {alpha:<15.1f} | {beta:<15.1f} | {trust:<12.4f} | {last_updated}")
+    except Exception as e:
+        print(f"Error querying trust database: {e}")
+        return 1
+    return 0
+
+
+def cmd_quarantine_list(args: argparse.Namespace) -> int:
+    DB_PATH = MEM_ROOT / "gms_trust.sqlite"
+    if not DB_PATH.exists():
+        print("Trust database does not exist yet.")
+        return 0
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute("SELECT fact_key, value, agent_id, branch, timestamp FROM gms_quarantined_facts")
+        rows = cursor.fetchall()
+        conn.close()
+        
+        if not rows:
+            print("No quarantined facts found.")
+            return 0
+            
+        print(f"{'Fact Key':<25} | {'Agent':<15} | {'Branch':<15} | {'Timestamp':<20} | {'Value'}")
+        print("-" * 100)
+        for key, val, agent, branch, ts in rows:
+            print(f"{key:<25} | {agent:<15} | {branch:<15} | {ts:<20} | {val}")
+    except Exception as e:
+        print(f"Error querying quarantine: {e}")
+        return 1
+    return 0
+
+
+def cmd_quarantine_resolve(args: argparse.Namespace) -> int:
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import memory_mcp_server
+        res = memory_mcp_server.tool_mem_resolve_quarantine({
+            "key": args.key,
+            "agent_id": args.agent_id,
+            "action": args.action,
+            "agent": args.resolver
+        })
+        print(res)
+        if res.startswith("ERROR"):
+            return 1
+    except Exception as e:
+        print(f"Error resolving quarantine: {e}")
+        return 1
+    return 0
+
+
+def cmd_claims_list(args: argparse.Namespace) -> int:
+    DB_PATH = MEM_ROOT / "gms_trust.sqlite"
+    if not DB_PATH.exists():
+        print("Trust database does not exist yet.")
+        return 0
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        
+        query = "SELECT claim_id, memory_kind, memory_key, value, agent_id, branch, status, supersedes_claim_id, confidence, contradiction_type, created_at FROM gms_claims WHERE 1=1"
+        params = []
+        if args.kind:
+            query += " AND memory_kind = ?"
+            params.append(args.kind)
+        if args.key:
+            query += " AND memory_key = ?"
+            params.append(args.key)
+        if args.status:
+            query += " AND status = ?"
+            params.append(args.status)
+            
+        query += " ORDER BY claim_id ASC"
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        conn.close()
+        
+        if not rows:
+            print("No claims found.")
+            return 0
+            
+        print(f"{'ID':<5} | {'Kind':<12} | {'Key':<20} | {'Status':<12} | {'Agent':<15} | {'Conf':<6} | {'Conflict Type':<25} | {'Value'}")
+        print("-" * 125)
+        for claim_id, kind, key, val, agent, branch, status, sup_id, confidence, contradiction_type, ts in rows:
+            sup_str = str(sup_id) if sup_id is not None else "None"
+            conf_str = f"{confidence:.2f}" if confidence is not None else "None"
+            contra_str = contradiction_type if contradiction_type is not None else "None"
+            print(f"{claim_id:<5} | {kind:<12} | {key:<20} | {status:<12} | {agent:<15} | {conf_str:<6} | {contra_str:<25} | {val}")
+    except Exception as e:
+        print(f"Error querying claims: {e}")
+        return 1
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Memory control CLI for global-memory skill.")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -477,6 +596,25 @@ def main() -> int:
     p6.add_argument("--no-boost", action="store_true", help="Disable git branch boost.")
     p6.add_argument("--no-hybrid", action="store_true", help="Disable BM25 hybrid search RRF.")
     p6.set_defaults(fn=cmd_index_query)
+
+    p7 = sub.add_parser("trust-list", help="List all agent reputations.")
+    p7.set_defaults(fn=cmd_trust_list)
+
+    p8 = sub.add_parser("quarantine-list", help="List all quarantined facts.")
+    p8.set_defaults(fn=cmd_quarantine_list)
+
+    p9 = sub.add_parser("quarantine-resolve", help="Resolve a quarantined fact.")
+    p9.add_argument("key", help="The fact key to resolve.")
+    p9.add_argument("agent_id", help="The agent who proposed the fact.")
+    p9.add_argument("action", choices=["promote", "discard"], help="Resolution action.")
+    p9.add_argument("--resolver", default="CLI", help="The resolving agent identity.")
+    p9.set_defaults(fn=cmd_quarantine_resolve)
+
+    p10 = sub.add_parser("claims-list", help="List all recorded claims in the versioned claim ledger.")
+    p10.add_argument("--kind", help="Filter by memory kind.")
+    p10.add_argument("--key", help="Filter by memory key.")
+    p10.add_argument("--status", help="Filter by claim status.")
+    p10.set_defaults(fn=cmd_claims_list)
 
     args = parser.parse_args()
     return args.fn(args)

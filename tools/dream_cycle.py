@@ -12,8 +12,8 @@ LLM Cascade (tried in order, first success wins):
   Tier 3: Local Ollama     (qwen3:0.6b)         — always-available, zero cost
 
 Run via cron at 3am daily:
-    0 3 * * * /home/mihir/global_skills/global-memory/.venv/bin/python \\
-              /home/mihir/global_skills/global-memory/tools/dream_cycle.py \\
+    0 3 * * * <repo>/.venv/bin/python \\
+              <repo>/tools/dream_cycle.py \\
               >> /home/mihir/memories/logs/dream_cycle.log 2>&1
 
 Design principles:
@@ -36,6 +36,8 @@ from urllib import request
 # ──────────────────────────────────────────────────────────────────────────────
 # Config
 # ──────────────────────────────────────────────────────────────────────────────
+REPO_ROOT    = Path(__file__).resolve().parent.parent
+TOOLS_DIR    = REPO_ROOT / "tools"
 MEM_ROOT     = Path(os.environ.get("MEMORY_ROOT", "/home/mihir/memories"))
 OLLAMA_URL   = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 EMBED_MODEL  = os.environ.get("MEMORY_EMBED_MODEL", "qwen3-embedding:0.6b")
@@ -262,7 +264,7 @@ def extract_facts_with_cascade(journal_text: str, existing_facts: dict) -> tuple
 
 def rebuild_faiss_index() -> bool:
     """Invoke memoryctl index-build via subprocess."""
-    memoryctl = Path("/home/mihir/global_skills/global-memory/tools/memoryctl")
+    memoryctl = TOOLS_DIR / "memoryctl"
     if not memoryctl.exists():
         memoryctl = Path("/home/mihir/.local/bin/memoryctl")
 
@@ -324,7 +326,7 @@ def append_dream_cycle_log(new_facts_count: int, provider: str = "unknown") -> N
     entry = (
         f"\n### {today} [{now}] - DreamCycle - Nightly Consolidation\n"
         f"- Provider used: {provider}\n"
-        f"- Extracted and promoted {new_facts_count} new semantic fact(s) to facts.json.\n"
+        f"- Extracted {new_facts_count} new semantic fact(s) (routed via trust gateway).\n"
         f"- FAISS index rebuilt.\n"
     )
     if DRY_RUN:
@@ -372,6 +374,94 @@ def save_facts(facts: dict) -> None:
     log(f"facts saved: {path} ({len(facts)} keys)")
 
 
+def record_fact_provenance(fact_key: str, agent_id: str) -> None:
+    db_path = MEM_ROOT / "gms_trust.sqlite"
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS gms_fact_provenance (
+                fact_key TEXT PRIMARY KEY,
+                agent_id TEXT,
+                branch TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                quarantined INTEGER DEFAULT 0
+            )
+        """)
+        cursor.execute("""
+            INSERT INTO gms_fact_provenance (fact_key, agent_id, branch, quarantined, timestamp)
+            VALUES (?, ?, 'main', 0, CURRENT_TIMESTAMP)
+            ON CONFLICT(fact_key) DO UPDATE SET
+                agent_id = excluded.agent_id,
+                branch = excluded.branch,
+                quarantined = excluded.quarantined,
+                timestamp = CURRENT_TIMESTAMP
+        """, (fact_key, agent_id))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log(f"Error recording provenance for key '{fact_key}': {e}")
+
+
+def run_beta_binomial_trust_calibration() -> None:
+    db_path = MEM_ROOT / "gms_trust.sqlite"
+    if not db_path.exists():
+        log("Trust database not found — skipping reputation calibration")
+        return
+        
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT fact_key, agent_id FROM gms_fact_provenance")
+        active = cursor.fetchall()
+        cursor.execute("SELECT fact_key, agent_id FROM gms_quarantined_facts")
+        quar = cursor.fetchall()
+        
+        assertions = [(k, a, 0) for k, a in active] + [(k, a, 1) for k, a in quar]
+        conn.close()
+        
+        if not assertions:
+            log("No assertions found for reputation calibration")
+            return
+            
+        agent_counts = {}
+        for key, agent, is_quarantined in assertions:
+            if agent not in agent_counts:
+                agent_counts[agent] = {"total": 0, "quarantined": 0}
+            agent_counts[agent]["total"] += 1
+            if is_quarantined:
+                agent_counts[agent]["quarantined"] += 1
+                
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+        for agent, counts in agent_counts.items():
+            total = counts["total"]
+            quar_count = counts["quarantined"]
+            correct_count = total - quar_count
+            
+            alpha = float(correct_count) + 1.0
+            beta = float(quar_count) + 0.0
+            
+            cursor.execute("""
+                INSERT INTO gms_agent_reputation (agent_id, alpha, beta, last_updated)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(agent_id) DO UPDATE SET
+                    alpha = excluded.alpha,
+                    beta = excluded.beta,
+                    last_updated = CURRENT_TIMESTAMP
+            """, (agent, alpha, beta))
+            log(f"Calibrated agent '{agent}': alpha={alpha:.1f}, beta={beta:.1f} (Trust: {(alpha+1)/(alpha+beta+2):.3f})")
+            
+        conn.commit()
+        conn.close()
+        log("Beta-binomial reputation calibration completed.")
+    except Exception as e:
+        log(f"Error during reputation calibration: {e}")
+
+
 def main() -> int:
     log("=" * 60)
     log("Starting Dream Cycle (nightly memory consolidation)")
@@ -402,13 +492,24 @@ def main() -> int:
         # 4. Run cascade extraction
         new_facts, provider_used = extract_facts_with_cascade(journal_text, existing_facts)
 
-        # 5. Merge and save
+        # 5. Merge and save via trust gateway
         if new_facts:
-            merged = {**existing_facts, **new_facts}
             if not DRY_RUN:
-                save_facts(merged)
+                sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+                import memory_mcp_server
+                
+                agent_tag = f"DreamCycle-{provider_used}"
+                for key, val in new_facts.items():
+                    log(f"Promoting fact via trust gateway: {key} = {val}")
+                    res = memory_mcp_server.tool_mem_save_fact({
+                        "key": key,
+                        "value": val,
+                        "agent": agent_tag,
+                        "force": False
+                    })
+                    log(f"  Result: {res}")
             else:
-                log(f"DRY RUN — would write facts: {json.dumps(new_facts, indent=2)}")
+                log(f"DRY RUN — would write facts via trust gateway: {json.dumps(new_facts, indent=2)}")
         else:
             log("No new facts to promote — facts.json unchanged")
 
@@ -421,7 +522,11 @@ def main() -> int:
     # 7. Append to episodic log
     append_dream_cycle_log(len(new_facts), provider=provider_used)
 
-    # 8. Git commit
+    # 8. Run trust calibration on reputations
+    if not DRY_RUN:
+        run_beta_binomial_trust_calibration()
+
+    # 9. Git commit
     if not DRY_RUN:
         git_commit_memories()
     else:

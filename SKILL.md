@@ -1,10 +1,10 @@
 ---
 name: global-memory
-description: MeshClaw-inspired Unified Memory Layer (UML) protocol for cross-agent interoperability. Activates the GMS (v2.0.0) at ~/memories/ with local vector indexing (FAISS).
+description: MeshClaw-inspired Unified Memory Layer (UML) protocol for cross-agent interoperability. Activates the GMS (v2.1.0) at ~/memories/ with local vector indexing (FAISS).
 ---
 
 # Global Memory System (GMS) Skill
-**Status: ACTIVE (v2.0.0 Architecture - Vector-Powered)**
+**Status: ACTIVE (v2.1.0 MCP-First Architecture)**
 
 This skill provides the logic and protocols for a "Unified Memory Layer" across all AI facets. It leverages the `memoryctl` tool for hybrid (semantic/vector) retrieval and storage.
 
