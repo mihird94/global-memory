@@ -357,6 +357,36 @@ def format_selected_claim_detail(claim: dict, width: int) -> list[str]:
     return lines
 
 
+def compute_tab_regions(tab_names: tuple[str, ...] | list[str]) -> list[dict]:
+    regions = []
+    x = len("GMS TUI  ")
+    for idx, name in enumerate(tab_names):
+        label = f"[{name}]"
+        regions.append({
+            "index": idx,
+            "name": name,
+            "x_start": x,
+            "x_end": x + len(label) - 1,
+        })
+        x += len(label)
+        if idx < len(tab_names) - 1:
+            x += len(" | ")
+    return regions
+
+
+def find_tab_index_at_x(x: int, tab_regions: list[dict]) -> int | None:
+    for region in tab_regions:
+        if region["x_start"] <= x <= region["x_end"]:
+            return int(region["index"])
+    return None
+
+
+def find_list_index_at_y(y: int, row_start: int, visible_count: int, start_idx: int = 0) -> int | None:
+    if y < row_start or y >= row_start + visible_count:
+        return None
+    return start_idx + (y - row_start)
+
+
 
 class GMSTui:
     TABS = ("Summary", "Quarantine", "Trust", "Claims")
@@ -369,6 +399,10 @@ class GMSTui:
         self.filter_query = ""
         self.status = "r refresh | tab switch | q quit | f filter | c clear"
         self.data = load_dashboard_data()
+        self.tab_regions: list[dict] = []
+        self.list_row_start = 0
+        self.list_visible_count = 0
+        self.list_start_idx = 0
 
     def refresh(self):
         self.data = load_dashboard_data()
@@ -380,6 +414,11 @@ class GMSTui:
     def run(self, stdscr):
         curses.curs_set(0)
         stdscr.keypad(True)
+        try:
+            curses.mousemask(curses.BUTTON1_CLICKED)
+            curses.mouseinterval(0)
+        except curses.error:
+            pass
         while True:
             self._draw(stdscr)
             key = stdscr.getch()
@@ -435,6 +474,8 @@ class GMSTui:
                     self.detail_mode = not self.detail_mode
                     self.detail_scroll = 0
                     self.status = "Detail view opened." if self.detail_mode else "Returned to list."
+            elif key == curses.KEY_MOUSE:
+                self._handle_mouse()
             elif self.TABS[self.tab_index] == "Quarantine":
                 if key == ord("p"):
                     self._act_on_quarantine("promote")
@@ -495,9 +536,48 @@ class GMSTui:
         curses.curs_set(0)
         return raw.decode("utf-8", "replace").strip()
 
+    def _handle_mouse(self):
+        try:
+            _, mx, my, _, bstate = curses.getmouse()
+        except curses.error:
+            return
+        if not (bstate & curses.BUTTON1_CLICKED):
+            return
+
+        if my == 0:
+            tab_index = find_tab_index_at_x(mx, self.tab_regions)
+            if tab_index is not None:
+                self.tab_index = tab_index
+                self.selection = 0
+                self.detail_mode = False
+                self.detail_scroll = 0
+                self.status = f"Switched to {self.TABS[self.tab_index]}."
+            return
+
+        if self.detail_mode:
+            self.detail_mode = False
+            self.detail_scroll = 0
+            self.status = "Returned to list."
+            return
+
+        if self.TABS[self.tab_index] not in ("Quarantine", "Claims"):
+            return
+
+        selected_index = find_list_index_at_y(
+            my,
+            self.list_row_start,
+            self.list_visible_count,
+            self.list_start_idx,
+        )
+        if selected_index is None:
+            return
+        self.selection = selected_index
+        self.status = "Selection updated."
+
     def _draw(self, stdscr):
         stdscr.erase()
         height, width = stdscr.getmaxyx()
+        self.tab_regions = compute_tab_regions(self.TABS)
         tab_line = " | ".join(
             f"[{name}]" if idx == self.tab_index else name
             for idx, name in enumerate(self.TABS)
@@ -549,6 +629,9 @@ class GMSTui:
             stdscr.addnstr(row + idx, 0, line, width - 1)
 
     def _draw_summary(self, stdscr, row: int, width: int, height: int):
+        self.list_row_start = 0
+        self.list_visible_count = 0
+        self.list_start_idx = 0
         snap = self.data["snapshot"]
         db = snap["db"]
         retention = self.data["retention"].get("summary", {})
@@ -580,16 +663,27 @@ class GMSTui:
             row_offset = 2
             
         if not items:
+            self.list_row_start = 0
+            self.list_visible_count = 0
+            self.list_start_idx = 0
             stdscr.addnstr(row + row_offset, 0, "No quarantined facts.", width - 1)
             return
             
         self.selection = max(0, min(self.selection, len(items) - 1))
-        visible = items[: max(1, height - row - row_offset - 4)]
+        visible_count = max(1, height - row - row_offset - 4)
+        start_idx = 0
+        if self.selection >= visible_count:
+            start_idx = self.selection - visible_count + 1
+        visible = items[start_idx : start_idx + visible_count]
+        self.list_row_start = row + row_offset
+        self.list_visible_count = len(visible)
+        self.list_start_idx = start_idx
         for idx, item in enumerate(visible):
-            marker = ">" if idx == self.selection else " "
+            actual_idx = start_idx + idx
+            marker = ">" if actual_idx == self.selection else " "
             key = item.get("fact_key") or item.get("key") or ""
             line = f"{marker} {key} | {item['agent_id']} | {item['branch']} | {item['timestamp']}"
-            attr = curses.A_REVERSE if idx == self.selection else curses.A_NORMAL
+            attr = curses.A_REVERSE if actual_idx == self.selection else curses.A_NORMAL
             stdscr.addnstr(row + row_offset + idx, 0, line, width - 1, attr)
             
         selected = self._current_quarantine()
@@ -607,6 +701,9 @@ class GMSTui:
             stdscr.addnstr(height - 4, 0, detail, width - 1)
 
     def _draw_trust(self, stdscr, row: int, width: int, height: int):
+        self.list_row_start = 0
+        self.list_visible_count = 0
+        self.list_start_idx = 0
         reps = sorted(self.data["reputations"], key=lambda item: item.get("trust_score", 0.0), reverse=True)
         lines = ["Agent trust state:"]
         for rep in reps[: max(1, height - row - 3)]:
@@ -626,6 +723,9 @@ class GMSTui:
             row_offset = 2
             
         if not claims:
+            self.list_row_start = 0
+            self.list_visible_count = 0
+            self.list_start_idx = 0
             stdscr.addnstr(row + row_offset, 0, "No claims matched.", width - 1)
             return
             
@@ -645,6 +745,9 @@ class GMSTui:
         if self.selection >= list_height:
             start_idx = self.selection - list_height + 1
         visible = claims[start_idx : start_idx + list_height]
+        self.list_row_start = row + row_offset
+        self.list_visible_count = len(visible)
+        self.list_start_idx = start_idx
         
         for idx, claim in enumerate(visible):
             actual_idx = start_idx + idx

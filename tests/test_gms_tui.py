@@ -131,6 +131,19 @@ class TestGMSTui(unittest.TestCase):
         self.assertEqual(len(res5), 1)
         self.assertEqual(res5[0]["fact_key"], "semantic:k1")
 
+    def test_tab_region_hit_testing(self):
+        regions = gms_tui.compute_tab_regions(("Summary", "Quarantine", "Trust", "Claims"))
+        self.assertEqual(gms_tui.find_tab_index_at_x(regions[0]["x_start"], regions), 0)
+        self.assertEqual(gms_tui.find_tab_index_at_x(regions[1]["x_start"], regions), 1)
+        self.assertEqual(gms_tui.find_tab_index_at_x(regions[3]["x_end"], regions), 3)
+        self.assertIsNone(gms_tui.find_tab_index_at_x(0, regions))
+
+    def test_list_row_hit_testing(self):
+        self.assertEqual(gms_tui.find_list_index_at_y(6, 5, 3, 0), 1)
+        self.assertEqual(gms_tui.find_list_index_at_y(8, 5, 4, 10), 13)
+        self.assertIsNone(gms_tui.find_list_index_at_y(4, 5, 3, 0))
+        self.assertIsNone(gms_tui.find_list_index_at_y(9, 5, 3, 0))
+
     def test_get_quarantine_detail_and_formatting(self):
         self._seed_quarantine()
         items = gms_tui.load_dashboard_data()["quarantines"]
@@ -212,4 +225,3 @@ class TestGMSTui(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
