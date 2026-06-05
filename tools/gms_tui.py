@@ -38,6 +38,13 @@ def load_dashboard_data(claim_limit: int = 50) -> dict:
         gms_inspect.DB_PATH = old_inspect_db
 
     quarantines = _safe_json(memory_mcp_server.tool_mem_get_quarantine({}))
+    if isinstance(quarantines, list):
+        for q in quarantines:
+            if "key" in q and "fact_key" not in q:
+                q["fact_key"] = q["key"]
+    else:
+        quarantines = []
+
     reputations = _safe_json(memory_mcp_server.tool_mem_get_reputations({}))
     retention = _safe_json(memory_mcp_server.tool_mem_retention_report({}))
     calibration = _safe_json(memory_mcp_server.tool_mem_calibration_report({}))
@@ -49,7 +56,7 @@ def load_dashboard_data(claim_limit: int = 50) -> dict:
         try:
             cursor.execute(
                 """
-                SELECT claim_id, memory_kind, memory_key, value, agent_id, status, confidence, contradiction_type, created_at
+                SELECT claim_id, memory_kind, memory_key, value, agent_id, branch, status, confidence, contradiction_type, created_at
                 FROM gms_claims
                 ORDER BY claim_id DESC
                 LIMIT ?
@@ -64,10 +71,11 @@ def load_dashboard_data(claim_limit: int = 50) -> dict:
                     "memory_key": row[2],
                     "value": row[3],
                     "agent_id": row[4],
-                    "status": row[5],
-                    "confidence": row[6],
-                    "contradiction_type": row[7],
-                    "created_at": row[8],
+                    "branch": row[5],
+                    "status": row[6],
+                    "confidence": row[7],
+                    "contradiction_type": row[8],
+                    "created_at": row[9],
                 }
                 for row in rows
             ]
@@ -77,7 +85,7 @@ def load_dashboard_data(claim_limit: int = 50) -> dict:
 
     return {
         "snapshot": snapshot,
-        "quarantines": quarantines if isinstance(quarantines, list) else [],
+        "quarantines": quarantines,
         "reputations": reputations if isinstance(reputations, list) else [],
         "retention": retention if isinstance(retention, dict) else {},
         "calibration": calibration if isinstance(calibration, dict) else {},
@@ -104,18 +112,269 @@ def review_quarantine_item(item: dict, rating: str, reviewer: str = "TUI", ratio
     })
 
 
+def filter_items(items: list[dict], query: str) -> list[dict]:
+    if not query:
+        return items
+    query_lower = query.lower()
+    
+    if ":" in query_lower:
+        parts = query_lower.split(":", 1)
+        prefix = parts[0].strip()
+        val = parts[1].strip()
+        if prefix == "agent":
+            return [item for item in items if val in str(item.get("agent_id", "")).lower()]
+        elif prefix == "branch":
+            return [item for item in items if val in str(item.get("branch", "")).lower()]
+        elif prefix in ("key", "project"):
+            return [
+                item for item in items 
+                if val in str(item.get("fact_key", item.get("key", item.get("memory_key", "")))).lower()
+            ]
+        elif prefix == "kind":
+            return [item for item in items if val in str(item.get("memory_kind", "")).lower()]
+        elif prefix == "status":
+            return [item for item in items if val in str(item.get("status", "")).lower()]
+            
+    results = []
+    for item in items:
+        fields = [
+            str(item.get("agent_id", "")),
+            str(item.get("branch", "")),
+            str(item.get("fact_key", item.get("key", item.get("memory_key", "")))),
+            str(item.get("value", "")),
+            str(item.get("memory_kind", "")),
+            str(item.get("status", ""))
+        ]
+        if any(query_lower in f.lower() for f in fields):
+            results.append(item)
+    return results
+
+
+def get_quarantine_detail(item: dict) -> dict:
+    key = item.get("fact_key") or item.get("key") or ""
+    agent_id = item.get("agent_id", "")
+    kind, real_key = memory_mcp_server.parse_prov_key(key)
+    
+    try:
+        proposing_agent_trust = memory_mcp_server.get_agent_trust(agent_id)
+    except Exception:
+        proposing_agent_trust = 0.5
+        
+    try:
+        rec_summary = _safe_json(memory_mcp_server.tool_mem_get_recommendation_summary({
+            "key": key,
+            "agent_id": agent_id,
+        }))
+    except Exception:
+        rec_summary = {}
+        
+    try:
+        reviews = memory_mcp_server.get_quarantine_reviews(key, agent_id)
+    except Exception:
+        reviews = []
+        
+    conflicting_claim = None
+    if DB_PATH.exists():
+        try:
+            conn = sqlite3.connect(str(DB_PATH))
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT claim_id, value, agent_id, branch, confidence, created_at
+                FROM gms_claims
+                WHERE memory_kind = ? AND memory_key = ? AND status = 'active'
+                ORDER BY claim_id DESC
+                LIMIT 1
+                """,
+                (kind, real_key),
+            )
+            row = cursor.fetchone()
+            if row:
+                conflicting_claim = {
+                    "claim_id": row[0],
+                    "value": row[1],
+                    "agent_id": row[2],
+                    "branch": row[3],
+                    "confidence": row[4],
+                    "created_at": row[5],
+                }
+        except sqlite3.OperationalError:
+            pass
+        finally:
+            conn.close()
+            
+    return {
+        "item": item,
+        "proposing_agent_trust": proposing_agent_trust,
+        "recommendation": rec_summary,
+        "reviews": reviews,
+        "conflicting_claim": conflicting_claim,
+    }
+
+
+def get_claim_detail(claim: dict) -> dict:
+    kind = claim.get("memory_kind", "")
+    key = claim.get("memory_key", "")
+    claim_id = claim.get("claim_id")
+    
+    history = []
+    if DB_PATH.exists() and kind and key:
+        try:
+            conn = sqlite3.connect(str(DB_PATH))
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT claim_id, value, agent_id, branch, status, confidence, contradiction_type, created_at
+                FROM gms_claims
+                WHERE memory_kind = ? AND memory_key = ? AND claim_id != ?
+                ORDER BY claim_id DESC
+                """,
+                (kind, key, claim_id),
+            )
+            rows = cursor.fetchall()
+            history = [
+                {
+                    "claim_id": row[0],
+                    "value": row[1],
+                    "agent_id": row[2],
+                    "branch": row[3],
+                    "status": row[4],
+                    "confidence": row[5],
+                    "contradiction_type": row[6],
+                    "created_at": row[7],
+                }
+                for row in rows
+            ]
+        except sqlite3.OperationalError:
+            pass
+        finally:
+            conn.close()
+            
+    return {
+        "claim": claim,
+        "history": history,
+    }
+
+
+def format_quarantine_detail_lines(detail: dict, width: int) -> list[str]:
+    item = detail["item"]
+    key = item.get("fact_key") or item.get("key") or ""
+    val = item.get("value", "")
+    agent = item.get("agent_id", "")
+    branch = item.get("branch", "")
+    ts = item.get("timestamp", "")
+    trust = detail["proposing_agent_trust"]
+    rec = detail["recommendation"]
+    reviews = detail["reviews"]
+    conflict = detail["conflicting_claim"]
+    
+    lines = [
+        "=== QUARANTINE DETAIL VIEW ===",
+        f"Key:        {key}",
+        f"Value:      {val}",
+        f"Agent ID:   {agent} (Trust: {trust:.3f})",
+        f"Branch:     {branch}",
+        f"Timestamp:  {ts}",
+        "",
+        "--- Recommendation ---",
+        f"Outcome:    {rec.get('recommendation', 'neutral')} (Score: {rec.get('score', 0.5)})",
+        f"Weights:    endorse={rec.get('endorse_weight', 0.0)} reject={rec.get('reject_weight', 0.0)} abstain={rec.get('abstain_weight', 0.0)}",
+        "",
+    ]
+    
+    if conflict:
+        lines.extend([
+            "--- Conflicting Active Fact ---",
+            f"Active Val: {conflict['value']}",
+            f"Set by:     {conflict['agent_id']} (Confidence: {conflict['confidence']:.2f}) on branch '{conflict['branch']}'",
+            f"Created:    {conflict['created_at']}",
+            "",
+        ])
+    else:
+        lines.extend([
+            "--- Conflicting Active Fact ---",
+            "No active fact exists with this key.",
+            "",
+        ])
+        
+    lines.append("--- Reviews ---")
+    if not reviews:
+        lines.append("No reviews recorded yet.")
+    for idx, rev in enumerate(reviews):
+        lines.append(f"[{idx+1}] Reviewer: {rev['reviewer_id']} ({rev['rating'].upper()}) - trust={rev['trust']:.3f} @ {rev['timestamp']}")
+        if rev.get("rationale"):
+            lines.append(f"    Rationale: {rev['rationale']}")
+            
+    return lines
+
+
+def format_claim_detail_lines(detail: dict, width: int) -> list[str]:
+    claim = detail["claim"]
+    history = detail["history"]
+    
+    conf = "n/a" if claim["confidence"] is None else f"{claim['confidence']:.2f}"
+    lines = [
+        "=== CLAIM DETAIL VIEW ===",
+        f"Claim ID:      #{claim['claim_id']}",
+        f"Key:           {claim['memory_kind']}:{claim['memory_key']}",
+        f"Value:         {claim['value']}",
+        f"Agent ID:      {claim['agent_id']}",
+        f"Status:        {claim['status'].upper()}",
+        f"Confidence:    {conf}",
+        f"Contradiction: {claim['contradiction_type'] or 'none'}",
+        f"Created At:    {claim['created_at']}",
+        "",
+        "--- Key History (Other Claims) ---",
+    ]
+    
+    if not history:
+        lines.append("No other claims found for this key.")
+    for idx, hist in enumerate(history):
+        h_conf = "n/a" if hist["confidence"] is None else f"{hist['confidence']:.2f}"
+        lines.append(
+            f"#{hist['claim_id']} [{hist['status']}] val={hist['value']} by {hist['agent_id']} "
+            f"conf={h_conf} contra={hist['contradiction_type'] or 'none'} @ {hist['created_at']}"
+        )
+        
+    return lines
+
+
+def format_selected_claim_detail(claim: dict, width: int) -> list[str]:
+    if not claim:
+        return ["No claim selected."]
+    conf = "n/a" if claim.get("confidence") is None else f"{claim['confidence']:.2f}"
+    lines = [
+        "--- Selected Claim Detail ---",
+        f"ID:          #{claim.get('claim_id')}",
+        f"Key:         {claim.get('memory_kind')}:{claim.get('memory_key')}",
+        f"Value:       {claim.get('value')}",
+        f"Agent:       {claim.get('agent_id')} (Branch: {claim.get('branch')})",
+        f"Status:      {str(claim.get('status')).upper()}",
+        f"Confidence:  {conf}",
+        f"Conflict:    {claim.get('contradiction_type') or 'none'}",
+        f"Created:     {claim.get('created_at')}",
+    ]
+    return lines
+
+
+
 class GMSTui:
     TABS = ("Summary", "Quarantine", "Trust", "Claims")
 
     def __init__(self):
         self.tab_index = 0
         self.selection = 0
-        self.status = "r refresh | tab switch | q quit"
+        self.detail_mode = False
+        self.detail_scroll = 0
+        self.filter_query = ""
+        self.status = "r refresh | tab switch | q quit | f filter | c clear"
         self.data = load_dashboard_data()
 
     def refresh(self):
         self.data = load_dashboard_data()
         self.selection = 0
+        self.detail_mode = False
+        self.detail_scroll = 0
         self.status = "Data refreshed."
 
     def run(self, stdscr):
@@ -124,20 +383,58 @@ class GMSTui:
         while True:
             self._draw(stdscr)
             key = stdscr.getch()
-            if key in (ord("q"), 27):
-                break
-            if key in (ord("\t"), curses.KEY_RIGHT, ord("l")):
+            
+            # Handle quit or exit detail view
+            if key == ord("q"):
+                if self.detail_mode:
+                    self.detail_mode = False
+                    self.detail_scroll = 0
+                    self.status = "Returned to list."
+                else:
+                    break
+            elif key == 27:  # Esc
+                if self.detail_mode:
+                    self.detail_mode = False
+                    self.detail_scroll = 0
+                    self.status = "Returned to list."
+                else:
+                    break
+            elif key in (ord("\t"), curses.KEY_RIGHT, ord("l")) and not self.detail_mode:
                 self.tab_index = (self.tab_index + 1) % len(self.TABS)
                 self.selection = 0
-            elif key in (curses.KEY_LEFT, ord("h")):
+                self.detail_mode = False
+                self.detail_scroll = 0
+            elif key in (curses.KEY_LEFT, ord("h")) and not self.detail_mode:
                 self.tab_index = (self.tab_index - 1) % len(self.TABS)
                 self.selection = 0
+                self.detail_mode = False
+                self.detail_scroll = 0
             elif key in (curses.KEY_DOWN, ord("j")):
-                self.selection += 1
+                if self.detail_mode:
+                    self.detail_scroll += 1
+                else:
+                    self.selection += 1
             elif key in (curses.KEY_UP, ord("k")):
-                self.selection = max(0, self.selection - 1)
-            elif key == ord("r"):
+                if self.detail_mode:
+                    self.detail_scroll = max(0, self.detail_scroll - 1)
+                else:
+                    self.selection = max(0, self.selection - 1)
+            elif key == ord("r") and not self.detail_mode:
                 self.refresh()
+            elif key == ord("f") and not self.detail_mode:
+                self.filter_query = self._prompt(stdscr, "Filter (e.g. agent:name, branch:name, key:kw, or query): ")
+                self.selection = 0
+                self.status = f"Filter applied: '{self.filter_query}'"
+            elif key == ord("c") and not self.detail_mode:
+                self.filter_query = ""
+                self.selection = 0
+                self.status = "Filter cleared."
+            elif key in (10, 13, curses.KEY_ENTER):
+                tab = self.TABS[self.tab_index]
+                if tab in ("Quarantine", "Claims"):
+                    self.detail_mode = not self.detail_mode
+                    self.detail_scroll = 0
+                    self.status = "Detail view opened." if self.detail_mode else "Returned to list."
             elif self.TABS[self.tab_index] == "Quarantine":
                 if key == ord("p"):
                     self._act_on_quarantine("promote")
@@ -151,11 +448,18 @@ class GMSTui:
                     self._review_quarantine("abstain", stdscr)
 
     def _current_quarantine(self) -> dict | None:
-        items = self.data["quarantines"]
+        items = filter_items(self.data["quarantines"], self.filter_query)
         if not items:
             return None
         self.selection = max(0, min(self.selection, len(items) - 1))
         return items[self.selection]
+
+    def _current_claim(self) -> dict | None:
+        claims = filter_items(self.data["claims"], self.filter_query)
+        if not claims:
+            return None
+        self.selection = max(0, min(self.selection, len(claims) - 1))
+        return claims[self.selection]
 
     def _act_on_quarantine(self, action: str):
         item = self._current_quarantine()
@@ -164,6 +468,7 @@ class GMSTui:
             return
         res = resolve_quarantine_item(item, action)
         self.status = res.splitlines()[0]
+        self.detail_mode = False
         self.refresh()
 
     def _review_quarantine(self, rating: str, stdscr):
@@ -174,6 +479,7 @@ class GMSTui:
         rationale = self._prompt(stdscr, f"{rating} rationale (optional): ")
         res = review_quarantine_item(item, rating, rationale=rationale)
         self.status = res.splitlines()[0]
+        self.detail_mode = False
         self.refresh()
 
     def _prompt(self, stdscr, label: str) -> str:
@@ -198,18 +504,49 @@ class GMSTui:
         )
         stdscr.addnstr(0, 0, f"GMS TUI  {tab_line}", width - 1, curses.A_BOLD)
         stdscr.hline(1, 0, "-", max(0, width - 1))
+        
         tab = self.TABS[self.tab_index]
-        if tab == "Summary":
-            self._draw_summary(stdscr, 2, width, height)
-        elif tab == "Quarantine":
-            self._draw_quarantine(stdscr, 2, width, height)
-        elif tab == "Trust":
-            self._draw_trust(stdscr, 2, width, height)
+        if self.detail_mode:
+            self._draw_detail(stdscr, 2, width, height)
         else:
-            self._draw_claims(stdscr, 2, width, height)
+            if tab == "Summary":
+                self._draw_summary(stdscr, 2, width, height)
+            elif tab == "Quarantine":
+                self._draw_quarantine(stdscr, 2, width, height)
+            elif tab == "Trust":
+                self._draw_trust(stdscr, 2, width, height)
+            else:
+                self._draw_claims(stdscr, 2, width, height)
+                
         stdscr.hline(height - 2, 0, "-", max(0, width - 1))
         stdscr.addnstr(height - 1, 0, self.status, width - 1)
         stdscr.refresh()
+
+    def _draw_detail(self, stdscr, row: int, width: int, height: int):
+        tab = self.TABS[self.tab_index]
+        lines = []
+        if tab == "Quarantine":
+            selected = self._current_quarantine()
+            if selected:
+                detail = get_quarantine_detail(selected)
+                lines = format_quarantine_detail_lines(detail, width)
+            else:
+                lines = ["No quarantine item selected."]
+        elif tab == "Claims":
+            selected = self._current_claim()
+            if selected:
+                detail = get_claim_detail(selected)
+                lines = format_claim_detail_lines(detail, width)
+            else:
+                lines = ["No claim selected."]
+        else:
+            lines = ["Detail view not supported for this tab."]
+            
+        max_lines = max(0, height - row - 2)
+        self.detail_scroll = max(0, min(self.detail_scroll, max(0, len(lines) - max_lines)))
+        visible_lines = lines[self.detail_scroll : self.detail_scroll + max_lines]
+        for idx, line in enumerate(visible_lines):
+            stdscr.addnstr(row + idx, 0, line, width - 1)
 
     def _draw_summary(self, stdscr, row: int, width: int, height: int):
         snap = self.data["snapshot"]
@@ -233,23 +570,32 @@ class GMSTui:
         self._draw_lines(stdscr, row, width, height, lines)
 
     def _draw_quarantine(self, stdscr, row: int, width: int, height: int):
-        items = self.data["quarantines"]
-        header = "Quarantine: j/k move | p promote | d discard | e endorse | x reject | a abstain"
+        items = filter_items(self.data["quarantines"], self.filter_query)
+        header = "Quarantine: j/k move | Enter view | p promote | d discard | e endorse | x reject | a abstain | f filter | c clear"
         stdscr.addnstr(row, 0, header, width - 1, curses.A_BOLD)
+        if self.filter_query:
+            stdscr.addnstr(row + 1, 0, f"Filter active: '{self.filter_query}'", width - 1, curses.A_REVERSE)
+            row_offset = 3
+        else:
+            row_offset = 2
+            
         if not items:
-            stdscr.addnstr(row + 2, 0, "No quarantined facts.", width - 1)
+            stdscr.addnstr(row + row_offset, 0, "No quarantined facts.", width - 1)
             return
+            
         self.selection = max(0, min(self.selection, len(items) - 1))
-        visible = items[: max(1, height - row - 4)]
+        visible = items[: max(1, height - row - row_offset - 4)]
         for idx, item in enumerate(visible):
             marker = ">" if idx == self.selection else " "
-            line = f"{marker} {item['fact_key']} | {item['agent_id']} | {item['branch']} | {item['timestamp']}"
+            key = item.get("fact_key") or item.get("key") or ""
+            line = f"{marker} {key} | {item['agent_id']} | {item['branch']} | {item['timestamp']}"
             attr = curses.A_REVERSE if idx == self.selection else curses.A_NORMAL
-            stdscr.addnstr(row + 2 + idx, 0, line, width - 1, attr)
+            stdscr.addnstr(row + row_offset + idx, 0, line, width - 1, attr)
+            
         selected = self._current_quarantine()
         if selected:
             summary = _safe_json(memory_mcp_server.tool_mem_get_recommendation_summary({
-                "key": selected["fact_key"],
+                "key": selected.get("fact_key") or selected.get("key") or "",
                 "agent_id": selected["agent_id"],
             }))
             detail = (
@@ -270,15 +616,49 @@ class GMSTui:
         self._draw_lines(stdscr, row, width, height, lines)
 
     def _draw_claims(self, stdscr, row: int, width: int, height: int):
-        claims = self.data["claims"]
-        lines = ["Recent claims:"]
-        for claim in claims[: max(1, height - row - 3)]:
+        claims = filter_items(self.data["claims"], self.filter_query)
+        header = "Claims: j/k move | Enter view | f filter | c clear"
+        stdscr.addnstr(row, 0, header, width - 1, curses.A_BOLD)
+        if self.filter_query:
+            stdscr.addnstr(row + 1, 0, f"Filter active: '{self.filter_query}'", width - 1, curses.A_REVERSE)
+            row_offset = 3
+        else:
+            row_offset = 2
+            
+        if not claims:
+            stdscr.addnstr(row + row_offset, 0, "No claims matched.", width - 1)
+            return
+            
+        self.selection = max(0, min(self.selection, len(claims) - 1))
+        
+        selected = self._current_claim()
+        detail_lines = format_selected_claim_detail(selected, width) if selected else []
+        
+        if height > row + row_offset + len(detail_lines) + 2:
+            list_height = height - row - row_offset - len(detail_lines) - 2
+            list_height = max(1, list_height)
+        else:
+            list_height = max(1, height - row - row_offset - 2)
+            detail_lines = []
+            
+        start_idx = 0
+        if self.selection >= list_height:
+            start_idx = self.selection - list_height + 1
+        visible = claims[start_idx : start_idx + list_height]
+        
+        for idx, claim in enumerate(visible):
+            actual_idx = start_idx + idx
+            marker = ">" if actual_idx == self.selection else " "
             conf = "n/a" if claim["confidence"] is None else f"{claim['confidence']:.2f}"
-            lines.append(
-                f"#{claim['claim_id']} {claim['memory_kind']}:{claim['memory_key']} "
-                f"[{claim['status']}] {claim['agent_id']} conf={conf}"
-            )
-        self._draw_lines(stdscr, row, width, height, lines)
+            line = f"{marker} #{claim['claim_id']} {claim['memory_kind']}:{claim['memory_key']} [{claim['status']}] {claim['agent_id']} conf={conf}"
+            attr = curses.A_REVERSE if actual_idx == self.selection else curses.A_NORMAL
+            stdscr.addnstr(row + row_offset + idx, 0, line, width - 1, attr)
+            
+        if detail_lines:
+            detail_start_row = height - len(detail_lines) - 2
+            for idx, line in enumerate(detail_lines):
+                stdscr.addnstr(detail_start_row + idx, 0, line, width - 1)
+
 
     @staticmethod
     def _draw_lines(stdscr, row: int, width: int, height: int, lines: list[str]):
