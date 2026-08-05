@@ -102,6 +102,24 @@ Claims move through explicit lifecycle states:
 
 This is the main mechanism that replaces silent overwrite. The current facts view is a projection. The claim ledger is the history.
 
+### Task Handoff State
+
+Durable memory is not a substitute for in-progress work state. GMS keeps
+cross-agent coordination in the same local SQLite database, but outside the
+typed fact projection:
+
+- `gms_tasks` stores a project-scoped task, its owner, lease, lifecycle state,
+  and optimistic revision.
+- `gms_task_checkpoints` stores immutable, versioned state bundles and
+  references to artifacts, claims, and episodes.
+- `gms_handoffs` stores the recipient-facing summary: completed work, next
+  action, blockers, acceptance criteria, and bounded context.
+
+A claim, checkpoint, handoff, and completion must carry the task's expected
+revision. A stale operation returns the current task rather than overwriting it.
+Claiming a targeted handoff records acknowledgement. This provides local task
+continuity without promoting transient work state into global facts.
+
 ## Write Path
 
 ### Normal Fact Promotion
@@ -245,6 +263,11 @@ The CLI is the stable fallback and scripting surface. It supports:
 ### MCP
 
 MCP is the preferred agent-facing interface. It exposes the same trust-aware operations without requiring shell execution in the caller.
+
+It also exposes task creation, revision-safe claiming, checkpointing, handoff,
+resumption, completion, and project-state inspection. These tools are a local
+control plane modelled around A2A-style tasks and artifacts; an external A2A
+transport can be added later without changing GMS storage semantics.
 
 ### Terminal UI
 

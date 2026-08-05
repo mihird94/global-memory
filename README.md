@@ -1,215 +1,74 @@
-# Global Memory System
+# Brain — Central Memory & Knowledge System
 
-GMS is a local-first memory system for multi-agent workflows. It exposes the same memory substrate through an MCP server, a Python CLI, and an SSH-friendly terminal UI.
+**Brain** (formerly Global Memory System / GMS) is the local-first, zero-cloud central memory and knowledge engine for multi-agent workflows in the Personal AI OS (Mihir-OS).
 
-This repository is the project home for the current `v2.1.x` line.
+It exposes a unified memory substrate through stdio MCP server (`brain_*` / `mem_*`), the single-syllable `brain` CLI operator, and an SSH-friendly terminal UI.
 
-## What It Does
+---
 
-- Stores typed memory across `semantic`, `operational`, `procedural`, and episodic layers
-- Applies trust-gated writes with quarantine, reviewer weighting, and claim history
-- Consolidates episodic activity through a nightly Dream Cycle
-- Supports semantic retrieval, claim inspection, drift reporting, calibration reporting, and retention pruning
-- Provides an SSH-friendly curses TUI for day-to-day operations
+## Key Capabilities
+
+- **Sub-5ms Temporal Knowledge Graph RAG:** Local SQLite graph substrate (`gms_entities` & `gms_relationships`) with `valid_from` / `valid_to` edge timestamps and NetworkX 1-hop & 2-hop topological traversal.
+- **LightRAG Dual-Level Retrieval:** Supports Low-Level (exact entity-relation triples), High-Level (thematic vector RRF), and Hybrid retrieval.
+- **Instant Memory Timeline (`brain latest`):** Fetch recent log milestones and claim updates instantly without guessing dates.
+- **Cline Memory Bank Projects (`brain project-*`):** Standardized, structured project memory banks (`projectBrief.md`, `systemPatterns.md`, `techContext.md`, `activeContext.md`, `progress.md`) stored under `~/memories/projects/<project>/`.
+- **Per-Day Episodic Journal Logs:** Per-day markdown history files in `~/memories/episodic/history/YYYY-MM-DD.md` with nightly automated Dream Cycle consolidation (03:00 cron).
+- **Trust-Gated Claim Ledger:** Versioned claim provenance, Jøsang-style Beta reputation, and reviewer-weighted quarantine resolution.
+
+---
 
 ## Main Entry Points
 
-- CLI wrapper: `tools/memoryctl`
-- CLI module: `tools/memoryctl.py`
-- MCP server: `tools/memory_mcp_server.py`
-- Dream Cycle: `tools/dream_cycle.py`
-- TUI: `memoryctl tui`
-- Eval harness: `tools/gms_eval.py`
+- **Primary CLI:** `brain` (symlinked via `~/.local/bin/brain` $\to$ `tools/memoryctl.py`)
+- **Backward Compatible CLI Alias:** `memoryctl`
+- **MCP Server:** `tools/memory_mcp_server.py` (Exposes `brain_*` and `mem_*` stdio JSON-RPC 2.0 tools)
+- **Dream Cycle:** `tools/dream_cycle.py` (03:00 cron consolidation)
+- **Terminal UI:** `brain tui`
+- **Eval Harness:** `tools/gms_eval.py`
 
-## Repository Docs
+---
 
-- [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md): implemented architecture and data flow
-- [ROADMAP.md](ROADMAP.md): roadmap, research-derived direction, and remaining work
-- [PROJECT_MIGRATION_PLAN.md](PROJECT_MIGRATION_PLAN.md): move from global skills to project scope
-- [research/README.md](research/README.md): research corpus index
-- [SKILL.md](SKILL.md): skill-facing usage contract for agents
-
-## Requirements
-
-- Python 3.11+ recommended
-- Optional local virtualenv at `.venv/`
-- Optional Ollama endpoint for embeddings and Dream Cycle fallback LLM work
-- A writable memory root, defaulting to `~/memories`
-
-Important environment variables:
-
-- `MEMORY_ROOT`: override memory storage root
-- `OLLAMA_URL`: override local Ollama endpoint
-- `MEMORY_EMBED_MODEL`: override embedding model
-- `MEMORYCTL_PATH`: override the CLI path used by the MCP server
-
-## Installation
-
-Use the wrapper directly from the repo:
+## Quick Start Commands
 
 ```bash
-cd /path/to/global-memory
-tools/memoryctl --help
+# 1. Start-up context bundle
+brain start-context
+
+# 2. Sub-5ms Knowledge Graph topology lookup
+brain graph-show Codex
+
+# 3. LightRAG search (Low-level entity triples + High-level RRF)
+brain index-query "Optimus execution contract"
+
+# 4. Instant memory timeline
+brain latest --limit 10
+
+# 5. Project Memory Bank management (Cline style)
+brain project-init alphaos
+brain project-get alphaos --section active
+brain project-update alphaos --section active --content "Completed milestone X"
+
+# 6. Log an episodic milestone
+brain log --agent "Antigravity" --title "Deployed Brain Engine" --note "Verified sub-5ms graph lookups."
 ```
 
-The wrapper prefers `.venv/bin/python` when present and falls back to `python3`.
+---
 
-If you want `memoryctl` on your shell `PATH`, symlink the wrapper:
+## MCP Tools Reference (`brain_*` & `mem_*`)
 
-```bash
-ln -sf /path/to/global-memory/tools/memoryctl ~/.local/bin/memoryctl
-```
+- `brain_session_start` / `mem_session_start`: Load complete context bundle on session start.
+- `brain_search` / `mem_search`: LightRAG dual-level search (`mode="low"`, `"high"`, `"hybrid"`).
+- `brain_graph_query` / `mem_graph_query`: Query Knowledge Graph 1-hop & 2-hop Mermaid topology.
+- `brain_graph_extract` / `mem_graph_extract`: Extract `(Subject -> Predicate -> Object)` triples from text.
+- `brain_latest` / `mem_latest`: Instant timeline lookup of recent milestones and claims.
+- `brain_project` / `mem_project`: Manage Cline Memory Bank style project documentation.
+- `brain_save_typed` / `mem_save_typed`: Save typed memory facts (semantic, operational, procedural).
+- `brain_log_event` / `mem_log_event`: Append episodic milestone entry.
 
-## MCP Usage
+---
 
-Codex and other MCP-capable agents can register the server at `tools/memory_mcp_server.py`.
+## Repository Documentation
 
-Example `~/.codex/config.toml` shape:
-
-```toml
-[[mcp_servers]]
-name = "memory"
-command = ["/path/to/global-memory/.venv/bin/python", "/path/to/global-memory/tools/memory_mcp_server.py"]
-```
-
-Core MCP tools:
-
-- `mem_session_start`
-- `mem_session_end`
-- `mem_judge`
-- `mem_save_fact`
-- `mem_log_event`
-- `mem_add_lesson`
-- `mem_search`
-- `mem_context`
-- `mem_get_facts`
-- `mem_stats`
-
-## CLI Usage
-
-Show the command surface:
-
-```bash
-tools/memoryctl --help
-```
-
-Common commands:
-
-```bash
-tools/memoryctl start-context
-tools/memoryctl find trust
-tools/memoryctl log --agent Codex --title "Docs update" --note "Added README and system design documentation."
-tools/memoryctl fact-set gms_repo_path "/path/to/global-memory"
-tools/memoryctl trust-list
-tools/memoryctl quarantine-list
-tools/memoryctl claims-list --limit 20
-tools/memoryctl drift-status
-tools/memoryctl calibration-report
-tools/memoryctl retention-report
-```
-
-Quarantine workflow:
-
-```bash
-tools/memoryctl quarantine-review-add --key semantic:deploy_policy --agent-id worker --reviewer-id reviewer --rating endorse --rationale "Matches observed behavior."
-tools/memoryctl quarantine-recommendation --key semantic:deploy_policy --agent-id worker
-tools/memoryctl quarantine-resolve --key semantic:deploy_policy --agent-id worker --action promote --agent operator
-```
-
-## Terminal UI
-
-Launch:
-
-```bash
-tools/memoryctl tui
-```
-
-Keyboard:
-
-- `Tab`, `h`, `l`, or arrow keys: switch tabs
-- `j` and `k`: move selection
-- `Enter`: open selected detail view
-- `r`: refresh
-- `f`: set a filter
-- `c`: clear the active filter
-- `q` or `Esc`: back out or quit
-
-Quarantine actions:
-
-- `p`: promote
-- `d`: discard
-- `e`: endorse
-- `x`: reject
-- `a`: abstain
-
-Mouse:
-
-- Left-click tabs to switch views
-- Left-click list rows in `Quarantine` and `Claims`
-- Left-click in detail view to return
-
-If you run inside `tmux`, enable mouse passthrough:
-
-```bash
-tmux set -g mouse on
-```
-
-## Memory Layout
-
-Default layout under `MEMORY_ROOT`:
-
-```text
-semantic/
-operational/
-procedural/
-episodic/history/
-lessons/
-gms_trust.sqlite
-```
-
-High-level storage model:
-
-- `facts.json` files hold current typed fact state
-- `gms_trust.sqlite` holds trust, claims, provenance, quarantine, procedures, and graph relations
-- episodic markdown files preserve activity history
-
-## Dream Cycle
-
-The Dream Cycle is the nightly consolidation job:
-
-- Reads recent episodic material
-- Extracts durable facts through a bounded provider cascade
-- Routes new facts through the trust gate instead of writing directly
-- Optionally rebuilds the embedding index
-- Produces retention and calibration signals
-
-The repo expects this to run from cron rather than manual invocation during normal use.
-
-## Evaluation
-
-Run the full test suite:
-
-```bash
-python3 -m unittest discover -s tests -v
-```
-
-Run the deterministic eval harness:
-
-```bash
-python3 tools/gms_eval.py
-```
-
-## Current Status
-
-The architectural core is in place:
-
-- trust-gated write path
-- typed routing
-- versioned claims
-- reviewer-weighted quarantine
-- semantic drift reporting
-- Dawid-Skene-style calibration
-- retention pruning
-- curses TUI
-
-The remaining work is mostly operator-surface refinement and deeper benchmark coverage. See [ROADMAP.md](ROADMAP.md).
+- [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md): Implemented architecture, database schemas, and data flow.
+- [ROADMAP.md](ROADMAP.md): Product roadmap and research benchmarks.
+- [SKILL.md](SKILL.md): Skill-facing usage contract for agents.

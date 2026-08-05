@@ -350,9 +350,8 @@ def append_dream_cycle_log(new_facts_count: int, provider: str = "unknown") -> N
     """Write a brief record to episodic journal so agents know the cycle ran."""
     today = datetime.now().strftime("%Y-%m-%d")
     now = datetime.now().strftime("%H:%M")
-    daily = MEM_ROOT / "episodic" / "history" / f"{today}.md"
-    journal = MEM_ROOT / "episodic" / "journal.md"
-    target = daily if daily.exists() else journal
+    target = MEM_ROOT / "episodic" / "history" / f"{today}.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
 
     entry = (
         f"\n### {today} [{now}] - DreamCycle - Nightly Consolidation\n"

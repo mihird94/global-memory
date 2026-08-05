@@ -43,7 +43,7 @@ import sys
 import subprocess
 import time
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib import request
@@ -173,6 +173,61 @@ def init_db():
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS gms_tasks (
+            task_id TEXT PRIMARY KEY,
+            project TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL,
+            objective TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'open',
+            owner_agent TEXT,
+            lease_expires_at TEXT,
+            revision INTEGER NOT NULL DEFAULT 1,
+            parent_task_id TEXT,
+            created_by TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS gms_task_checkpoints (
+            checkpoint_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            agent_id TEXT NOT NULL,
+            label TEXT NOT NULL DEFAULT '',
+            state_json TEXT NOT NULL,
+            artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+            claim_refs_json TEXT NOT NULL DEFAULT '[]',
+            episode_refs_json TEXT NOT NULL DEFAULT '[]',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(task_id) REFERENCES gms_tasks(task_id),
+            UNIQUE(task_id, revision)
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS gms_handoffs (
+            handoff_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            source_agent TEXT NOT NULL,
+            target_agent TEXT,
+            objective TEXT NOT NULL DEFAULT '',
+            completed_work TEXT NOT NULL DEFAULT '',
+            next_action TEXT NOT NULL DEFAULT '',
+            blockers TEXT NOT NULL DEFAULT '',
+            acceptance_criteria TEXT NOT NULL DEFAULT '',
+            context_json TEXT NOT NULL DEFAULT '{}',
+            artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+            acknowledged_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(task_id) REFERENCES gms_tasks(task_id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_gms_tasks_status_project ON gms_tasks (status, project)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_gms_task_checkpoints_task ON gms_task_checkpoints (task_id, checkpoint_id DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_gms_handoffs_task ON gms_handoffs (task_id, handoff_id DESC)")
     try:
         cursor.execute("ALTER TABLE gms_claims ADD COLUMN confidence REAL DEFAULT 1.0")
     except sqlite3.OperationalError:
@@ -197,7 +252,25 @@ def init_db():
     conn.close()
 
 
+def _normalize_agent_id(agent_id: str) -> str:
+    if not agent_id:
+        return "unknown"
+    if agent_id.startswith("DreamCycle-"):
+        return agent_id
+    cleaned = agent_id.lower().replace("-", " ").replace("_", " ").strip()
+    if "gemini" in cleaned:
+        return "Gemini CLI"
+    if "codex" in cleaned:
+        return "Codex"
+    if "antigravity" in cleaned:
+        return "Antigravity"
+    if "mihir" in cleaned or "user" in cleaned:
+        return "Mihir"
+    return agent_id
+
+
 def get_agent_trust(agent_id: str) -> float:
+    agent_id = _normalize_agent_id(agent_id)
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute("SELECT alpha, beta FROM gms_agent_reputation WHERE agent_id = ?", (agent_id,))
@@ -213,11 +286,12 @@ def get_agent_trust(agent_id: str) -> float:
 
 
 def increment_agent_alpha(agent_id: str, amount: float = 1.0):
+    agent_id = _normalize_agent_id(agent_id)
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute("SELECT alpha FROM gms_agent_reputation WHERE agent_id = ?", (agent_id,))
     if not cursor.fetchone():
-        cursor.execute("INSERT INTO gms_agent_reputation (agent_id, alpha, beta) VALUES (?, ?, 0.0)", (agent_id, 1.0 + amount))
+        cursor.execute("INSERT INTO gms_agent_reputation (agent_id, alpha, beta) VALUES (?, ?, 0.0)", (agent_id, 10.0 + amount))
     else:
         cursor.execute("UPDATE gms_agent_reputation SET alpha = alpha + ?, last_updated = CURRENT_TIMESTAMP WHERE agent_id = ?", (amount, agent_id))
     conn.commit()
@@ -225,11 +299,12 @@ def increment_agent_alpha(agent_id: str, amount: float = 1.0):
 
 
 def increment_agent_beta(agent_id: str, amount: float = 1.0):
+    agent_id = _normalize_agent_id(agent_id)
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute("SELECT beta FROM gms_agent_reputation WHERE agent_id = ?", (agent_id,))
     if not cursor.fetchone():
-        cursor.execute("INSERT INTO gms_agent_reputation (agent_id, alpha, beta) VALUES (?, 1.0, ?)", (agent_id, amount))
+        cursor.execute("INSERT INTO gms_agent_reputation (agent_id, alpha, beta) VALUES (?, 10.0, ?)", (agent_id, amount))
     else:
         cursor.execute("UPDATE gms_agent_reputation SET beta = beta + ?, last_updated = CURRENT_TIMESTAMP WHERE agent_id = ?", (amount, agent_id))
     conn.commit()
@@ -512,6 +587,294 @@ def log_security_event(event_type: str, message: str):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Temporal Knowledge Graph & LightRAG Substrate
+# ──────────────────────────────────────────────────────────────────────────────
+
+def get_or_create_entity(conn: sqlite3.Connection, name: str, entity_type: str = "concept", summary: str = "") -> int:
+    name = name.strip()
+    if not name:
+        return 0
+    cursor = conn.cursor()
+    cursor.execute("SELECT entity_id FROM gms_entities WHERE LOWER(name) = LOWER(?)", (name,))
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+    cursor.execute(
+        "INSERT INTO gms_entities (name, entity_type, summary) VALUES (?, ?, ?)",
+        (name, entity_type, summary)
+    )
+    return cursor.lastrowid
+
+
+def record_graph_relationship(
+    subject: str,
+    predicate: str,
+    obj: str,
+    is_object_literal: bool = False,
+    subject_type: str = "concept",
+    object_type: str = "concept",
+    valid_from: str | None = None,
+    valid_to: str | None = None,
+    source_claim_id: int | None = None,
+) -> int:
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+
+    sub_id = get_or_create_entity(conn, subject, subject_type)
+    obj_id = None
+    obj_literal = None
+
+    if is_object_literal:
+        obj_literal = obj
+    else:
+        obj_id = get_or_create_entity(conn, obj, object_type)
+
+    now_iso = datetime.now().isoformat()
+    valid_from = valid_from or now_iso
+
+    cursor.execute(
+        """
+        SELECT relationship_id FROM gms_relationships
+        WHERE subject_entity_id = ? AND predicate = ? AND (object_entity_id = ? OR object_literal = ?)
+        """,
+        (sub_id, predicate, obj_id, obj_literal)
+    )
+    row = cursor.fetchone()
+    if row:
+        rel_id = row[0]
+        cursor.execute("UPDATE gms_relationships SET valid_to = NULL WHERE relationship_id = ?", (rel_id,))
+        conn.commit()
+        conn.close()
+        return rel_id
+
+    cursor.execute(
+        """
+        INSERT INTO gms_relationships (
+            subject_entity_id, predicate, object_entity_id, object_literal,
+            source_claim_id, valid_from, valid_to, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+        (sub_id, predicate, obj_id, obj_literal, source_claim_id, valid_from, valid_to)
+    )
+    rel_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return rel_id
+
+
+def extract_graph_triples(text: str) -> list[tuple[str, str, str]]:
+    """Extract (Subject, Predicate, Object) relationship triples from text using heuristic patterns."""
+    import re
+    triples = []
+    if not text:
+        return triples
+
+    # 1. Key-value style: "key: value" or "key = value"
+    kv_match = re.match(r"^([a-zA-Z0-9_\-\s]+)\s*[:=]\s*(.+)$", text.strip())
+    if kv_match:
+        subj = kv_match.group(1).strip()
+        obj = kv_match.group(2).strip()
+        if len(subj) < 60 and len(obj) < 200:
+            triples.append((subj, "configured_as", obj))
+
+    # 2. Verb relationship patterns (case-insensitive)
+    patterns = [
+        (r"([a-zA-Z0-9_\-\s]{1,40})\s+(uses|used|using)\s+([a-zA-Z0-9_\-\.\/]+)", "uses"),
+        (r"([a-zA-Z0-9_\-\s]{1,40})\s+(depends on|relies on|dependent on)\s+([a-zA-Z0-9_\-\.\/]+)", "depends_on"),
+        (r"([a-zA-Z0-9_\-\s]{1,40})\s+(created|implemented|built)\s+([a-zA-Z0-9_\-\.\/]+)", "created"),
+        (r"([a-zA-Z0-9_\-\s]{1,40})\s+(updated|modified|refactored)\s+([a-zA-Z0-9_\-\.\/]+)", "updated"),
+        (r"([a-zA-Z0-9_\-\s]{1,40})\s+(targets|routes to|points to)\s+([a-zA-Z0-9_\-\.\/]+)", "targets"),
+    ]
+
+    for pat, pred in patterns:
+        for m in re.finditer(pat, text, re.IGNORECASE):
+            sub = m.group(1).strip()
+            obj = m.group(3).strip()
+            if sub and obj and sub.lower() != obj.lower() and len(sub) > 1 and len(obj) > 1:
+                triples.append((sub, pred, obj))
+
+    return triples
+
+
+def query_entity_graph(entity_name: str, hops: int = 2, valid_at: str | None = None) -> dict:
+    import networkx as nx
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT entity_id, name, entity_type, summary FROM gms_entities")
+    entities = {row[0]: {"name": row[1], "type": row[2], "summary": row[3]} for row in cursor.fetchall()}
+
+    cursor.execute("""
+        SELECT relationship_id, subject_entity_id, predicate, object_entity_id, object_literal, valid_from, valid_to
+        FROM gms_relationships
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    G = nx.DiGraph()
+    for rel_id, sub_id, pred, obj_id, obj_lit, v_from, v_to in rows:
+        if valid_at:
+            if v_from and v_from > valid_at:
+                continue
+            if v_to and v_to <= valid_at:
+                continue
+        sub_name = entities.get(sub_id, {}).get("name", str(sub_id))
+        obj_name = entities.get(obj_id, {}).get("name", obj_lit) if obj_id else obj_lit
+        if sub_name and obj_name:
+            G.add_edge(sub_name, obj_name, predicate=pred, rel_id=rel_id, valid_from=v_from, valid_to=v_to)
+
+    target_node = None
+    for node in G.nodes():
+        if node.lower() == entity_name.lower() or entity_name.lower() in node.lower():
+            target_node = node
+            break
+
+    if not target_node:
+        return {"entity": entity_name, "found": False, "nodes": [], "edges": []}
+
+    subgraph_nodes = set([target_node])
+    current_frontier = set([target_node])
+    for _ in range(hops):
+        next_frontier = set()
+        for n in current_frontier:
+            neighbors = set(G.successors(n)).union(set(G.predecessors(n)))
+            next_frontier.update(neighbors)
+        subgraph_nodes.update(next_frontier)
+        current_frontier = next_frontier
+
+    subgraph = G.subgraph(subgraph_nodes)
+    edges = []
+    for u, v, data in subgraph.edges(data=True):
+        edges.append({
+            "subject": u,
+            "predicate": data.get("predicate", "related_to"),
+            "object": v,
+            "valid_from": data.get("valid_from"),
+            "valid_to": data.get("valid_to")
+        })
+
+    return {
+        "entity": target_node,
+        "found": True,
+        "hops": hops,
+        "node_count": len(subgraph_nodes),
+        "edge_count": len(edges),
+        "nodes": sorted(list(subgraph_nodes)),
+        "edges": edges
+    }
+
+
+def format_ascii_graph(graph_data: dict) -> str:
+    if not graph_data.get("found"):
+        return f"Entity '{graph_data.get('entity')}' not found in Knowledge Graph."
+
+    root = graph_data["entity"]
+    lines = [f"Knowledge Graph Topology for [{root}] ({graph_data['node_count']} nodes, {graph_data['edge_count']} edges):", ""]
+
+    outgoing = [e for e in graph_data["edges"] if e["subject"].lower() == root.lower()]
+    incoming = [e for e in graph_data["edges"] if e["object"].lower() == root.lower()]
+
+    if outgoing:
+        lines.append("  [Outgoing Relationships]")
+        for i, edge in enumerate(outgoing):
+            prefix = "  ├──" if i < len(outgoing) - 1 else "  └──"
+            lines.append(f"{prefix} --({edge['predicate']})--> [{edge['object']}]")
+
+    if incoming:
+        lines.append("  [Incoming Relationships]")
+        for i, edge in enumerate(incoming):
+            prefix = "  ├──" if i < len(incoming) - 1 else "  └──"
+            lines.append(f"{prefix} <--({edge['predicate']})-- [{edge['subject']}]")
+
+    return "\n".join(lines)
+
+
+def format_mermaid_graph(graph_data: dict) -> str:
+    if not graph_data.get("found") or not graph_data.get("edges"):
+        return "```mermaid\ngraph TD\n    EmptyGraph[\"No graph edges found\"]\n```"
+    lines = ["```mermaid", "graph TD"]
+    for edge in graph_data["edges"]:
+        sub = edge["subject"].replace('"', '\\"')
+        obj = edge["object"].replace('"', '\\"')
+        pred = edge["predicate"].replace('"', '\\"')
+        lines.append(f'    "{sub}" -->|"{pred}"| "{obj}"')
+    lines.append("```")
+    return "\n".join(lines)
+
+
+def tool_mem_graph_extract(args: dict) -> str:
+    """Extract and register Knowledge Graph triples from text."""
+    text = args.get("text", "").strip()
+    if not text:
+        return "ERROR: 'text' is required"
+    triples = extract_graph_triples(text)
+    if not triples:
+        key = args.get("key", "").strip()
+        val = args.get("value", "").strip()
+        if key and val:
+            triples = [(key, "configured_as", val)]
+
+    if not triples:
+        return "INFO: No entity-relationship triples extracted from text."
+
+    saved = []
+    for sub, pred, obj in triples:
+        rel_id = record_graph_relationship(sub, pred, obj)
+        saved.append(f"({sub} -> {pred} -> {obj}) [rel_id={rel_id}]")
+
+    return f"Knowledge Graph extracted {len(saved)} triple(s):\n" + "\n".join(f"- {s}" for s in saved)
+
+
+def tool_mem_graph_query(args: dict) -> str:
+    """Query 1-hop & 2-hop Knowledge Graph relationships for an entity."""
+    entity = args.get("entity", "").strip()
+    hops = int(args.get("hops", 2))
+    format_mode = args.get("format", "mermaid").strip().lower()
+
+    if not entity:
+        return "ERROR: 'entity' is required"
+
+    try:
+        init_db()
+        data = query_entity_graph(entity, hops=hops)
+        if not data.get("found"):
+            return f"INFO: Entity '{entity}' not found in Knowledge Graph."
+
+        if format_mode == "ascii":
+            return format_ascii_graph(data)
+        elif format_mode == "json":
+            return json.dumps(data, indent=2)
+        else:
+            ascii_text = format_ascii_graph(data)
+            mermaid_text = format_mermaid_graph(data)
+            return f"{ascii_text}\n\n{mermaid_text}"
+    except Exception as e:
+        return f"ERROR: Knowledge Graph query failed: {e}"
+
+
+def tool_mem_graph_entities(args: dict) -> str:
+    """List registered entities in the Knowledge Graph."""
+    prefix = args.get("prefix", "").strip().lower()
+    try:
+        init_db()
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute("SELECT entity_id, name, entity_type, summary FROM gms_entities ORDER BY name ASC")
+        rows = cursor.fetchall()
+        conn.close()
+
+        entities = []
+        for eid, name, etype, summary in rows:
+            if prefix and not name.lower().startswith(prefix):
+                continue
+            entities.append({"entity_id": eid, "name": name, "type": etype, "summary": summary or ""})
+
+        return json.dumps(entities, indent=2)
+    except Exception as e:
+        return f"ERROR: Listing graph entities failed: {e}"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # MCP Protocol (minimal stdio JSON-RPC 2.0 implementation)
 # No external mcp package required — pure stdlib.
 # ──────────────────────────────────────────────────────────────────────────────
@@ -631,16 +994,22 @@ def _run_memoryctl(*args: str) -> tuple[int, str]:
 # Tool implementations
 # ──────────────────────────────────────────────────────────────────────────────
 
-def tool_mem_session_start(args: dict) -> str:
+def tool_mem_session_start(_: dict) -> str:
     """Load and return the full startup context bundle (replaces `memoryctl start-context`)."""
     idx       = _read(MEM_ROOT / "index.md")
     prefs     = _read(MEM_ROOT / "preferences.md")
     projects  = _read(MEM_ROOT / "projects.md")
     lessons   = _read(MEM_ROOT / "lessons" / "global.md")
     today     = datetime.now().strftime("%Y-%m-%d")
-    daily     = MEM_ROOT / "episodic" / "history" / f"{today}.md"
-    journal   = MEM_ROOT / "episodic" / "journal.md"
-    episodic  = _read(daily if daily.exists() else journal)
+    history_dir = MEM_ROOT / "episodic" / "history"
+    daily     = history_dir / f"{today}.md"
+    if daily.exists():
+        episodic = _read(daily)
+    elif history_dir.exists() and list(history_dir.glob("*.md")):
+        episodic = _read(sorted(history_dir.glob("*.md"))[-1])
+    else:
+        episodic = _read(MEM_ROOT / "episodic" / "journal.md")
+
     facts     = _load_facts()
     top_facts = dict(list(facts.items())[:10])
 
@@ -677,6 +1046,304 @@ def tool_mem_session_end(args: dict) -> str:
     return f"Session end logged to {target}"
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Durable task handoff and checkpointing
+# ──────────────────────────────────────────────────────────────────────────────
+
+_TASK_STATUSES = {"open", "in_progress", "handed_off", "completed", "cancelled"}
+
+
+def _json_value(value: Any, default: Any) -> Any:
+    """Accept MCP-native JSON values or a JSON string, rejecting malformed input."""
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid JSON: {exc.msg}") from exc
+        return parsed
+    raise ValueError("must be a JSON object, array, or JSON string")
+
+
+def _task_payload(row: tuple) -> dict:
+    keys = (
+        "task_id", "project", "title", "objective", "status", "owner_agent",
+        "lease_expires_at", "revision", "parent_task_id", "created_by", "created_at",
+        "updated_at", "completed_at",
+    )
+    return dict(zip(keys, row))
+
+
+def _get_task(conn: sqlite3.Connection, task_id: str) -> dict | None:
+    row = conn.execute(
+        "SELECT task_id, project, title, objective, status, owner_agent, lease_expires_at, "
+        "revision, parent_task_id, created_by, created_at, updated_at, completed_at "
+        "FROM gms_tasks WHERE task_id = ?",
+        (task_id,),
+    ).fetchone()
+    return _task_payload(row) if row else None
+
+
+def tool_mem_task_create(args: dict) -> str:
+    """Create a durable, project-scoped work item for agents to claim or hand off."""
+    task_id = str(args.get("task_id", "")).strip()
+    title = str(args.get("title", "")).strip()
+    created_by = str(args.get("agent", "")).strip()
+    if not task_id or not title or not created_by:
+        return "ERROR: 'task_id', 'title', and 'agent' are required"
+    try:
+        init_db()
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.execute(
+            "INSERT INTO gms_tasks (task_id, project, title, objective, owner_agent, parent_task_id, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (task_id, str(args.get("project", "")).strip(), title,
+             str(args.get("objective", "")).strip(), None,
+             str(args.get("parent_task_id", "")).strip() or None, created_by),
+        )
+        task = _get_task(conn, task_id)
+        conn.commit()
+        conn.close()
+        return json.dumps({"status": "created", "task": task}, indent=2)
+    except sqlite3.IntegrityError:
+        return f"ERROR: task '{task_id}' already exists"
+    except Exception as exc:
+        return f"ERROR: failed to create task: {exc}"
+
+
+def tool_mem_task_claim(args: dict) -> str:
+    """Atomically claim a task at an expected revision and establish a renewable lease."""
+    task_id = str(args.get("task_id", "")).strip()
+    agent = str(args.get("agent", "")).strip()
+    if not task_id or not agent or args.get("expected_revision") is None:
+        return "ERROR: 'task_id', 'agent', and 'expected_revision' are required"
+    try:
+        expected = int(args["expected_revision"])
+        lease_seconds = max(60, min(int(args.get("lease_seconds", 1800)), 86400))
+    except (TypeError, ValueError):
+        return "ERROR: 'expected_revision' and 'lease_seconds' must be integers"
+    lease_expiry = (datetime.now() + timedelta(seconds=lease_seconds)).isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
+    try:
+        init_db()
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE gms_tasks SET owner_agent = ?, lease_expires_at = ?, status = 'in_progress', "
+            "revision = revision + 1, updated_at = CURRENT_TIMESTAMP "
+            "WHERE task_id = ? AND revision = ? AND status IN ('open', 'handed_off', 'in_progress') "
+            "AND (owner_agent IS NULL OR owner_agent = ? OR lease_expires_at IS NULL OR lease_expires_at < ?)",
+            (agent, lease_expiry, task_id, expected, agent, now),
+        )
+        if cursor.rowcount != 1:
+            task = _get_task(conn, task_id)
+            conn.close()
+            return json.dumps({"status": "conflict", "task": task}, indent=2)
+        task = _get_task(conn, task_id)
+        cursor.execute(
+            "UPDATE gms_handoffs SET acknowledged_at = CURRENT_TIMESTAMP "
+            "WHERE task_id = ? AND target_agent = ? AND acknowledged_at IS NULL",
+            (task_id, agent),
+        )
+        conn.commit()
+        conn.close()
+        return json.dumps({"status": "claimed", "task": task}, indent=2)
+    except Exception as exc:
+        return f"ERROR: failed to claim task: {exc}"
+
+
+def tool_mem_task_checkpoint(args: dict) -> str:
+    """Persist an immutable checkpoint and advance the task revision."""
+    task_id = str(args.get("task_id", "")).strip()
+    agent = str(args.get("agent", "")).strip()
+    if not task_id or not agent or args.get("expected_revision") is None or "state" not in args:
+        return "ERROR: 'task_id', 'agent', 'expected_revision', and 'state' are required"
+    try:
+        expected = int(args["expected_revision"])
+        state = _json_value(args["state"], {})
+        artifacts = _json_value(args.get("artifact_refs"), [])
+        claims = _json_value(args.get("claim_refs"), [])
+        episodes = _json_value(args.get("episode_refs"), [])
+        if not isinstance(state, dict) or not all(isinstance(item, list) for item in (artifacts, claims, episodes)):
+            return "ERROR: state must be an object; reference fields must be arrays"
+        init_db()
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE gms_tasks SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP "
+            "WHERE task_id = ? AND revision = ? AND owner_agent = ? AND status = 'in_progress'",
+            (task_id, expected, agent),
+        )
+        if cursor.rowcount != 1:
+            task = _get_task(conn, task_id)
+            conn.close()
+            return json.dumps({"status": "conflict", "task": task}, indent=2)
+        task = _get_task(conn, task_id)
+        cursor.execute(
+            "INSERT INTO gms_task_checkpoints (task_id, revision, agent_id, label, state_json, artifact_refs_json, claim_refs_json, episode_refs_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (task_id, task["revision"], agent, str(args.get("label", "")).strip(), json.dumps(state),
+             json.dumps(artifacts), json.dumps(claims), json.dumps(episodes)),
+        )
+        checkpoint_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return json.dumps({"status": "checkpointed", "checkpoint_id": checkpoint_id, "task": task}, indent=2)
+    except Exception as exc:
+        return f"ERROR: failed to checkpoint task: {exc}"
+
+
+def tool_mem_handoff_create(args: dict) -> str:
+    """Create a structured handoff and release a task for its intended recipient to claim."""
+    task_id = str(args.get("task_id", "")).strip()
+    source = str(args.get("source_agent", "")).strip()
+    if not task_id or not source or args.get("expected_revision") is None:
+        return "ERROR: 'task_id', 'source_agent', and 'expected_revision' are required"
+    try:
+        expected = int(args["expected_revision"])
+        context = _json_value(args.get("context"), {})
+        artifacts = _json_value(args.get("artifact_refs"), [])
+        if not isinstance(context, dict) or not isinstance(artifacts, list):
+            return "ERROR: context must be an object and artifact_refs must be an array"
+        init_db()
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE gms_tasks SET owner_agent = NULL, lease_expires_at = NULL, status = 'handed_off', "
+            "revision = revision + 1, updated_at = CURRENT_TIMESTAMP "
+            "WHERE task_id = ? AND revision = ? AND owner_agent = ? AND status = 'in_progress'",
+            (task_id, expected, source),
+        )
+        if cursor.rowcount != 1:
+            task = _get_task(conn, task_id)
+            conn.close()
+            return json.dumps({"status": "conflict", "task": task}, indent=2)
+        task = _get_task(conn, task_id)
+        cursor.execute(
+            "INSERT INTO gms_handoffs (task_id, revision, source_agent, target_agent, objective, completed_work, next_action, blockers, acceptance_criteria, context_json, artifact_refs_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (task_id, task["revision"], source, str(args.get("target_agent", "")).strip() or None,
+             str(args.get("objective", "")).strip(), str(args.get("completed_work", "")).strip(),
+             str(args.get("next_action", "")).strip(), str(args.get("blockers", "")).strip(),
+             str(args.get("acceptance_criteria", "")).strip(), json.dumps(context), json.dumps(artifacts)),
+        )
+        handoff_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return json.dumps({"status": "handed_off", "handoff_id": handoff_id, "task": task}, indent=2)
+    except Exception as exc:
+        return f"ERROR: failed to create handoff: {exc}"
+
+
+def tool_mem_task_resume(args: dict) -> str:
+    """Return the task, latest checkpoint, and latest handoff as a bounded resume bundle."""
+    task_id = str(args.get("task_id", "")).strip()
+    if not task_id:
+        return "ERROR: 'task_id' is required"
+    try:
+        init_db()
+        conn = sqlite3.connect(str(DB_PATH))
+        task = _get_task(conn, task_id)
+        if not task:
+            conn.close()
+            return f"ERROR: task '{task_id}' not found"
+        checkpoint = conn.execute(
+            "SELECT checkpoint_id, revision, agent_id, label, state_json, artifact_refs_json, claim_refs_json, episode_refs_json, created_at "
+            "FROM gms_task_checkpoints WHERE task_id = ? ORDER BY checkpoint_id DESC LIMIT 1", (task_id,)
+        ).fetchone()
+        handoff = conn.execute(
+            "SELECT handoff_id, revision, source_agent, target_agent, objective, completed_work, next_action, blockers, acceptance_criteria, context_json, artifact_refs_json, acknowledged_at, created_at "
+            "FROM gms_handoffs WHERE task_id = ? ORDER BY handoff_id DESC LIMIT 1", (task_id,)
+        ).fetchone()
+        conn.close()
+        checkpoint_payload = None
+        if checkpoint:
+            checkpoint_payload = dict(zip(("checkpoint_id", "revision", "agent_id", "label", "state", "artifact_refs", "claim_refs", "episode_refs", "created_at"), checkpoint))
+            for key in ("state", "artifact_refs", "claim_refs", "episode_refs"):
+                checkpoint_payload[key] = json.loads(checkpoint_payload[key])
+        handoff_payload = None
+        if handoff:
+            handoff_payload = dict(zip(("handoff_id", "revision", "source_agent", "target_agent", "objective", "completed_work", "next_action", "blockers", "acceptance_criteria", "context", "artifact_refs", "acknowledged_at", "created_at"), handoff))
+            handoff_payload["context"] = json.loads(handoff_payload["context"])
+            handoff_payload["artifact_refs"] = json.loads(handoff_payload["artifact_refs"])
+        return json.dumps({"task": task, "checkpoint": checkpoint_payload, "handoff": handoff_payload}, indent=2)
+    except Exception as exc:
+        return f"ERROR: failed to resume task: {exc}"
+
+
+def tool_mem_project_state(args: dict) -> str:
+    """Return a project-scoped view of active work and its latest durable handoff state."""
+    project = str(args.get("project", "")).strip()
+    if not project:
+        return "ERROR: 'project' is required"
+    include_completed = bool(args.get("include_completed", False))
+    try:
+        init_db()
+        conn = sqlite3.connect(str(DB_PATH))
+        query = (
+            "SELECT task_id, project, title, objective, status, owner_agent, lease_expires_at, "
+            "revision, parent_task_id, created_by, created_at, updated_at, completed_at "
+            "FROM gms_tasks WHERE project = ?"
+        )
+        if not include_completed:
+            query += " AND status NOT IN ('completed', 'cancelled')"
+        query += " ORDER BY updated_at DESC, task_id ASC"
+        tasks = [_task_payload(row) for row in conn.execute(query, (project,)).fetchall()]
+        for task in tasks:
+            checkpoint = conn.execute(
+                "SELECT checkpoint_id, revision, label, agent_id, created_at FROM gms_task_checkpoints "
+                "WHERE task_id = ? ORDER BY checkpoint_id DESC LIMIT 1", (task["task_id"],)
+            ).fetchone()
+            handoff = conn.execute(
+                "SELECT handoff_id, revision, source_agent, target_agent, next_action, acknowledged_at, created_at "
+                "FROM gms_handoffs WHERE task_id = ? ORDER BY handoff_id DESC LIMIT 1", (task["task_id"],)
+            ).fetchone()
+            task["latest_checkpoint"] = (
+                dict(zip(("checkpoint_id", "revision", "label", "agent_id", "created_at"), checkpoint))
+                if checkpoint else None
+            )
+            task["latest_handoff"] = (
+                dict(zip(("handoff_id", "revision", "source_agent", "target_agent", "next_action", "acknowledged_at", "created_at"), handoff))
+                if handoff else None
+            )
+        conn.close()
+        return json.dumps({"project": project, "task_count": len(tasks), "tasks": tasks}, indent=2)
+    except Exception as exc:
+        return f"ERROR: failed to get project state: {exc}"
+
+
+def tool_mem_task_complete(args: dict) -> str:
+    """Mark the currently owned task complete at a specific revision."""
+    task_id = str(args.get("task_id", "")).strip()
+    agent = str(args.get("agent", "")).strip()
+    if not task_id or not agent or args.get("expected_revision") is None:
+        return "ERROR: 'task_id', 'agent', and 'expected_revision' are required"
+    try:
+        expected = int(args["expected_revision"])
+        init_db()
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE gms_tasks SET status = 'completed', lease_expires_at = NULL, revision = revision + 1, "
+            "updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP "
+            "WHERE task_id = ? AND revision = ? AND owner_agent = ? AND status = 'in_progress'",
+            (task_id, expected, agent),
+        )
+        if cursor.rowcount != 1:
+            task = _get_task(conn, task_id)
+            conn.close()
+            return json.dumps({"status": "conflict", "task": task}, indent=2)
+        task = _get_task(conn, task_id)
+        conn.commit()
+        conn.close()
+        return json.dumps({"status": "completed", "task": task}, indent=2)
+    except Exception as exc:
+        return f"ERROR: failed to complete task: {exc}"
+
+
 def tool_mem_save_typed(args: dict) -> str:
     """Save a memory fact using typed routing (semantic, operational, procedural, session)."""
     key   = args.get("key", "").strip()
@@ -693,7 +1360,7 @@ def tool_mem_save_typed(args: dict) -> str:
     if kind == "session":
         return f"SESSION_ONLY: Memory '{key}' is ephemeral task state/session-only and was not persisted to disk."
 
-    agent_id = args.get("agent", "").strip() or "unknown"
+    agent_id = _normalize_agent_id(args.get("agent", "").strip() or "unknown")
     branch = _detect_branch()
     force = str(args.get("force", "false")).lower() in ("true", "1", "yes")
 
@@ -709,6 +1376,7 @@ def tool_mem_save_typed(args: dict) -> str:
         existing_owner_info = get_fact_provenance(prov_key)
         if existing_owner_info:
             existing_owner, existing_branch, was_quarantined = existing_owner_info
+            existing_owner = _normalize_agent_id(existing_owner)
         else:
             existing_owner, existing_branch = "unknown", "main"
 
@@ -722,7 +1390,6 @@ def tool_mem_save_typed(args: dict) -> str:
             record_claim(kind, key, value, agent_id, branch, "active")
             increment_agent_alpha(agent_id, 1.0)
             if existing_owner != "unknown" and existing_owner != agent_id:
-                increment_agent_beta(existing_owner, 1.0)
                 log_security_event("OVERWRITE", f"[{kind.upper()}] Fact '{key}' overwritten by agent '{agent_id}' (Trust: {new_trust:.3f}) replacing '{existing_owner}' (Trust: {old_trust:.3f})")
             return (
                 f"[{kind.upper()}] Fact saved (overwrote existing key '{key}').\n"
@@ -855,32 +1522,58 @@ def tool_mem_add_lesson(args: dict) -> str:
 
 
 def tool_mem_search(args: dict) -> str:
-    """Semantic search over episodic FAISS index with temporal decay and git branch boosting."""
+    """LightRAG dual-level search over Knowledge Graph triples (low-level) and episodic FAISS index (high-level)."""
     query = args.get("query", "").strip()
     k     = int(args.get("k", 5))
+    mode  = args.get("mode", "hybrid").strip().lower()
     if not query:
         return "ERROR: 'query' is required"
-    cmd_args = ["index-query", query, "-k", str(k)]
-    if "decay_rate" in args:
-        cmd_args += ["--decay-rate", str(args["decay_rate"])]
-    if args.get("no_decay") is True:
-        cmd_args += ["--no-decay"]
-    if "branch_boost" in args:
-        cmd_args += ["--branch-boost", str(args["branch_boost"])]
-    if args.get("no_boost") is True:
-        cmd_args += ["--no-boost"]
-    if args.get("no_hybrid") is True:
-        cmd_args += ["--no-hybrid"]
-    code, out = _run_memoryctl(*cmd_args)
-    return out if out else "No results."
+
+    res_parts = []
+
+    # Low-level entity graph search
+    if mode in ("low", "hybrid"):
+        try:
+            init_db()
+            graph_data = query_entity_graph(query, hops=1)
+            if graph_data.get("found") and graph_data.get("edges"):
+                graph_summary = format_ascii_graph(graph_data)
+                res_parts.append(f"### [LightRAG Low-Level Graph Triples]\n{graph_summary}\n")
+        except Exception:
+            pass
+
+    # High-level thematic RRF vector/keyword search
+    if mode in ("high", "hybrid"):
+        cmd_args = ["index-query", query, "-k", str(k)]
+        if "decay_rate" in args:
+            cmd_args += ["--decay-rate", str(args["decay_rate"])]
+        if args.get("no_decay") is True:
+            cmd_args += ["--no-decay"]
+        if "branch_boost" in args:
+            cmd_args += ["--branch-boost", str(args["branch_boost"])]
+        if args.get("no_boost") is True:
+            cmd_args += ["--no-boost"]
+        if args.get("no_hybrid") is True:
+            cmd_args += ["--no-hybrid"]
+        code, out = _run_memoryctl(*cmd_args)
+        if code == 0 and out:
+            res_parts.append(f"### [LightRAG High-Level Episodic Retrieval]\n{out}")
+
+    return "\n".join(res_parts) if res_parts else "No results."
 
 
 def tool_mem_context(args: dict) -> str:
     """Return the last N lines of today's episodic log."""
     n = int(args.get("lines", 50))
     today = datetime.now().strftime("%Y-%m-%d")
-    daily = MEM_ROOT / "episodic" / "history" / f"{today}.md"
-    text  = _read(daily if daily.exists() else MEM_ROOT / "episodic" / "journal.md")
+    history_dir = MEM_ROOT / "episodic" / "history"
+    daily = history_dir / f"{today}.md"
+    if daily.exists():
+        text = _read(daily)
+    elif history_dir.exists() and list(history_dir.glob("*.md")):
+        text = _read(sorted(history_dir.glob("*.md"))[-1])
+    else:
+        text = _read(MEM_ROOT / "episodic" / "journal.md")
     lines = text.splitlines()
     return "\n".join(lines[-n:])
 
@@ -905,6 +1598,152 @@ def tool_mem_get_preferences(_: dict) -> str:
 
 def tool_mem_get_projects(_: dict) -> str:
     return _read(MEM_ROOT / "projects.md")
+
+
+def tool_mem_latest(args: dict) -> str:
+    """Fetch the latest N episodic log milestones and fact updates across memory."""
+    limit = int(args.get("limit", 10))
+    kind = args.get("kind", "all").strip().lower()
+
+    output_sections = []
+
+    if kind in ("episodic", "all"):
+        history_dir = MEM_ROOT / "episodic" / "history"
+        entries = []
+        if history_dir.exists():
+            files = sorted(history_dir.glob("*.md"), reverse=True)
+            for f in files:
+                lines = _read(f).splitlines()
+                current_heading = ""
+                buf = []
+                for line in lines:
+                    if line.startswith("### "):
+                        if current_heading and buf:
+                            entries.append(f"[{f.stem}] {current_heading}\n  " + "\n  ".join(buf[:3]))
+                        current_heading = line.strip("# ").strip()
+                        buf = []
+                    elif current_heading:
+                        buf.append(line)
+                if current_heading and buf:
+                    entries.append(f"[{f.stem}] {current_heading}\n  " + "\n  ".join(buf[:3]))
+                if len(entries) >= limit:
+                    break
+        if entries:
+            output_sections.append(f"### [Latest Episodic Log Milestones (Top {min(limit, len(entries))})]\n" + "\n\n".join(entries[:limit]))
+
+    if kind in ("facts", "claims", "all"):
+        try:
+            init_db()
+            conn = sqlite3.connect(str(DB_PATH))
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT claim_id, memory_kind, memory_key, value, agent_id, status, created_at "
+                "FROM gms_claims ORDER BY created_at DESC LIMIT ?", (limit,)
+            )
+            rows = cursor.fetchall()
+            conn.close()
+            if rows:
+                claim_lines = []
+                for cid, mkind, mkey, val, agent, status, created_at in rows:
+                    claim_lines.append(f"- [{created_at}] [{mkind.upper()}] {mkey} = '{val}' (Agent: {agent}, Status: {status}) [claim #{cid}]")
+                output_sections.append(f"### [Latest Fact & Claim Updates (Top {len(claim_lines)})]\n" + "\n".join(claim_lines))
+        except Exception:
+            pass
+
+    return "\n\n".join(output_sections) if output_sections else "No recent memory entries found."
+
+
+SECTION_FILE_MAP = {
+    "brief": "projectBrief.md",
+    "patterns": "systemPatterns.md",
+    "tech": "techContext.md",
+    "active": "activeContext.md",
+    "progress": "progress.md",
+}
+
+SECTION_TEMPLATES = {
+    "projectBrief.md": "# Project Brief\n\n## Overview\n[Core goals and project scope]\n\n## Requirements\n- [Key requirement 1]\n",
+    "systemPatterns.md": "# System Patterns\n\n## Architecture\n[Architecture design and component structure]\n\n## Key Decisions\n- [Design decision 1]\n",
+    "techContext.md": "# Technical Context\n\n## Technology Stack\n[Languages, frameworks, dependencies]\n\n## Environment\n[Local setup commands]\n",
+    "activeContext.md": "# Active Context\n\n## Current Focus\n[Active task or current milestone]\n\n## Recent Changes\n- [Recent update]\n",
+    "progress.md": "# Progress\n\n## Working Features\n- [Completed feature]\n\n## Open Items\n- [Planned work]\n",
+}
+
+def tool_mem_project(args: dict) -> str:
+    """Manage Cline Memory Bank style project memory structures (brief, patterns, tech, active, progress)."""
+    action = args.get("action", "get").strip().lower()
+    project = args.get("project", "").strip().lower().replace(" ", "-")
+
+    projects_dir = MEM_ROOT / "projects"
+    projects_dir.mkdir(parents=True, exist_ok=True)
+
+    if action == "list":
+        banks = [d.name for d in projects_dir.iterdir() if d.is_dir()]
+        return json.dumps({"projects": sorted(banks)}, indent=2)
+
+    if not project:
+        return "ERROR: 'project' name is required for init, get, or update actions."
+
+    proj_dir = projects_dir / project
+
+    if action == "init":
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        created = []
+        for fname, tpl in SECTION_TEMPLATES.items():
+            fpath = proj_dir / fname
+            if not fpath.exists():
+                fpath.write_text(tpl)
+                created.append(fname)
+
+        proj_md = MEM_ROOT / "projects.md"
+        if proj_md.exists():
+            content = _read(proj_md)
+            if project not in content.lower():
+                proj_md.write_text(content.strip() + f"\n- **{project}**: Memory bank initialized at `projects/{project}/`.\n")
+
+        return f"Initialized Memory Bank for project '{project}' with files: {', '.join(created) if created else 'all files already exist'}."
+
+    if action == "get":
+        if not proj_dir.exists():
+            return f"INFO: Project memory bank '{project}' does not exist yet. Run with action='init' to create it."
+        section = args.get("section", "all").strip().lower()
+        if section == "all":
+            parts = []
+            for sec_key, fname in SECTION_FILE_MAP.items():
+                fpath = proj_dir / fname
+                if fpath.exists():
+                    parts.append(f"=== [{fname}] ===\n" + fpath.read_text().strip())
+            return "\n\n".join(parts) if parts else "No files found in memory bank."
+        else:
+            fname = SECTION_FILE_MAP.get(section, f"{section}.md")
+            fpath = proj_dir / fname
+            if not fpath.exists():
+                return f"INFO: Section '{section}' ({fname}) does not exist for project '{project}'."
+            return fpath.read_text()
+
+    if action == "update":
+        if not proj_dir.exists():
+            proj_dir.mkdir(parents=True, exist_ok=True)
+        section = args.get("section", "active").strip().lower()
+        content = args.get("content", "").strip()
+        append = args.get("append", True)
+        if not content:
+            return "ERROR: 'content' is required for update action."
+
+        fname = SECTION_FILE_MAP.get(section, f"{section}.md")
+        fpath = proj_dir / fname
+
+        if append and fpath.exists():
+            old_text = fpath.read_text().strip()
+            new_text = old_text + f"\n\n### Update ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n" + content
+        else:
+            header = SECTION_TEMPLATES.get(fname, f"# {section.capitalize()}\n")
+            new_text = f"{header}\n{content}"
+
+        fpath.write_text(new_text)
+        return f"Updated project '{project}' section '{section}' ({fname})."
+
+    return f"ERROR: Unknown action '{action}'. Supported: init, get, update, list."
 
 
 def tool_mem_stats(_: dict) -> str:
@@ -1781,6 +2620,60 @@ TOOLS = {
             "required": ["agent", "summary"],
         },
     },
+    "mem_task_create": {
+        "fn": tool_mem_task_create,
+        "description": "Create a durable, project-scoped task for cross-agent coordination.",
+        "inputSchema": {"type": "object", "properties": {
+            "task_id": {"type": "string"}, "title": {"type": "string"}, "agent": {"type": "string"},
+            "project": {"type": "string"}, "objective": {"type": "string"}, "parent_task_id": {"type": "string"},
+        }, "required": ["task_id", "title", "agent"]},
+    },
+    "mem_task_claim": {
+        "fn": tool_mem_task_claim,
+        "description": "Atomically claim a task at its expected revision and establish a time-bounded lease.",
+        "inputSchema": {"type": "object", "properties": {
+            "task_id": {"type": "string"}, "agent": {"type": "string"}, "expected_revision": {"type": "integer"},
+            "lease_seconds": {"type": "integer", "default": 1800},
+        }, "required": ["task_id", "agent", "expected_revision"]},
+    },
+    "mem_task_checkpoint": {
+        "fn": tool_mem_task_checkpoint,
+        "description": "Save an immutable task checkpoint and advance its revision. Reference claim and episode IDs instead of copying durable memory.",
+        "inputSchema": {"type": "object", "properties": {
+            "task_id": {"type": "string"}, "agent": {"type": "string"}, "expected_revision": {"type": "integer"},
+            "label": {"type": "string"}, "state": {"type": "object"}, "artifact_refs": {"type": "array"},
+            "claim_refs": {"type": "array"}, "episode_refs": {"type": "array"},
+        }, "required": ["task_id", "agent", "expected_revision", "state"]},
+    },
+    "mem_handoff_create": {
+        "fn": tool_mem_handoff_create,
+        "description": "Release an owned task with a structured context package for another agent to claim.",
+        "inputSchema": {"type": "object", "properties": {
+            "task_id": {"type": "string"}, "source_agent": {"type": "string"}, "target_agent": {"type": "string"},
+            "expected_revision": {"type": "integer"}, "objective": {"type": "string"}, "completed_work": {"type": "string"},
+            "next_action": {"type": "string"}, "blockers": {"type": "string"}, "acceptance_criteria": {"type": "string"},
+            "context": {"type": "object"}, "artifact_refs": {"type": "array"},
+        }, "required": ["task_id", "source_agent", "expected_revision"]},
+    },
+    "mem_task_resume": {
+        "fn": tool_mem_task_resume,
+        "description": "Return a task together with its latest durable checkpoint and handoff package.",
+        "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]},
+    },
+    "mem_task_complete": {
+        "fn": tool_mem_task_complete,
+        "description": "Mark a currently owned task completed at its expected revision.",
+        "inputSchema": {"type": "object", "properties": {
+            "task_id": {"type": "string"}, "agent": {"type": "string"}, "expected_revision": {"type": "integer"},
+        }, "required": ["task_id", "agent", "expected_revision"]},
+    },
+    "mem_project_state": {
+        "fn": tool_mem_project_state,
+        "description": "Get the latest project-scoped task state, including each task's latest checkpoint and handoff summary.",
+        "inputSchema": {"type": "object", "properties": {
+            "project": {"type": "string"}, "include_completed": {"type": "boolean", "default": False},
+        }, "required": ["project"]},
+    },
     "mem_save_fact": {
         "fn": tool_mem_save_fact,
         "description": "Save a semantic fact to facts.json. Runs conflict detection first.",
@@ -1844,13 +2737,41 @@ TOOLS = {
             "required": ["text"],
         },
     },
+    "mem_latest": {
+        "fn": tool_mem_latest,
+        "description": "Fetch the latest N episodic log milestones and fact/claim updates across memory without guessing dates.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Number of recent entries to fetch (default 10)"},
+                "kind":  {"type": "string", "description": "Filter by kind: 'episodic', 'facts', 'claims', or 'all' (default all)"},
+            },
+            "required": [],
+        },
+    },
+    "mem_project": {
+        "fn": tool_mem_project,
+        "description": "Manage Cline Memory Bank style project memory structures (brief, patterns, tech, active, progress).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action":  {"type": "string", "description": "Action: 'init', 'get', 'update', or 'list'"},
+                "project": {"type": "string", "description": "Project name (e.g. alphaos, optimus, global-memory)"},
+                "section": {"type": "string", "description": "Section: 'brief', 'patterns', 'tech', 'active', 'progress', or 'all' (default all)"},
+                "content": {"type": "string", "description": "Content string for update action"},
+                "append":  {"type": "boolean", "description": "Append to section vs overwrite (default true)"},
+            },
+            "required": [],
+        },
+    },
     "mem_search": {
         "fn": tool_mem_search,
-        "description": "Semantic search over episodic FAISS index with temporal decay and git branch boosting.",
+        "description": "LightRAG dual-level search over Knowledge Graph triples (low-level) and episodic FAISS index (high-level).",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query":        {"type": "string", "description": "Search query"},
+                "mode":         {"type": "string", "description": "LightRAG mode: 'low' (entity triples), 'high' (thematic vector search), or 'hybrid' (combined RRF)"},
                 "k":            {"type": "integer", "description": "Number of results (default 5)"},
                 "decay_rate":   {"type": "number", "description": "Exponential decay rate per day (default 0.002)"},
                 "no_decay":     {"type": "boolean", "description": "Disable temporal decay"},
@@ -1859,6 +2780,43 @@ TOOLS = {
                 "no_hybrid":    {"type": "boolean", "description": "Disable BM25 hybrid search RRF"},
             },
             "required": ["query"],
+        },
+    },
+    "mem_graph_extract": {
+        "fn": tool_mem_graph_extract,
+        "description": "Extract and register Knowledge Graph triples (Subject -> Predicate -> Object) from arbitrary text or claims.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text":  {"type": "string", "description": "Text content to extract triples from"},
+                "key":   {"type": "string", "description": "Optional key for explicit triple"},
+                "value": {"type": "string", "description": "Optional value for explicit triple"},
+            },
+            "required": [],
+        },
+    },
+    "mem_graph_query": {
+        "fn": tool_mem_graph_query,
+        "description": "Query 1-hop & 2-hop Knowledge Graph relationships and valid edge topologies for an entity.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "description": "Entity name to query"},
+                "hops":   {"type": "integer", "description": "Search depth (default 2)"},
+                "format": {"type": "string", "description": "Output format: 'mermaid', 'ascii', or 'json' (default mermaid)"},
+            },
+            "required": ["entity"],
+        },
+    },
+    "mem_graph_entities": {
+        "fn": tool_mem_graph_entities,
+        "description": "List registered entities in the Knowledge Graph.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prefix": {"type": "string", "description": "Filter by entity name prefix"},
+            },
+            "required": [],
         },
     },
     "mem_context": {
@@ -2106,6 +3064,17 @@ TOOLS = {
         },
     },
 }
+
+# Dynamically mirror all mem_* tools as brain_* aliases for cognitive recall
+brain_aliases = {}
+for tool_name, spec in list(TOOLS.items()):
+    if tool_name.startswith("mem_"):
+        alias_name = "brain_" + tool_name[4:]
+        alias_spec = dict(spec)
+        alias_spec["description"] = f"[Brain Alias] {spec['description']}"
+        brain_aliases[alias_name] = alias_spec
+
+TOOLS.update(brain_aliases)
 
 TOOLS_LIST = [
     {

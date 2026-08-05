@@ -1260,6 +1260,32 @@ class TestGMSPhase7(unittest.TestCase):
         data2 = json.loads(res2)
         self.assertEqual(data2["raw_text"], content)
 
+    def test_mem_latest(self):
+        # Add a log entry and a fact
+        memory_mcp_server.tool_mem_log_event({"agent": "test", "title": "Test Milestone", "note": "Testing latest tool"})
+        memory_mcp_server.tool_mem_save_typed({"key": "latest_key", "value": "latest_val", "kind": "semantic", "agent": "test"})
+
+        res = memory_mcp_server.tool_mem_latest({"limit": 5, "kind": "all"})
+        self.assertIn("Test Milestone", res)
+        self.assertIn("latest_key", res)
+
+    def test_mem_project_memory_bank(self):
+        # 1. Init project memory bank
+        res_init = memory_mcp_server.tool_mem_project({"action": "init", "project": "demo-proj"})
+        self.assertIn("Initialized Memory Bank", res_init)
+
+        # 2. Get active context
+        res_get = memory_mcp_server.tool_mem_project({"action": "get", "project": "demo-proj", "section": "active"})
+        self.assertIn("Active Context", res_get)
+
+        # 3. Update active context
+        res_upd = memory_mcp_server.tool_mem_project({"action": "update", "project": "demo-proj", "section": "active", "content": "Built feature X"})
+        self.assertIn("Updated project", res_upd)
+
+        # 4. List projects
+        res_list = memory_mcp_server.tool_mem_project({"action": "list"})
+        self.assertIn("demo-proj", res_list)
+
 
 def tearDownModule():
     if os.path.exists(temp_dir):

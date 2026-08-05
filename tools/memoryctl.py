@@ -27,7 +27,7 @@ def _default_mem_root() -> Path:
 MEM_ROOT = _default_mem_root()
 INDEX_ROOT = MEM_ROOT / "episodic" / "index"
 DRIFT_ROOT = INDEX_ROOT / "drift"
-DEFAULT_EMBED_MODEL = os.environ.get("MEMORY_EMBED_MODEL", "qwen3-embedding:0.6b")
+DEFAULT_EMBED_MODEL = os.environ.get("MEMORY_EMBED_MODEL", "nomic-embed-text")
 OLLAMA_EMBED_URL = os.environ.get("OLLAMA_EMBED_URL", "http://127.0.0.1:11434/api/embeddings")
 EMBED_TIMEOUT_SEC = int(os.environ.get("MEMORY_EMBED_TIMEOUT_SEC", "180"))
 EMBED_RETRIES = int(os.environ.get("MEMORY_EMBED_RETRIES", "3"))
@@ -247,10 +247,15 @@ def cmd_start_context(_: argparse.Namespace) -> int:
     prefs = _resolve(MEM_ROOT / "preferences.md", MEM_ROOT / "global_context.md")
     projects = _resolve(MEM_ROOT / "projects.md", MEM_ROOT / "semantic" / "projects.md")
     lessons = _resolve(MEM_ROOT / "lessons" / "global.md", MEM_ROOT / "semantic" / "lessons_global.md")
+    history_dir = MEM_ROOT / "episodic" / "history"
     history_daily = datetime.now().strftime("%Y-%m-%d")
-    daily = MEM_ROOT / "episodic" / "history" / f"{history_daily}.md"
-    journal = MEM_ROOT / "episodic" / "journal.md"
-    episodic = daily if daily.exists() else journal
+    daily = history_dir / f"{history_daily}.md"
+    if daily.exists():
+        episodic = daily
+    elif history_dir.exists() and list(history_dir.glob("*.md")):
+        episodic = sorted(history_dir.glob("*.md"))[-1]
+    else:
+        episodic = MEM_ROOT / "episodic" / "journal.md"
 
     print(f"[index]\n{idx}\n")
     print(_read(idx)[:2000])
@@ -300,8 +305,6 @@ def cmd_find(args: argparse.Namespace) -> int:
 def cmd_log(args: argparse.Namespace) -> int:
     now = datetime.now()
     daily = MEM_ROOT / "episodic" / "history" / f"{now.strftime('%Y-%m-%d')}.md"
-    if not daily.exists():
-        daily = MEM_ROOT / "episodic" / "journal.md"
 
     # Auto-detect active git branch
     branch_suffix = ""
@@ -729,6 +732,71 @@ def cmd_quarantine_recommendation(args: argparse.Namespace) -> int:
     return 0
 
 
+def _call_memory_tool(name: str, payload: dict) -> int:
+    """Invoke a local MCP implementation so CLI and MCP share task semantics."""
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import memory_mcp_server
+        result = memory_mcp_server.TOOLS[name]["fn"](payload)
+        print(result)
+        return 1 if result.startswith("ERROR:") else 0
+    except Exception as exc:
+        print(f"Error invoking {name}: {exc}")
+        return 1
+
+
+def cmd_task_create(args: argparse.Namespace) -> int:
+    return _call_memory_tool("mem_task_create", vars(args))
+
+
+def cmd_task_claim(args: argparse.Namespace) -> int:
+    return _call_memory_tool("mem_task_claim", vars(args))
+
+
+def cmd_task_checkpoint(args: argparse.Namespace) -> int:
+    try:
+        state = json.loads(args.state)
+        artifacts = json.loads(args.artifact_refs)
+        claims = json.loads(args.claim_refs)
+        episodes = json.loads(args.episode_refs)
+    except json.JSONDecodeError as exc:
+        print(f"ERROR: checkpoint JSON is invalid: {exc.msg}")
+        return 1
+    return _call_memory_tool("mem_task_checkpoint", {
+        "task_id": args.task_id, "agent": args.agent, "expected_revision": args.expected_revision,
+        "label": args.label, "state": state, "artifact_refs": artifacts,
+        "claim_refs": claims, "episode_refs": episodes,
+    })
+
+
+def cmd_task_handoff(args: argparse.Namespace) -> int:
+    try:
+        context = json.loads(args.context)
+        artifacts = json.loads(args.artifact_refs)
+    except json.JSONDecodeError as exc:
+        print(f"ERROR: handoff JSON is invalid: {exc.msg}")
+        return 1
+    return _call_memory_tool("mem_handoff_create", {
+        "task_id": args.task_id, "source_agent": args.source_agent, "target_agent": args.target_agent,
+        "expected_revision": args.expected_revision, "objective": args.objective,
+        "completed_work": args.completed_work, "next_action": args.next_action, "blockers": args.blockers,
+        "acceptance_criteria": args.acceptance_criteria, "context": context, "artifact_refs": artifacts,
+    })
+
+
+def cmd_task_resume(args: argparse.Namespace) -> int:
+    return _call_memory_tool("mem_task_resume", {"task_id": args.task_id})
+
+
+def cmd_task_complete(args: argparse.Namespace) -> int:
+    return _call_memory_tool("mem_task_complete", vars(args))
+
+
+def cmd_project_state(args: argparse.Namespace) -> int:
+    return _call_memory_tool("mem_project_state", vars(args))
+
+
 def cmd_claims_list(args: argparse.Namespace) -> int:
     DB_PATH = MEM_ROOT / "gms_trust.sqlite"
     if not DB_PATH.exists():
@@ -1010,6 +1078,325 @@ def main() -> int:
     p15 = sub.add_parser("tui", help="Launch the SSH-friendly terminal UI.")
     p15.set_defaults(fn=cmd_tui)
 
+    p16 = sub.add_parser("task-create", help="Create a durable project-scoped task for cross-agent work.")
+    p16.add_argument("task_id")
+    p16.add_argument("title")
+    p16.add_argument("--agent", required=True)
+    p16.add_argument("--project", default="")
+    p16.add_argument("--objective", default="")
+    p16.add_argument("--parent-task-id", default="")
+    p16.set_defaults(fn=cmd_task_create)
+
+    p17 = sub.add_parser("task-claim", help="Atomically claim a task at its current revision.")
+    p17.add_argument("task_id")
+    p17.add_argument("expected_revision", type=int)
+    p17.add_argument("--agent", required=True)
+    p17.add_argument("--lease-seconds", type=int, default=1800)
+    p17.set_defaults(fn=cmd_task_claim)
+
+    p18 = sub.add_parser("task-checkpoint", help="Save an immutable JSON state checkpoint for an owned task.")
+    p18.add_argument("task_id")
+    p18.add_argument("expected_revision", type=int)
+    p18.add_argument("--agent", required=True)
+    p18.add_argument("--state", required=True, help="JSON object")
+    p18.add_argument("--label", default="")
+    p18.add_argument("--artifact-refs", default="[]", help="JSON array")
+    p18.add_argument("--claim-refs", default="[]", help="JSON array")
+    p18.add_argument("--episode-refs", default="[]", help="JSON array")
+    p18.set_defaults(fn=cmd_task_checkpoint)
+
+    p19 = sub.add_parser("task-handoff", help="Release an owned task with a structured handoff package.")
+    p19.add_argument("task_id")
+    p19.add_argument("expected_revision", type=int)
+    p19.add_argument("--source-agent", required=True)
+    p19.add_argument("--target-agent", default="")
+    p19.add_argument("--objective", default="")
+    p19.add_argument("--completed-work", default="")
+    p19.add_argument("--next-action", default="")
+    p19.add_argument("--blockers", default="")
+    p19.add_argument("--acceptance-criteria", default="")
+    p19.add_argument("--context", default="{}", help="JSON object")
+    p19.add_argument("--artifact-refs", default="[]", help="JSON array")
+    p19.set_defaults(fn=cmd_task_handoff)
+
+    p20 = sub.add_parser("task-resume", help="Read a task's latest checkpoint and handoff package.")
+    p20.add_argument("task_id")
+    p20.set_defaults(fn=cmd_task_resume)
+
+    p21 = sub.add_parser("task-complete", help="Mark an owned task completed at its current revision.")
+    p21.add_argument("task_id")
+    p21.add_argument("expected_revision", type=int)
+    p21.add_argument("--agent", required=True)
+    p21.set_defaults(fn=cmd_task_complete)
+
+def cmd_graph_build(_: argparse.Namespace) -> int:
+    """Batch extract triples from active claims, facts, and episodic history into SQLite graph tables."""
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    import memory_mcp_server
+
+    memory_mcp_server.init_db()
+    count = 0
+
+    DB_PATH = MEM_ROOT / "gms_trust.sqlite"
+    if DB_PATH.exists():
+        import sqlite3
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute("SELECT claim_id, memory_kind, memory_key, value FROM gms_claims WHERE status = 'active'")
+        rows = cursor.fetchall()
+        conn.close()
+        for cid, kind, key, val in rows:
+            triples = memory_mcp_server.extract_graph_triples(f"{key}: {val}")
+            if not triples:
+                triples = [(key, "configured_as", val)]
+            for sub, pred, obj in triples:
+                memory_mcp_server.record_graph_relationship(sub, pred, obj, source_claim_id=cid)
+                count += 1
+
+    facts_file = MEM_ROOT / "semantic" / "facts.json"
+    if facts_file.exists():
+        try:
+            facts = json.loads(facts_file.read_text())
+            for k, v in facts.items():
+                triples = memory_mcp_server.extract_graph_triples(f"{k}: {v}")
+                if not triples:
+                    triples = [(k, "configured_as", str(v))]
+                for sub, pred, obj in triples:
+                    memory_mcp_server.record_graph_relationship(sub, pred, obj)
+                    count += 1
+        except Exception:
+            pass
+
+    print(f"Graph build complete: registered/updated {count} entity relationship triple(s).")
+    return 0
+
+
+def cmd_graph_query(args: argparse.Namespace) -> int:
+    return _call_memory_tool("mem_graph_query", {"entity": args.entity, "hops": args.hops, "format": "json"})
+
+
+def cmd_graph_show(args: argparse.Namespace) -> int:
+    return _call_memory_tool("mem_graph_query", {"entity": args.entity, "hops": args.hops, "format": "ascii"})
+
+
+def cmd_latest(args: argparse.Namespace) -> int:
+    return _call_memory_tool("mem_latest", {"limit": args.limit, "kind": args.kind})
+
+
+def cmd_project_init(args: argparse.Namespace) -> int:
+    return _call_memory_tool("mem_project", {"action": "init", "project": args.project})
+
+
+def cmd_project_get(args: argparse.Namespace) -> int:
+    return _call_memory_tool("mem_project", {"action": "get", "project": args.project, "section": args.section})
+
+
+def cmd_project_update(args: argparse.Namespace) -> int:
+    return _call_memory_tool("mem_project", {"action": "update", "project": args.project, "section": args.section, "content": args.content, "append": not args.overwrite})
+
+
+def cmd_project_list(_: argparse.Namespace) -> int:
+    return _call_memory_tool("mem_project", {"action": "list"})
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Memory control CLI for global-memory skill.")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p0 = sub.add_parser("start-context", help="Print startup context bundle from memory.")
+    p0.set_defaults(fn=cmd_start_context)
+
+    p1 = sub.add_parser("find", help="Search semantic memory with ripgrep.")
+    p1.add_argument("pattern")
+    p1.set_defaults(fn=cmd_find)
+
+    p2 = sub.add_parser("log", help="Append episodic milestone entry.")
+    p2.add_argument("--agent", required=True)
+    p2.add_argument("--title", required=True)
+    p2.add_argument("--note", required=True)
+    p2.set_defaults(fn=cmd_log)
+
+    p3 = sub.add_parser("lesson-add", help="Append global lesson.")
+    p3.add_argument("text")
+    p3.set_defaults(fn=cmd_lesson_add)
+
+    p4 = sub.add_parser("fact-set", help="Set semantic fact key/value in facts.json.")
+    p4.add_argument("key")
+    p4.add_argument("value")
+    p4.set_defaults(fn=cmd_fact_set)
+
+    p5 = sub.add_parser("index-build", help="Build FAISS episodic index using Ollama embeddings.")
+    p5.add_argument("--model", default=DEFAULT_EMBED_MODEL)
+    p5.add_argument("--drift-threshold", type=float, default=0.05, help="Angular-distance alert threshold for drift snapshots.")
+    p5.set_defaults(fn=cmd_index_build)
+
+    p6 = sub.add_parser("index-query", help="Query FAISS episodic index.")
+    p6.add_argument("query")
+    p6.add_argument("-k", type=int, default=5)
+    p6.add_argument("--model", default=DEFAULT_EMBED_MODEL)
+    p6.add_argument("--decay-rate", type=float, default=0.002, help="Exponential decay rate per day.")
+    p6.add_argument("--no-decay", action="store_true", help="Disable temporal decay.")
+    p6.add_argument("--branch-boost", type=float, default=1.15, help="Active branch text match boost multiplier.")
+    p6.add_argument("--no-boost", action="store_true", help="Disable git branch boost.")
+    p6.add_argument("--no-hybrid", action="store_true", help="Disable BM25 hybrid search RRF.")
+    p6.set_defaults(fn=cmd_index_query)
+
+    p7 = sub.add_parser("trust-list", help="List all agent reputations.")
+    p7.set_defaults(fn=cmd_trust_list)
+
+    p8 = sub.add_parser("quarantine-list", help="List all quarantined facts.")
+    p8.set_defaults(fn=cmd_quarantine_list)
+
+    p9 = sub.add_parser("quarantine-resolve", help="Resolve a quarantined fact.")
+    p9.add_argument("key", help="The fact key to resolve.")
+    p9.add_argument("agent_id", help="The agent who proposed the fact.")
+    p9.add_argument("action", choices=["promote", "discard"], help="Resolution action.")
+    p9.add_argument("--resolver", default="CLI", help="The resolving agent identity.")
+    p9.set_defaults(fn=cmd_quarantine_resolve)
+
+    p9_1 = sub.add_parser("quarantine-review-add", help="Add a reviewer endorsement, rejection, or abstention for a quarantined item.")
+    p9_1.add_argument("key", help="The fact key.")
+    p9_1.add_argument("agent_id", help="The agent who proposed the fact.")
+    p9_1.add_argument("rating", choices=["endorse", "reject", "abstain"], help="Witness stance for the quarantined item.")
+    p9_1.add_argument("--reviewer", required=True, help="The reviewer agent identity.")
+    p9_1.add_argument("--rationale", default="", help="Optional rationale.")
+    p9_1.set_defaults(fn=cmd_quarantine_review_add)
+
+    p9_2 = sub.add_parser("quarantine-review-list", help="List all reviews for a quarantined item.")
+    p9_2.add_argument("key", help="The fact key.")
+    p9_2.add_argument("agent_id", help="The agent who proposed the fact.")
+    p9_2.set_defaults(fn=cmd_quarantine_review_list)
+
+    p9_3 = sub.add_parser("quarantine-recommendation", help="Get a weighted recommendation summary for a quarantined item.")
+    p9_3.add_argument("key", help="The fact key.")
+    p9_3.add_argument("agent_id", help="The agent who proposed the fact.")
+    p9_3.set_defaults(fn=cmd_quarantine_recommendation)
+
+    p10 = sub.add_parser("claims-list", help="List all recorded claims in the versioned claim ledger.")
+    p10.add_argument("--kind", help="Filter by memory kind.")
+    p10.add_argument("--key", help="Filter by memory key.")
+    p10.add_argument("--status", help="Filter by claim status.")
+    p10.set_defaults(fn=cmd_claims_list)
+
+    p11 = sub.add_parser("drift-status", help="Report semantic drift status from the latest index snapshots.")
+    p11.add_argument("--threshold", type=float, default=0.05, help="Angular-distance alert threshold.")
+    p11.add_argument("--json", action="store_true", help="Retained for compatibility; output is always JSON.")
+    p11.set_defaults(fn=cmd_drift_status)
+
+    p12 = sub.add_parser("calibration-report", help="Summarize observer overlap, agreement, and disagreement from the claim ledger.")
+    p12.add_argument("--json", action="store_true", help="Output raw JSON.")
+    p12.set_defaults(fn=cmd_calibration_report)
+
+    p13 = sub.add_parser("retention-report", help="Report stale low-confidence active facts and stale quarantines.")
+    p13.add_argument("--low-confidence", type=float, default=0.35, help="Confidence threshold for archival candidates.")
+    p13.add_argument("--stale-active-days", type=int, default=30, help="Minimum age in days for low-confidence active claims.")
+    p13.add_argument("--stale-quarantine-days", type=int, default=14, help="Minimum age in days for stale quarantines.")
+    p13.add_argument("--json", action="store_true", help="Output raw JSON.")
+    p13.set_defaults(fn=cmd_retention_report)
+
+    p14 = sub.add_parser("retention-prune", help="Archive stale low-confidence active facts and flush stale quarantines.")
+    p14.add_argument("--low-confidence", type=float, default=0.35, help="Confidence threshold for archival candidates.")
+    p14.add_argument("--stale-active-days", type=int, default=30, help="Minimum age in days for low-confidence active claims.")
+    p14.add_argument("--stale-quarantine-days", type=int, default=14, help="Minimum age in days for stale quarantines.")
+    p14.add_argument("--json", action="store_true", help="Output raw JSON.")
+    p14.set_defaults(fn=cmd_retention_prune)
+
+    p15 = sub.add_parser("tui", help="Launch the SSH-friendly terminal UI.")
+    p15.set_defaults(fn=cmd_tui)
+
+    p16 = sub.add_parser("task-create", help="Create a durable project-scoped task for cross-agent work.")
+    p16.add_argument("task_id")
+    p16.add_argument("title")
+    p16.add_argument("--agent", required=True)
+    p16.add_argument("--project", default="")
+    p16.add_argument("--objective", default="")
+    p16.add_argument("--parent-task-id", default="")
+    p16.set_defaults(fn=cmd_task_create)
+
+    p17 = sub.add_parser("task-claim", help="Atomically claim a task at its current revision.")
+    p17.add_argument("task_id")
+    p17.add_argument("expected_revision", type=int)
+    p17.add_argument("--agent", required=True)
+    p17.add_argument("--lease-seconds", type=int, default=1800)
+    p17.set_defaults(fn=cmd_task_claim)
+
+    p18 = sub.add_parser("task-checkpoint", help="Save an immutable JSON state checkpoint for an owned task.")
+    p18.add_argument("task_id")
+    p18.add_argument("expected_revision", type=int)
+    p18.add_argument("--agent", required=True)
+    p18.add_argument("--state", required=True, help="JSON object")
+    p18.add_argument("--label", default="")
+    p18.add_argument("--artifact-refs", default="[]", help="JSON array")
+    p18.add_argument("--claim-refs", default="[]", help="JSON array")
+    p18.add_argument("--episode-refs", default="[]", help="JSON array")
+    p18.set_defaults(fn=cmd_task_checkpoint)
+
+    p19 = sub.add_parser("task-handoff", help="Release an owned task with a structured handoff package.")
+    p19.add_argument("task_id")
+    p19.add_argument("expected_revision", type=int)
+    p19.add_argument("--source-agent", required=True)
+    p19.add_argument("--target-agent", default="")
+    p19.add_argument("--objective", default="")
+    p19.add_argument("--completed-work", default="")
+    p19.add_argument("--next-action", default="")
+    p19.add_argument("--blockers", default="")
+    p19.add_argument("--acceptance-criteria", default="")
+    p19.add_argument("--context", default="{}", help="JSON object")
+    p19.add_argument("--artifact-refs", default="[]", help="JSON array")
+    p19.set_defaults(fn=cmd_task_handoff)
+
+    p20 = sub.add_parser("task-resume", help="Read a task's latest checkpoint and handoff package.")
+    p20.add_argument("task_id")
+    p20.set_defaults(fn=cmd_task_resume)
+
+    p21 = sub.add_parser("task-complete", help="Mark an owned task completed at its current revision.")
+    p21.add_argument("task_id")
+    p21.add_argument("expected_revision", type=int)
+    p21.add_argument("--agent", required=True)
+    p21.set_defaults(fn=cmd_task_complete)
+
+    p22 = sub.add_parser("project-state", help="Show current tasks and latest handoffs/checkpoints for a project.")
+    p22.add_argument("project")
+    p22.add_argument("--include-completed", action="store_true")
+    p22.set_defaults(fn=cmd_project_state)
+
+    p23 = sub.add_parser("graph-build", help="Batch extract triples from active claims, facts, and episodic history into SQLite graph tables.")
+    p23.set_defaults(fn=cmd_graph_build)
+
+    p24 = sub.add_parser("graph-query", help="Query 1-hop & 2-hop Knowledge Graph relationships for an entity.")
+    p24.add_argument("entity")
+    p24.add_argument("--hops", type=int, default=2)
+    p24.set_defaults(fn=cmd_graph_query)
+
+    p25 = sub.add_parser("graph-show", help="Render ASCII Knowledge Graph topology for an entity in the terminal.")
+    p25.add_argument("entity")
+    p25.add_argument("--hops", type=int, default=2)
+    p25.set_defaults(fn=cmd_graph_show)
+
+    p26 = sub.add_parser("latest", help="Fetch the latest N episodic milestones and fact updates across memory.")
+    p26.add_argument("--limit", type=int, default=10)
+    p26.add_argument("--kind", default="all", choices=["episodic", "facts", "claims", "all"])
+    p26.set_defaults(fn=cmd_latest)
+
+    p27 = sub.add_parser("project-init", help="Initialize a Cline Memory Bank style project structure (brief, patterns, tech, active, progress).")
+    p27.add_argument("project")
+    p27.set_defaults(fn=cmd_project_init)
+
+    p28 = sub.add_parser("project-get", help="Get a project memory bank section or all sections.")
+    p28.add_argument("project")
+    p28.add_argument("--section", default="all", choices=["brief", "patterns", "tech", "active", "progress", "all"])
+    p28.set_defaults(fn=cmd_project_get)
+
+    p29 = sub.add_parser("project-update", help="Update a section in a project's memory bank.")
+    p29.add_argument("project")
+    p29.add_argument("--section", default="active", choices=["brief", "patterns", "tech", "active", "progress"])
+    p29.add_argument("--content", required=True)
+    p29.add_argument("--overwrite", action="store_true", help="Overwrite section instead of appending.")
+    p29.set_defaults(fn=cmd_project_update)
+
+    p30 = sub.add_parser("project-list", help="List all initialized project memory banks.")
+    p30.set_defaults(fn=cmd_project_list)
     args = parser.parse_args()
     return args.fn(args)
 
