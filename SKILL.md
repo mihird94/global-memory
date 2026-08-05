@@ -9,9 +9,12 @@ description: MeshClaw-inspired Unified Memory Layer (UML) protocol for cross-age
 This skill provides the logic and protocols for a "Unified Memory Layer" across all AI facets. It leverages the `memoryctl` tool for hybrid (semantic/vector) retrieval and storage.
 
 ## <instructions>
-### 1. Unified Interface Protocol
-- ALWAYS use `${MEMORY_ROOT:-$HOME/memories}` as the root of the unified memory.
-- USE the `memoryctl` command-line tool for all standard memory operations.
+### 1. Unified Interface Protocol & Dual-Tier Architecture
+- **Unified Root:** ALWAYS use `${MEMORY_ROOT:-$HOME/memories}` as the memory root.
+- **Primary CLI:** Use the `brain` command-line operator (`~/.local/bin/brain`) for all memory operations (`memoryctl` remains a backward-compatible alias).
+- **Dual-Tier Operating Protocol:**
+  - **Tier 1 (Terminal & Mobile Read Layer):** Direct `brain` CLI + Local Ollama execution (`brain latest`, `brain project-get`, `brain synthesize`, `brain audit`). Provides instant mobile (Termius) and SSH status checks with zero API cost and zero agent session overhead.
+  - **Tier 2 (Interactive Reasoning Layer):** Gemini CLI, Codex, and Antigravity for deep development, refactoring, and trading execution, reading/updating Brain as the persistent context layer.
 
 ### 2. Identity Alignment & Dissolution
 - **Facet Mentality:** You are one of many "facets" or "workers" of the Personal AI OS.
