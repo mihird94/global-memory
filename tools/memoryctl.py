@@ -28,7 +28,8 @@ MEM_ROOT = _default_mem_root()
 INDEX_ROOT = MEM_ROOT / "episodic" / "index"
 DRIFT_ROOT = INDEX_ROOT / "drift"
 DEFAULT_EMBED_MODEL = os.environ.get("MEMORY_EMBED_MODEL", "nomic-embed-text")
-OLLAMA_EMBED_URL = os.environ.get("OLLAMA_EMBED_URL", "http://127.0.0.1:11434/api/embeddings")
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
+OLLAMA_EMBED_URL = os.environ.get("OLLAMA_EMBED_URL", f"{OLLAMA_URL}/api/embeddings")
 EMBED_TIMEOUT_SEC = int(os.environ.get("MEMORY_EMBED_TIMEOUT_SEC", "180"))
 EMBED_RETRIES = int(os.environ.get("MEMORY_EMBED_RETRIES", "3"))
 
@@ -1228,16 +1229,22 @@ def cmd_synthesize(args: argparse.Namespace) -> int:
         import urllib.request
         req = urllib.request.Request(
             f"{OLLAMA_URL}/api/generate",
-            data=json.dumps({"model": model, "prompt": full_prompt, "stream": False}).encode("utf-8"),
+            data=json.dumps({"model": model, "prompt": full_prompt, "stream": True, "keep_alive": "2m"}).encode("utf-8"),
             headers={"Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            print(f"# Executive Synthesis Report ({project or topic or 'System'})\n")
-            print(data.get("response", "").strip())
+        print(f"# Executive Synthesis Report ({project or topic or 'System'})\n")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            for raw_line in resp:
+                if raw_line and raw_line.strip():
+                    try:
+                        obj = json.loads(raw_line.decode("utf-8"))
+                        print(obj.get("response", ""), end="", flush=True)
+                    except Exception:
+                        pass
+            print("\n")
             return 0
-    except Exception:
-        print(f"# Executive Context Compilation ({project or topic or 'System'})\n")
+    except Exception as err:
+        print(f"# Executive Context Compilation ({project or topic or 'System'})\n[Ollama Offline/Fallback: {err}]\n")
         print("\n\n".join(context_chunks))
         return 0
 

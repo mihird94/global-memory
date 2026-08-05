@@ -246,6 +246,7 @@ def _tier_ollama(prompt: str) -> dict:
         "model": OLLAMA_LLM,
         "prompt": prompt,
         "stream": False,
+        "keep_alive": 0,
         "options": {"temperature": 0.1, "num_predict": 800},
     }, timeout=TIER_TIMEOUT["ollama"])
     return _parse_json_facts(resp.get("response", ""))
