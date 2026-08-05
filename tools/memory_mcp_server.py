@@ -149,6 +149,16 @@ def init_db():
         )
     """)
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS gms_memory_entity_links (
+            link_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_ref TEXT NOT NULL,
+            entity_id INTEGER NOT NULL,
+            relationship TEXT DEFAULT 'references',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(entity_id) REFERENCES gms_entities(entity_id)
+        )
+    """)
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS gms_procedures (
             procedure_id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE,
@@ -663,34 +673,58 @@ def record_graph_relationship(
 
 
 def extract_graph_triples(text: str) -> list[tuple[str, str, str]]:
-    """Extract (Subject, Predicate, Object) relationship triples from text using heuristic patterns."""
+    """Extract (Subject, Predicate, Object) relationship triples from text using clean entity normalization."""
     import re
     triples = []
     if not text:
         return triples
 
+    stopwords = {
+        "a", "an", "the", "this", "that", "it", "to", "in", "on", "as", "at", "by", "for", 
+        "with", "from", "is", "was", "are", "were", "be", "been", "being", "should", "could", 
+        "would", "and", "or", "but", "if", "not", "no", "yes", "so", "than", "then", "of"
+    }
+
+    def _normalize_entity(e: str) -> str:
+        e = e.strip()
+        # Strip leading articles
+        for prefix in ["the ", "a ", "an ", "this ", "that "]:
+            if e.lower().startswith(prefix):
+                e = e[len(prefix):].strip()
+                break
+        return e
+
     # 1. Key-value style: "key: value" or "key = value"
-    kv_match = re.match(r"^([a-zA-Z0-9_\-\s]+)\s*[:=]\s*(.+)$", text.strip())
+    kv_match = re.match(r"^([a-zA-Z0-9_\-\s]{3,40})\s*[:=]\s*(.+)$", text.strip())
     if kv_match:
-        subj = kv_match.group(1).strip()
-        obj = kv_match.group(2).strip()
-        if len(subj) < 60 and len(obj) < 200:
+        subj = _normalize_entity(kv_match.group(1))
+        obj = _normalize_entity(kv_match.group(2))
+        if subj.lower() not in stopwords and len(subj) >= 3 and len(obj) >= 2 and len(obj) < 150:
             triples.append((subj, "configured_as", obj))
 
-    # 2. Verb relationship patterns (case-insensitive)
+    # 2. Clean verb relationship patterns
     patterns = [
-        (r"([a-zA-Z0-9_\-\s]{1,40})\s+(uses|used|using)\s+([a-zA-Z0-9_\-\.\/]+)", "uses"),
-        (r"([a-zA-Z0-9_\-\s]{1,40})\s+(depends on|relies on|dependent on)\s+([a-zA-Z0-9_\-\.\/]+)", "depends_on"),
-        (r"([a-zA-Z0-9_\-\s]{1,40})\s+(created|implemented|built)\s+([a-zA-Z0-9_\-\.\/]+)", "created"),
-        (r"([a-zA-Z0-9_\-\s]{1,40})\s+(updated|modified|refactored)\s+([a-zA-Z0-9_\-\.\/]+)", "updated"),
-        (r"([a-zA-Z0-9_\-\s]{1,40})\s+(targets|routes to|points to)\s+([a-zA-Z0-9_\-\.\/]+)", "targets"),
+        (r"\b([a-zA-Z0-9_\-\s]{3,35})\s+(?:uses|used|using)\s+([a-zA-Z0-9_\-\.\/]+)\b", "uses"),
+        (r"\b([a-zA-Z0-9_\-\s]{3,35})\s+(?:depends on|relies on|dependent on)\s+([a-zA-Z0-9_\-\.\/]+)\b", "depends_on"),
+        (r"\b([a-zA-Z0-9_\-\s]{3,35})\s+(?:created|implemented|built)\s+([a-zA-Z0-9_\-\.\/]+)\b", "created"),
+        (r"\b([a-zA-Z0-9_\-\s]{3,35})\s+(?:updated|modified|refactored)\s+([a-zA-Z0-9_\-\.\/]+)\b", "updated"),
+        (r"\b([a-zA-Z0-9_\-\s]{3,35})\s+(?:targets|routes to|points to)\s+([a-zA-Z0-9_\-\.\/]+)\b", "targets"),
     ]
 
     for pat, pred in patterns:
         for m in re.finditer(pat, text, re.IGNORECASE):
-            sub = m.group(1).strip()
-            obj = m.group(3).strip()
-            if sub and obj and sub.lower() != obj.lower() and len(sub) > 1 and len(obj) > 1:
+            sub = _normalize_entity(m.group(1))
+            obj = _normalize_entity(m.group(2))
+            
+            # Strict stopword & quality filter
+            if (sub and obj and sub.lower() != obj.lower() 
+                and sub.lower() not in stopwords 
+                and obj.lower() not in stopwords 
+                and not sub.lower().endswith(" to") 
+                and not sub.lower().endswith(" in")
+                and not sub.lower().endswith(" as")
+                and not sub.lower().endswith(" and")
+                and len(sub) >= 3 and len(obj) >= 2):
                 triples.append((sub, pred, obj))
 
     return triples
@@ -2598,11 +2632,102 @@ def tool_mem_get_episode(args: dict) -> str:
         return f"ERROR: Failed to read episodic source: {e}"
 
 
+def tool_mem_link_memory(args: dict) -> str:
+    """Explicitly link a memory item (claim, fact, episode, task) to a Knowledge Graph entity."""
+    memory_ref = str(args.get("memory_ref", "")).strip()
+    entity_target = str(args.get("entity", "")).strip()
+    relationship = str(args.get("relationship", "references")).strip()
+
+    if not memory_ref or not entity_target:
+        return "ERROR: 'memory_ref' and 'entity' are required arguments."
+
+    init_db()
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+
+    # Resolve entity_id
+    entity_id = None
+    if entity_target.isdigit():
+        entity_id = int(entity_target)
+    else:
+        cursor.execute("SELECT entity_id FROM gms_entities WHERE lower(name) = lower(?)", (entity_target,))
+        row = cursor.fetchone()
+        if row:
+            entity_id = row[0]
+        else:
+            cursor.execute(
+                "INSERT INTO gms_entities (name, entity_type, summary) VALUES (?, 'concept', ?)",
+                (entity_target, f"Linked to memory: {memory_ref}")
+            )
+            entity_id = cursor.lastrowid
+
+    cursor.execute("""
+        INSERT INTO gms_memory_entity_links (memory_ref, entity_id, relationship)
+        VALUES (?, ?, ?)
+    """, (memory_ref, entity_id, relationship))
+
+    conn.commit()
+    conn.close()
+    return f"Successfully linked memory '{memory_ref}' --[{relationship}]--> entity #{entity_id} ({entity_target})."
+
+
+def tool_mem_get_entity_memories(args: dict) -> str:
+    """Retrieve all memory references linked to a specific Knowledge Graph entity."""
+    entity_target = str(args.get("entity", "")).strip()
+    if not entity_target:
+        return "ERROR: 'entity' argument is required."
+
+    init_db()
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT l.link_id, l.memory_ref, l.relationship, l.created_at, e.name as entity_name
+        FROM gms_memory_entity_links l
+        JOIN gms_entities e ON l.entity_id = e.entity_id
+        WHERE lower(e.name) = lower(?) OR e.entity_id = ?
+        ORDER BY l.link_id DESC
+    """, (entity_target, entity_target if entity_target.isdigit() else -1))
+
+    rows = [dict(zip(["link_id", "memory_ref", "relationship", "created_at", "entity_name"], r)) for r in cursor.fetchall()]
+    conn.close()
+
+    return json.dumps({
+        "entity": entity_target,
+        "count": len(rows),
+        "linked_memories": rows
+    }, indent=2)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Tool registry
 # ──────────────────────────────────────────────────────────────────────────────
 
 TOOLS = {
+    "mem_link_memory": {
+        "fn": tool_mem_link_memory,
+        "description": "Explicitly link a memory reference (claim, fact, task, episode) to a Knowledge Graph entity.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "memory_ref": {"type": "string", "description": "Memory reference (e.g. claim:292, fact:key, task:id)"},
+                "entity": {"type": "string", "description": "Target entity name or entity_id"},
+                "relationship": {"type": "string", "default": "references", "description": "Relationship type (references, affects, configures, documents)"}
+            },
+            "required": ["memory_ref", "entity"]
+        }
+    },
+    "mem_get_entity_memories": {
+        "fn": tool_mem_get_entity_memories,
+        "description": "Retrieve all memory references linked to a specific Knowledge Graph entity.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "description": "Entity name or entity_id"}
+            },
+            "required": ["entity"]
+        }
+    },
     "mem_session_start": {
         "fn": tool_mem_session_start,
         "description": "Load GMS startup context (preferences, projects, lessons, recent episodic, top facts). Call at the start of every session.",

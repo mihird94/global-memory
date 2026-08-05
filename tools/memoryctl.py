@@ -1506,6 +1506,42 @@ def main() -> int:
     p31.add_argument("--model", default="qwen3.5:9b")
     p31.set_defaults(fn=cmd_synthesize)
 
+def cmd_link_memory(args: argparse.Namespace) -> int:
+    import memory_mcp_server
+    res = memory_mcp_server.tool_mem_link_memory({
+        "memory_ref": args.ref,
+        "entity": args.entity,
+        "relationship": args.rel
+    })
+    print(res)
+    return 0
+
+
+def cmd_entity_memories(args: argparse.Namespace) -> int:
+    import memory_mcp_server
+    res = memory_mcp_server.tool_mem_get_entity_memories({
+        "entity": args.entity
+    })
+    print(res)
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Memory Management CLI")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    # ... keep parsers ...
+    # (Parser configuration added below)
+    p33 = sub.add_parser("link-memory", help="Explicitly link a memory item (claim, fact, task, episode) to a Knowledge Graph entity.")
+    p33.add_argument("--ref", required=True, help="Memory reference (e.g. claim:292, fact:key, task:id)")
+    p33.add_argument("--entity", required=True, help="Target entity name or entity_id")
+    p33.add_argument("--rel", default="references", help="Relationship type (references, affects, configures, documents)")
+    p33.set_defaults(fn=cmd_link_memory)
+
+    p34 = sub.add_parser("entity-memories", help="Retrieve all memory references linked to a specific Knowledge Graph entity.")
+    p34.add_argument("--entity", required=True, help="Entity name or entity_id")
+    p34.set_defaults(fn=cmd_entity_memories)
+
     p32 = sub.add_parser("audit", help="Audit semantic facts and claim ledgers for contradictions using local Ollama LLM or rules.")
     p32.add_argument("--model", default="qwen3.5:9b")
     p32.set_defaults(fn=cmd_audit)
