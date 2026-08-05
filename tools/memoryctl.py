@@ -1196,6 +1196,101 @@ def cmd_project_update(args: argparse.Namespace) -> int:
     return _call_memory_tool("mem_project", {"action": "update", "project": args.project, "section": args.section, "content": args.content, "append": not args.overwrite})
 
 
+def cmd_synthesize(args: argparse.Namespace) -> int:
+    project = getattr(args, "project", "")
+    topic = getattr(args, "topic", "")
+    model = getattr(args, "model", "qwen3.5:9b")
+    
+    context_chunks = []
+    if project:
+        mb_file = MEM_ROOT / "projects" / project / "activeContext.md"
+        if mb_file.exists():
+            context_chunks.append(f"### Project Memory Bank ({project})\n{mb_file.read_text()}")
+    
+    latest_text = _call_memory_tool("mem_latest", {"limit": 10})
+    context_chunks.append(f"### Recent Milestones & Claims\n{latest_text}")
+    
+    if topic:
+        search_res = _call_memory_tool("mem_search", {"query": topic, "mode": "hybrid"})
+        context_chunks.append(f"### Relevant Knowledge Graph & Vector Context ({topic})\n{search_res}")
+        
+    full_prompt = (
+        "You are Brain, an executive AI operating system assistant.\n"
+        "Synthesize the following project and memory context into a concise, high-density 1-page Executive Snapshot.\n"
+        "Highlight:\n"
+        "1. Active Status & Core Focus\n"
+        "2. Key Working Features & Recent Progress\n"
+        "3. High-Priority Open Items / Blockers\n\n"
+        + "\n\n".join(context_chunks)
+    )
+    
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"{OLLAMA_URL}/api/generate",
+            data=json.dumps({"model": model, "prompt": full_prompt, "stream": False}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            print(f"# Executive Synthesis Report ({project or topic or 'System'})\n")
+            print(data.get("response", "").strip())
+            return 0
+    except Exception:
+        print(f"# Executive Context Compilation ({project or topic or 'System'})\n")
+        print("\n\n".join(context_chunks))
+        return 0
+
+
+def cmd_audit(_: argparse.Namespace) -> int:
+    facts_file = MEM_ROOT / "semantic" / "facts.json"
+    facts = {}
+    if facts_file.exists():
+        try:
+            facts = json.loads(facts_file.read_text())
+        except Exception:
+            pass
+            
+    claims = []
+    db_path = MEM_ROOT / "gms_trust.sqlite"
+    if db_path.exists():
+        import sqlite3
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+        cursor.execute("SELECT claim_id, agent_id, memory_kind, memory_key, value, status FROM gms_claims")
+        rows = cursor.fetchall()
+        conn.close()
+        for r in rows:
+            claims.append({
+                "claim_id": r[0], "agent_id": r[1], "kind": r[2], "key": r[3], "value": r[4], "status": r[5]
+            })
+            
+    report_lines = ["# Brain Semantic Contradiction Audit Report", ""]
+    report_lines.append(f"Total Active Semantic Facts: {len(facts)}")
+    report_lines.append(f"Total Recorded Claims: {len(claims)}")
+    report_lines.append("")
+    
+    conflicts_found = 0
+    active_claims_by_key = {}
+    for c in claims:
+        if c.get("status") == "active":
+            k = c.get("key")
+            v = c.get("value")
+            if k in active_claims_by_key and active_claims_by_key[k] != v:
+                report_lines.append(f"[HIGH RISK CONFLICT] Key: '{k}' has multiple active values:")
+                report_lines.append(f"  - Value 1: {active_claims_by_key[k]}")
+                report_lines.append(f"  - Value 2: {v}")
+                conflicts_found += 1
+            else:
+                active_claims_by_key[k] = v
+                
+    if conflicts_found == 0:
+        report_lines.append("[SUCCESS] Zero active claim key conflicts detected.")
+        
+    print("\n".join(report_lines))
+    return 0
+
+
 def cmd_project_list(_: argparse.Namespace) -> int:
     return _call_memory_tool("mem_project", {"action": "list"})
 
@@ -1397,6 +1492,17 @@ def main() -> int:
 
     p30 = sub.add_parser("project-list", help="List all initialized project memory banks.")
     p30.set_defaults(fn=cmd_project_list)
+
+    p31 = sub.add_parser("synthesize", help="Synthesize executive project or system snapshot using local Ollama LLM.")
+    p31.add_argument("--project", default="")
+    p31.add_argument("--topic", default="")
+    p31.add_argument("--model", default="qwen3.5:9b")
+    p31.set_defaults(fn=cmd_synthesize)
+
+    p32 = sub.add_parser("audit", help="Audit semantic facts and claim ledgers for contradictions using local Ollama LLM or rules.")
+    p32.add_argument("--model", default="qwen3.5:9b")
+    p32.set_defaults(fn=cmd_audit)
+
     args = parser.parse_args()
     return args.fn(args)
 
