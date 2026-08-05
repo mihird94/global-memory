@@ -962,6 +962,16 @@ def main() -> int:
     else:
         log("DRY RUN — skipping FAISS rebuild")
 
+    # 6.5 Rebuild Knowledge Graph triples
+    if not DRY_RUN:
+        try:
+            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+            import memoryctl
+            log("Rebuilding Knowledge Graph triples...")
+            memoryctl.build_graph_relationships()
+        except Exception as e:
+            log(f"Knowledge Graph build error: {e}")
+
     # 7. Append to episodic log
     append_dream_cycle_log(len(new_facts), provider=provider_used)
 
