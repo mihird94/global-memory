@@ -1,0 +1,19 @@
+{
+  "name": "gms-desktop",
+  "version": "1.0.0",
+  "description": "Global Memory System (GMS) macOS Desktop Control Center",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "keywords": ["gms", "memory", "ai-agents", "electron", "knowledge-graph"],
+  "author": "Mihir Deshpande",
+  "license": "MIT",
+  "dependencies": {
+    "vis-network": "^9.1.9"
+  },
+  "devDependencies": {
+    "electron": "^34.2.0"
+  }
+}

@@ -1307,9 +1307,34 @@ def cmd_backup(args: argparse.Namespace) -> int:
         status = report["status"].upper()
         if report["status"] == "success":
             print(f"[{report['timestamp']}] GMS DB Backup: {status} -> {report['destination']} ({report['size_bytes']} bytes, {report['table_count']} tables, integrity: {report['integrity']})")
-        else:
-            print(f"[{datetime.now().isoformat()}] GMS DB Backup FAILED: {report.get('message', 'Unknown error')}")
     return 0 if report.get("status") == "success" else 1
+
+
+def cmd_ui(args: argparse.Namespace) -> int:
+    desktop_dir = REPO_ROOT / "desktop"
+    if not desktop_dir.exists():
+        print("ERROR: desktop/ directory not found in repository.")
+        return 1
+
+    node_modules = desktop_dir / "node_modules"
+    if not node_modules.exists():
+        print("Notice: GMS Desktop UI dependencies are not installed.")
+        print("To install and run the Mac Electron UI:")
+        print("  cd desktop && npm install && npm start")
+        return 1
+
+    if sys.platform != "darwin" and not os.environ.get("DISPLAY"):
+        print("Notice: GMS Desktop UI is an optional graphical interface.")
+        print("Running in headless Linux environment. UI is disabled.")
+        return 0
+
+    print("Launching GMS Desktop Control Center (Electron)...")
+    try:
+        subprocess.run(["npm", "start"], cwd=str(desktop_dir))
+        return 0
+    except Exception as e:
+        print(f"Failed to launch desktop UI: {e}")
+        return 1
 
 
 def cmd_latest(args: argparse.Namespace) -> int:
@@ -1709,6 +1734,9 @@ def main() -> int:
     p37.add_argument("--dest", default=None, help="Custom destination backup file path.")
     p37.add_argument("--json", action="store_true", help="Output result as JSON.")
     p37.set_defaults(fn=cmd_backup)
+
+    p38 = sub.add_parser("ui", help="Launch GMS Desktop Control Center (macOS Electron App).")
+    p38.set_defaults(fn=cmd_ui)
 
     args = parser.parse_args()
     return args.fn(args)

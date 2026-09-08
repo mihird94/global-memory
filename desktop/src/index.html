@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Global Memory System</title>
+  <link rel="stylesheet" href="styles.css">
+  <!-- Vis.js standalone network bundle for interactive knowledge graph -->
+  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+</head>
+<body>
+  <div class="app-container">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="brand-section">
+        <span class="brand-logo">🧠</span>
+        <span class="brand-title">GMS Control</span>
+        <span class="brand-badge">v2.1</span>
+      </div>
+
+      <nav class="nav-menu">
+        <div class="nav-item active" data-view="exploration">
+          <span class="nav-icon">🔍</span>
+          <span>Exploration</span>
+          <span class="nav-badge" id="badge-total-memories">-</span>
+        </div>
+        <div class="nav-item" data-view="steering">
+          <span class="nav-icon">⚖️</span>
+          <span>Steer & Verify</span>
+          <span class="nav-badge alert" id="badge-quarantine">0</span>
+        </div>
+        <div class="nav-item" data-view="daily_notes">
+          <span class="nav-icon">📝</span>
+          <span>Daily Notes</span>
+        </div>
+        <div class="nav-item" data-view="graph_view">
+          <span class="nav-icon">🕸️</span>
+          <span>Graph View</span>
+          <span class="nav-badge" id="badge-relationships">-</span>
+        </div>
+        <div class="nav-item" data-view="concepts_view">
+          <span class="nav-icon">💡</span>
+          <span>Concepts</span>
+          <span class="nav-badge" id="badge-entities">-</span>
+        </div>
+        <div class="nav-item" data-view="reminders_view">
+          <span class="nav-icon">⏰</span>
+          <span>Reminders</span>
+          <span class="nav-badge" id="badge-reminders">-</span>
+        </div>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="health-indicator">
+          <span class="health-dot" id="system-status-dot"></span>
+          <span id="system-status-text">SQLite Connected</span>
+        </div>
+        <div id="memory-root-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">~/memories</div>
+      </div>
+    </aside>
+
+    <!-- Main Wrapper -->
+    <main class="main-wrapper">
+      <header class="top-header">
+        <div class="header-left">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="global-search" class="search-input" placeholder="Search memories, facts, entities (⌘K)...">
+          </div>
+          <div class="stat-pill">
+            <span>Claims:</span>
+            <strong id="stat-active-claims">-</strong>
+          </div>
+          <div class="stat-pill">
+            <span>DB Size:</span>
+            <strong id="stat-db-size">-</strong>
+          </div>
+        </div>
+
+        <div class="header-right">
+          <button class="btn-primary" id="btn-open-add-modal">
+            <span>＋</span>
+            <span>Add Memory</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- View Container -->
+      <section class="view-container" id="main-view">
+        <!-- Rendered dynamically by views -->
+      </section>
+    </main>
+  </div>
+
+  <!-- Modal: Add Memory -->
+  <div class="modal-overlay" id="modal-add-memory">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Add New Memory Record</h3>
+        <button class="btn-close" id="btn-close-add-modal">×</button>
+      </div>
+      <form id="form-add-memory">
+        <div class="form-group">
+          <label>Memory Type / Tier</label>
+          <select class="form-control" id="add-memory-tier">
+            <option value="semantic">Semantic Fact (Key-Value / Contract)</option>
+            <option value="operational">Operational Fact</option>
+            <option value="procedural">Procedural Task / Runbook</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Fact Key (e.g. trading.nvda, infra.minipc, models.qwen)</label>
+          <input type="text" class="form-control" id="add-memory-key" placeholder="namespace.identifier" required>
+        </div>
+        <div class="form-group">
+          <label>Payload (JSON or Plain Text)</label>
+          <textarea class="form-control" id="add-memory-val" placeholder='{"ticker": "NVDA", "action": "buy", "price": 120.0, "status": "open"}' required></textarea>
+        </div>
+        <div id="add-validation-feedback" style="font-size: 12px; margin-bottom: 12px;"></div>
+        <div style="display: flex; justify-content: flex-end; gap: 10px;">
+          <button type="button" class="btn-secondary" id="btn-validate-preview">Validate Schema</button>
+          <button type="submit" class="btn-primary">Save Memory</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Edit Fact -->
+  <div class="modal-overlay" id="modal-edit-fact">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Edit Memory Fact</h3>
+        <button class="btn-close" id="btn-close-edit-modal">×</button>
+      </div>
+      <form id="form-edit-fact">
+        <div class="form-group">
+          <label>Key</label>
+          <input type="text" class="form-control" id="edit-fact-key" readonly style="opacity: 0.8;">
+        </div>
+        <div class="form-group">
+          <label>Value (JSON)</label>
+          <textarea class="form-control" id="edit-fact-val" rows="6" required></textarea>
+        </div>
+        <div id="edit-validation-feedback" style="font-size: 12px; margin-bottom: 12px;"></div>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <button type="button" class="btn-danger" id="btn-delete-fact">Delete Fact</button>
+          <div style="display: flex; gap: 10px;">
+            <button type="button" class="btn-secondary" id="btn-edit-validate">Validate</button>
+            <button type="submit" class="btn-primary">Save Changes</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Scripts -->
+  <script src="views/exploration.js"></script>
+  <script src="views/steering.js"></script>
+  <script src="views/daily_notes.js"></script>
+  <script src="views/graph_view.js"></script>
+  <script src="views/concepts_view.js"></script>
+  <script src="views/reminders_view.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

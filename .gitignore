@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .system_generated/
 memories/
+desktop/node_modules/
+desktop/dist/
+.DS_Store
