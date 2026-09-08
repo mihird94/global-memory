@@ -4,29 +4,32 @@
 
 This document captures the current state of the Global Memory System (GMS), the independently validated research inputs, the major architectural gaps, and the implementation roadmap for turning GMS into a best-in-class local memory system for multi-agent workflows.
 
-Date: 2026-06-04
+Date: 2026-09-08
 
 ## Current State
 
-GMS already has strong foundations in the following areas:
+GMS v2.1.0 provides an enterprise-grade, local-first memory platform for multi-agent systems with:
 
-- Local-first operation
-- MCP-first access pattern
-- Semantic facts plus episodic logs
-- Provenance tagging
-- Quarantine tables
-- Jøsang-style trust scoring
-- Hybrid retrieval with temporal decay and branch boost
+- **Trust-Gated Writes & Provenance**: All writes route through Bayesian trust scoring, versioned claims, and quarantine tables.
+- **Namespaced Schema Contracts**: Pydantic schema validation (`tools/schemas.py`) guarding critical namespaces (`infra`, `trading`, `models`, `policies`, `procedures`) with reputation penalties on violations.
+- **Bi-Temporal Knowledge Graph**: SQLite graph substrate (`gms_relationships`) with `valid_from`/`valid_to` validity windows, automatic invalidation of single-valued predicates, and as-of time-travel queries.
+- **Unified SQLite Vector Store**: Embeddings stored ACID-compliantly in `gms_trust.sqlite` (`gms_embeddings`), eliminating drift with FAISS sync.
+- **FlashRank Cross-Encoder Reranker**: High-precision semantic retrieval using local cross-encoder scoring.
+- **Dual-Cadence Consolidation**: Automated Post-Session Harvesting ("Agentic Sleep" via `tools/harvest.py`) and nightly Dream Cycle consolidation with Dawid-Skene calibration and retention pruning.
+- **Task Handoffs & Evaluation**: A2A-style task revision leases and 93 deterministic unit tests across Python 3.10 and 3.13.
 
-Current material gaps:
+### Material Gaps Resolved
 
-- `dream_cycle.py` bypasses the trust gateway and writes extracted facts directly
-- The nightly "EM" calibration is not actually Dawid-Skene
-- No TRAVOS-style witness or recommender weighting
-- No semantic drift monitoring
-- No lifecycle forgetting or pruning
-- No serious benchmark harness for poisoning or long-memory evaluation
-- Provenance is too flat and non-versioned for multi-claim truth resolution
+- [x] Trust gateway bypass in Dream Cycle eliminated (`save_fact_with_trust`)
+- [x] Symmetric Dawid-Skene multi-rater calibration implemented
+- [x] Weighted reviewer endorsements & TRAVOS-style trust updating
+- [x] Semantic drift monitoring and reporting
+- [x] Retention and lifecycle pruning with non-destructive claim archival
+- [x] Namespaced Pydantic schema validation at the gateway
+- [x] Bi-temporal edge tracking with functional predicate invalidation
+- [x] Consolidated ACID vector storage in SQLite
+- [x] Post-session agent micro-consolidation hook ("Agentic Sleep")
+- [x] FlashRank cross-encoder reranking integration
 
 ## Independent Research Summary
 
@@ -326,18 +329,23 @@ Why ninth:
 - LLM-only consolidation without a trust boundary
 - Claiming advanced trust or drift features before they are implemented
 
-## Recommended Execution Order
+## Execution Milestones
 
-1. Trust-gate all writes
-2. Typed memory routing
-3. Versioned claim model
-4. Temporal graph plus contradiction handling
-5. Evaluation harness
-6. Procedural memory plus reconstruction
-7. UI and product polish
+1. [x] Trust-gate all writes (Phase 1)
+2. [x] Typed memory routing (Phase 2)
+3. [x] Versioned claim model (Phase 3)
+4. [x] Temporal graph plus contradiction handling (Phase 4 & 5)
+5. [x] Namespaced Pydantic schema validation at gateway
+6. [x] Consolidated ACID vector storage in SQLite (`gms_embeddings`)
+7. [x] Cross-encoder reranking (FlashRank)
+8. [x] Post-session agent harvesting ("Agentic Sleep")
+9. [x] Evaluation harness (93 tests across Python 3.10 and 3.13)
+10. [ ] TUI graph visualization and interactive temporal time-travel slider
+11. [ ] Continuous online calibration and auto-discovery of contract schemas
 
 ## Immediate Next Step
 
-The highest-priority implementation task is:
+The highest-priority refinement tasks:
 
-- Route Dream Cycle fact promotion through the trust and quarantine gateway instead of writing LLM-extracted facts directly into `facts.json`
+- Interactive graph navigation and time-travel query slider in `gms_tui.py`
+- Distributed multi-node sync protocol between Mac (M4) and MiniPC (Linux x86_64) using lightweight SQLite changeset streams or replication hooks

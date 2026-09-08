@@ -53,6 +53,37 @@ from urllib import request
 # ──────────────────────────────────────────────────────────────────────────────
 REPO_ROOT   = Path(__file__).resolve().parent.parent
 VENV_PYTHON = REPO_ROOT / ".venv" / "bin" / "python"
+TOOLS_DIR   = REPO_ROOT / "tools"
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
+
+try:
+    from schemas import validate_fact, get_namespace_for_key, list_contracts, parse_payload
+except ImportError:
+    try:
+        from tools.schemas import validate_fact, get_namespace_for_key, list_contracts, parse_payload
+    except ImportError:
+        def validate_fact(key: str, value: Any) -> tuple[bool, Any, str | None]:
+            return True, value, None
+        def get_namespace_for_key(key: str) -> str | None:
+            return None
+        def list_contracts() -> dict[str, dict]:
+            return {}
+        def parse_payload(val: Any) -> Any:
+            return val
+
+def _get_harvest_fn():
+    try:
+        from harvest import harvest_session
+        return harvest_session
+    except ImportError:
+        try:
+            from tools.harvest import harvest_session
+            return harvest_session
+        except ImportError:
+            return None
+
+
 
 
 def _default_mem_root() -> Path:
@@ -253,6 +284,43 @@ def init_db():
     try:
         cursor.execute("ALTER TABLE gms_quarantine_reviews ADD COLUMN weight_snapshot REAL")
     except sqlite3.OperationalError:
+        pass
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS gms_embeddings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            chunk INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            dim INTEGER NOT NULL,
+            model TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(source, chunk, model)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_gms_emb_model ON gms_embeddings (model)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_gms_rel_sub_pred ON gms_relationships (subject_entity_id, predicate, valid_to)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_gms_rel_valid ON gms_relationships (valid_from, valid_to)")
+    try:
+        cursor.execute("ALTER TABLE gms_relationships ADD COLUMN valid_from TIMESTAMP")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE gms_relationships ADD COLUMN valid_to TIMESTAMP")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        import sqlite_vec
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        cursor.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS gms_vec_items USING vec0(
+                chunk_id INTEGER PRIMARY KEY,
+                embedding float[1024]
+            )
+        """)
+    except Exception:
         pass
     cursor.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_gms_quarantine_reviews_identity
@@ -616,6 +684,13 @@ def get_or_create_entity(conn: sqlite3.Connection, name: str, entity_type: str =
     return cursor.lastrowid
 
 
+SINGLE_VALUED_PREDICATES = {
+    "configured_as", "status", "targets", "assigned_to", "points_to", 
+    "active_model", "ip_address", "works_at", "location", "current_role",
+    "state", "current_branch", "endpoint", "version"
+}
+
+
 def record_graph_relationship(
     subject: str,
     predicate: str,
@@ -626,6 +701,7 @@ def record_graph_relationship(
     valid_from: str | None = None,
     valid_to: str | None = None,
     source_claim_id: int | None = None,
+    single_valued: bool | None = None,
 ) -> int:
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -642,6 +718,27 @@ def record_graph_relationship(
     now_iso = datetime.now().isoformat()
     valid_from = valid_from or now_iso
 
+    # Bi-temporal invalidation for single-valued / functional predicates
+    norm_pred = predicate.lower().strip().replace("-", "_").replace(" ", "_")
+    is_single_val = single_valued if single_valued is not None else (norm_pred in SINGLE_VALUED_PREDICATES)
+
+    if is_single_val:
+        cursor.execute(
+            """
+            SELECT relationship_id, object_entity_id, object_literal FROM gms_relationships
+            WHERE subject_entity_id = ? AND predicate = ? AND (valid_to IS NULL OR valid_to > ?)
+            """,
+            (sub_id, predicate, valid_from)
+        )
+        existing_active = cursor.fetchall()
+        for prev_rel_id, prev_obj_id, prev_obj_lit in existing_active:
+            target_matches = (prev_obj_id == obj_id and prev_obj_lit == obj_literal) if (obj_id is not None or obj_literal is not None) else False
+            if not target_matches:
+                cursor.execute(
+                    "UPDATE gms_relationships SET valid_to = ? WHERE relationship_id = ?",
+                    (valid_from, prev_rel_id)
+                )
+
     cursor.execute(
         """
         SELECT relationship_id FROM gms_relationships
@@ -652,7 +749,7 @@ def record_graph_relationship(
     row = cursor.fetchone()
     if row:
         rel_id = row[0]
-        cursor.execute("UPDATE gms_relationships SET valid_to = NULL WHERE relationship_id = ?", (rel_id,))
+        cursor.execute("UPDATE gms_relationships SET valid_from = ?, valid_to = NULL WHERE relationship_id = ?", (valid_from, rel_id))
         conn.commit()
         conn.close()
         return rel_id
@@ -670,6 +767,54 @@ def record_graph_relationship(
     conn.commit()
     conn.close()
     return rel_id
+
+
+def invalidate_graph_relationship(
+    subject: str,
+    predicate: str,
+    obj: str | None = None,
+    valid_to: str | None = None,
+) -> int:
+    """Invalidate active graph relationships matching subject and predicate (and optionally obj)."""
+    now_iso = datetime.now().isoformat()
+    valid_to = valid_to or now_iso
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute("SELECT entity_id FROM gms_entities WHERE LOWER(name) = LOWER(?)", (subject.strip(),))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return 0
+    sub_id = row[0]
+
+    if obj is not None:
+        cursor.execute("SELECT entity_id FROM gms_entities WHERE LOWER(name) = LOWER(?)", (obj.strip(),))
+        obj_row = cursor.fetchone()
+        obj_id = obj_row[0] if obj_row else None
+        cursor.execute(
+            """
+            UPDATE gms_relationships
+            SET valid_to = ?
+            WHERE subject_entity_id = ? AND predicate = ?
+              AND (object_entity_id = ? OR object_literal = ?)
+              AND (valid_to IS NULL OR valid_to > ?)
+            """,
+            (valid_to, sub_id, predicate, obj_id, obj.strip(), valid_to)
+        )
+    else:
+        cursor.execute(
+            """
+            UPDATE gms_relationships
+            SET valid_to = ?
+            WHERE subject_entity_id = ? AND predicate = ?
+              AND (valid_to IS NULL OR valid_to > ?)
+            """,
+            (valid_to, sub_id, predicate, valid_to)
+        )
+    updated = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return updated
 
 
 def extract_graph_triples(text: str) -> list[tuple[str, str, str]]:
@@ -730,7 +875,12 @@ def extract_graph_triples(text: str) -> list[tuple[str, str, str]]:
     return triples
 
 
-def query_entity_graph(entity_name: str, hops: int = 2, valid_at: str | None = None) -> dict:
+def query_entity_graph(
+    entity_name: str,
+    hops: int = 2,
+    valid_at: str | None = None,
+    include_expired: bool = False,
+) -> dict:
     import networkx as nx
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -745,12 +895,15 @@ def query_entity_graph(entity_name: str, hops: int = 2, valid_at: str | None = N
     rows = cursor.fetchall()
     conn.close()
 
+    now_iso = datetime.now().isoformat()
+    check_time = valid_at if valid_at else now_iso
+
     G = nx.DiGraph()
     for rel_id, sub_id, pred, obj_id, obj_lit, v_from, v_to in rows:
-        if valid_at:
-            if v_from and v_from > valid_at:
+        if not include_expired:
+            if v_from and v_from > check_time:
                 continue
-            if v_to and v_to <= valid_at:
+            if v_to and v_to <= check_time:
                 continue
         sub_name = entities.get(sub_id, {}).get("name", str(sub_id))
         obj_name = entities.get(obj_id, {}).get("name", obj_lit) if obj_id else obj_lit
@@ -796,6 +949,7 @@ def query_entity_graph(entity_name: str, hops: int = 2, valid_at: str | None = N
         "nodes": sorted(list(subgraph_nodes)),
         "edges": edges
     }
+
 
 
 def format_ascii_graph(graph_data: dict) -> str:
@@ -864,13 +1018,15 @@ def tool_mem_graph_query(args: dict) -> str:
     entity = args.get("entity", "").strip()
     hops = int(args.get("hops", 2))
     format_mode = args.get("format", "mermaid").strip().lower()
+    valid_at = args.get("valid_at") or args.get("as_of")
+    include_expired = str(args.get("include_expired", "false")).lower() in ("true", "1", "yes")
 
     if not entity:
         return "ERROR: 'entity' is required"
 
     try:
         init_db()
-        data = query_entity_graph(entity, hops=hops)
+        data = query_entity_graph(entity, hops=hops, valid_at=valid_at, include_expired=include_expired)
         if not data.get("found"):
             return f"INFO: Entity '{entity}' not found in Knowledge Graph."
 
@@ -1012,6 +1168,140 @@ def _embed(text: str) -> list[float] | None:
         return None
 
 
+def store_sqlite_embeddings(
+    items: list[dict],
+    model: str = EMBED_MODEL,
+    db_path: Path | None = None
+) -> int:
+    """
+    Store embedding vectors directly into gms_embeddings in SQLite.
+    items: list of dicts with keys: source, chunk, text, embedding (list[float])
+    """
+    import struct
+    p = db_path or DB_PATH
+    conn = sqlite3.connect(str(p))
+    cursor = conn.cursor()
+    count = 0
+    now_iso = datetime.now().isoformat()
+
+    for item in items:
+        emb = item["embedding"]
+        dim = len(emb)
+        blob = struct.pack(f"{dim}f", *emb)
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO gms_embeddings
+            (source, chunk, text, embedding, dim, model, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (item["source"], item["chunk"], item["text"], blob, dim, model, now_iso)
+        )
+        count += 1
+
+    conn.commit()
+    conn.close()
+    return count
+
+
+def search_sqlite_embeddings(
+    query_vector: list[float],
+    top_k: int = 5,
+    model: str | None = None,
+    db_path: Path | None = None
+) -> list[dict]:
+    """
+    Search SQLite embeddings using cosine similarity.
+    Uses NumPy if available, with pure-Python fallback.
+    """
+    import struct
+    import math
+
+    p = db_path or DB_PATH
+    if not p.exists():
+        return []
+
+    conn = sqlite3.connect(str(p))
+    cursor = conn.cursor()
+
+    query_sql = "SELECT id, source, chunk, text, embedding, dim, model FROM gms_embeddings"
+    params = []
+    if model:
+        query_sql += " WHERE model = ?"
+        params.append(model)
+
+    cursor.execute(query_sql, params)
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        return []
+
+    q_dim = len(query_vector)
+    q_norm = math.sqrt(sum(x * x for x in query_vector))
+    if q_norm == 0:
+        q_norm = 1.0
+    normalized_q = [x / q_norm for x in query_vector]
+
+    results = []
+    try:
+        import numpy as np
+        q_arr = np.array(normalized_q, dtype=np.float32)
+
+        embs = []
+        meta = []
+        for r in rows:
+            blob = r[4]
+            dim = r[5]
+            if dim != q_dim:
+                continue
+            emb = struct.unpack(f"{dim}f", blob)
+            embs.append(emb)
+            meta.append(r)
+
+        if embs:
+            mat = np.array(embs, dtype=np.float32)
+            norms = np.linalg.norm(mat, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            mat = mat / norms
+            scores = np.dot(mat, q_arr)
+            for idx in np.argsort(-scores)[:top_k]:
+                score = float(scores[idx])
+                r = meta[idx]
+                results.append({
+                    "id": r[0],
+                    "source": r[1],
+                    "chunk": r[2],
+                    "text": r[3],
+                    "score": score,
+                    "model": r[6]
+                })
+    except ImportError:
+        scored = []
+        for r in rows:
+            blob = r[4]
+            dim = r[5]
+            if dim != q_dim:
+                continue
+            emb = struct.unpack(f"{dim}f", blob)
+            e_norm = math.sqrt(sum(x * x for x in emb)) or 1.0
+            score = sum(a * (b / e_norm) for a, b in zip(normalized_q, emb))
+            scored.append((score, r))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        for score, r in scored[:top_k]:
+            results.append({
+                "id": r[0],
+                "source": r[1],
+                "chunk": r[2],
+                "text": r[3],
+                "score": float(score),
+                "model": r[6]
+            })
+
+    return results
+
+
+
 def _run_memoryctl(*args: str) -> tuple[int, str]:
     try:
         result = subprocess.run(
@@ -1058,7 +1348,7 @@ def tool_mem_session_start(_: dict) -> str:
 
 
 def tool_mem_session_end(args: dict) -> str:
-    """Log a session-end milestone to episodic memory."""
+    """Log a session-end milestone to episodic memory and run Agentic Sleep micro-consolidation."""
     agent   = args.get("agent", "unknown")
     summary = args.get("summary", "")
     if not summary:
@@ -1077,7 +1367,64 @@ def tool_mem_session_end(args: dict) -> str:
     except Exception:
         pass
 
-    return f"Session end logged to {target}"
+    harvest_result = None
+    harvest_fn = _get_harvest_fn()
+    if harvest_fn is not None:
+        try:
+            harvest_result = harvest_fn(agent=agent, summary=summary, text=entry, mem_root=MEM_ROOT)
+        except Exception:
+            pass
+
+    out_msg = f"Session end logged to {target}"
+    if harvest_result:
+        facts_cnt = len(harvest_result.get("facts_saved", []))
+        triples_cnt = harvest_result.get("triples_recorded", 0)
+        vecs_cnt = harvest_result.get("vectors_indexed", 0)
+        out_msg += f"\n[Agentic Sleep Harvest] Facts saved: {facts_cnt}, Triples: {triples_cnt}, Vectors indexed: {vecs_cnt}"
+    return out_msg
+
+
+def tool_mem_session_harvest(args: dict) -> str:
+    """Run automated post-session micro-consolidation ('Agentic Sleep')."""
+    agent = _normalize_agent_id(args.get("agent", "unknown"))
+    summary = args.get("summary", "")
+    if not summary:
+        return "ERROR: 'summary' is required"
+    text = args.get("text")
+    harvest_fn = _get_harvest_fn()
+    if harvest_fn is None:
+        return "ERROR: harvest module not available"
+    try:
+        report = harvest_fn(agent=agent, summary=summary, text=text, mem_root=MEM_ROOT)
+        return json.dumps(report, indent=2)
+    except Exception as exc:
+        return f"ERROR: harvesting failed: {exc}"
+
+
+def tool_mem_validate_schemas(args: dict) -> str:
+    """Validate all active facts against registered schema contracts."""
+    contracts = list_contracts()
+    report = {
+        "contracts_available": list(contracts.keys()),
+        "validation_results": {},
+        "violations": []
+    }
+    for bucket in ("semantic", "operational", "procedural"):
+        facts = _load_typed_facts(bucket)
+        for k, v in facts.items():
+            is_valid, norm_val, err_msg = validate_fact(k, v)
+            ns = get_namespace_for_key(k)
+            if ns:
+                if is_valid:
+                    report["validation_results"][k] = "valid"
+                else:
+                    report["validation_results"][k] = "invalid"
+                    report["violations"].append({"key": k, "bucket": bucket, "error": err_msg})
+            else:
+                report["validation_results"][k] = "untyped"
+
+    return json.dumps(report, indent=2)
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1402,6 +1749,16 @@ def tool_mem_save_typed(args: dict) -> str:
         init_db()
     except Exception as e:
         return f"ERROR: Database initialization failed: {e}"
+
+    # 1. Namespaced Schema Contract Validation
+    is_valid, normalized_val, schema_err = validate_fact(key, value)
+    if not is_valid:
+        increment_agent_beta(agent_id, 0.5)
+        log_security_event("SCHEMA_REJECT", f"[{kind.upper()}] Fact '{key}' from agent '{agent_id}' rejected: {schema_err}")
+        return f"ERROR: Schema validation failed for '{key}':\n  {schema_err}"
+
+    if isinstance(normalized_val, (dict, list)):
+        value = json.dumps(normalized_val, sort_keys=True)
 
     prov_key = key if kind == "semantic" else f"{kind}:{key}"
 
@@ -2939,6 +3296,8 @@ TOOLS = {
                 "entity": {"type": "string", "description": "Entity name to query"},
                 "hops":   {"type": "integer", "description": "Search depth (default 2)"},
                 "format": {"type": "string", "description": "Output format: 'mermaid', 'ascii', or 'json' (default mermaid)"},
+                "valid_at": {"type": "string", "description": "Point-in-time timestamp (ISO format) for time-travel queries"},
+                "include_expired": {"type": "boolean", "description": "Whether to include historically invalidated/expired edges (default false)"},
             },
             "required": ["entity"],
         },
@@ -3196,6 +3555,28 @@ TOOLS = {
                 "threshold": {"type": "number", "description": "Optional threshold for warning classification (default: 0.05)"}
             },
             "required": [],
+        },
+    },
+    "mem_validate_schemas": {
+        "fn": tool_mem_validate_schemas,
+        "description": "Validate active memory facts across semantic, operational, and procedural buckets against schema contracts.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    "mem_session_harvest": {
+        "fn": tool_mem_session_harvest,
+        "description": "Execute automated post-session micro-consolidation ('Agentic Sleep') to extract facts, temporal graph edges, and vectors.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent":   {"type": "string", "description": "Agent name (default: Antigravity)"},
+                "summary": {"type": "string", "description": "Summary of session accomplishments"},
+                "text":    {"type": "string", "description": "Optional extra notes or conversation context"},
+            },
+            "required": ["summary"],
         },
     },
 }

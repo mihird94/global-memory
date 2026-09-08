@@ -30,8 +30,13 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
+try:
+    from datetime import UTC, datetime, timedelta
+except ImportError:
+    from datetime import datetime, timedelta, timezone
+    UTC = timezone.utc
+
 from urllib import request
 
 # ──────────────────────────────────────────────────────────────────────────────

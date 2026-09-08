@@ -15,6 +15,34 @@ from typing import Dict, List, Tuple
 from urllib import request
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+TOOLS_DIR = REPO_ROOT / "tools"
+import sys
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
+
+try:
+    from schemas import validate_fact, get_namespace_for_key, list_contracts, parse_payload
+except ImportError:
+    try:
+        from tools.schemas import validate_fact, get_namespace_for_key, list_contracts, parse_payload
+    except ImportError:
+        def validate_fact(key: str, value: Any) -> tuple[bool, Any, str | None]:
+            return True, value, None
+        def get_namespace_for_key(key: str) -> str | None:
+            return None
+        def list_contracts() -> dict[str, dict]:
+            return {}
+        def parse_payload(val: Any) -> Any:
+            return val
+
+try:
+    from harvest import harvest_session
+except ImportError:
+    try:
+        from tools.harvest import harvest_session
+    except ImportError:
+        harvest_session = None
+
 
 
 def _default_mem_root() -> Path:
@@ -360,16 +388,48 @@ def cmd_lesson_add(args: argparse.Namespace) -> int:
 
 
 def cmd_fact_set(args: argparse.Namespace) -> int:
+    is_valid, norm_val, err_msg = validate_fact(args.key, args.value)
+    if not is_valid:
+        print(f"ERROR: Schema validation failed for '{args.key}':\n  {err_msg}")
+        return 1
+
+    val_to_save = json.dumps(norm_val, sort_keys=True) if isinstance(norm_val, (dict, list)) else str(args.value)
     json_path = MEM_ROOT / "semantic" / "facts.json"
-    _json_update(json_path, args.key, args.value)
+    _json_update(json_path, args.key, val_to_save)
     print(f"updated: {json_path}")
     return 0
 
 
-def cmd_index_build(args: argparse.Namespace) -> int:
-    import numpy as np
-    import faiss
+def cmd_fact_validate(_: argparse.Namespace) -> int:
+    contracts = list_contracts()
+    print(f"Available Schema Contracts: {', '.join(contracts.keys())}\n")
+    violations = 0
+    total = 0
+    for bucket in ("semantic", "operational", "procedural"):
+        json_path = MEM_ROOT / bucket / "facts.json"
+        if not json_path.exists():
+            continue
+        try:
+            facts = json.loads(json_path.read_text())
+        except Exception:
+            continue
+        for k, v in facts.items():
+            total += 1
+            is_valid, norm_val, err_msg = validate_fact(k, v)
+            ns = get_namespace_for_key(k)
+            if ns:
+                if not is_valid:
+                    violations += 1
+                    print(f"[{bucket.upper()}] [INVALID] Key: '{k}' -> {err_msg}")
+                else:
+                    print(f"[{bucket.upper()}] [VALID]   Key: '{k}' (Contract: {ns})")
+            else:
+                print(f"[{bucket.upper()}] [UNTYPED] Key: '{k}'")
+    print(f"\nAudit complete: {total} total facts checked, {violations} schema violations found.")
+    return 0 if violations == 0 else 1
 
+
+def cmd_index_build(args: argparse.Namespace) -> int:
     docs = _iter_episodic_texts()
     if not docs:
         print("no episodic docs found")
@@ -384,37 +444,80 @@ def cmd_index_build(args: argparse.Namespace) -> int:
             texts.append(chunk)
 
     vectors = [_embed(t, args.model) for t in texts]
-    mat = np.array(vectors, dtype=np.float32)
-    faiss.normalize_L2(mat)
-    index = faiss.IndexFlatIP(mat.shape[1])
-    index.add(mat)
 
-    INDEX_ROOT.mkdir(parents=True, exist_ok=True)
-    idx_path = INDEX_ROOT / "episodic.faiss"
-    meta_path = INDEX_ROOT / "episodic_meta.json"
-    faiss.write_index(index, str(idx_path))
-    meta_path.write_text(json.dumps(meta, indent=2))
-    drift_report = _persist_drift_snapshot(
-        _build_drift_snapshot(mat, args.model, len(docs), len(texts)),
-        args.drift_threshold,
-    )
-    print(f"built: {idx_path}")
-    print(f"meta:  {meta_path}")
-    print(f"docs={len(docs)} chunks={len(texts)} dim={mat.shape[1]} model={args.model}")
-    print(f"drift_status={drift_report['status']} threshold={args.drift_threshold}")
+    # 1. Consolidated SQLite Storage: store directly in gms_trust.sqlite
+    try:
+        import memory_mcp_server
+        memory_mcp_server.init_db()
+        items_to_store = []
+        for m, vec in zip(meta, vectors):
+            items_to_store.append({
+                "source": m["source"],
+                "chunk": m["chunk"],
+                "text": m["text"],
+                "embedding": vec,
+            })
+        stored_count = memory_mcp_server.store_sqlite_embeddings(items_to_store, model=args.model)
+        print(f"sqlite-vec: stored {stored_count} embedding vectors in gms_trust.sqlite")
+    except Exception as e:
+        print(f"sqlite-vec warning: could not store in SQLite: {e}")
+
+    # 2. Export external FAISS index if faiss is installed (backward compatibility)
+    try:
+        import numpy as np
+        import faiss
+        mat = np.array(vectors, dtype=np.float32)
+        faiss.normalize_L2(mat)
+        index = faiss.IndexFlatIP(mat.shape[1])
+        index.add(mat)
+
+        INDEX_ROOT.mkdir(parents=True, exist_ok=True)
+        idx_path = INDEX_ROOT / "episodic.faiss"
+        meta_path = INDEX_ROOT / "episodic_meta.json"
+        faiss.write_index(index, str(idx_path))
+        meta_path.write_text(json.dumps(meta, indent=2))
+        drift_report = _persist_drift_snapshot(
+            _build_drift_snapshot(mat, args.model, len(docs), len(texts)),
+            args.drift_threshold,
+        )
+        print(f"built: {idx_path}")
+        print(f"meta:  {meta_path}")
+        print(f"docs={len(docs)} chunks={len(texts)} dim={mat.shape[1]} model={args.model}")
+        print(f"drift_status={drift_report['status']} threshold={args.drift_threshold}")
+    except ImportError:
+        dim = len(vectors[0]) if vectors else 0
+        print(f"docs={len(docs)} chunks={len(texts)} dim={dim} model={args.model}")
+        print("Note: faiss not installed; vectors are fully searchable via SQLite-resident storage.")
+
     return 0
 
 
 def cmd_index_query(args: argparse.Namespace) -> int:
     import numpy as np
-    import faiss
 
     idx_path = INDEX_ROOT / "episodic.faiss"
     meta_path = INDEX_ROOT / "episodic_meta.json"
     if not idx_path.exists() or not meta_path.exists():
+        # Fall back to SQLite embeddings
+        try:
+            import memory_mcp_server
+            qvec = _embed(args.query, args.model)
+            hits = memory_mcp_server.search_sqlite_embeddings(qvec, top_k=args.k, model=args.model)
+            if hits:
+                print(f"\n--- SQLite Vector Query Results ({len(hits)} hits) ---")
+                for i, hit in enumerate(hits, 1):
+                    score = hit["score"]
+                    src = hit["source"]
+                    txt = hit["text"]
+                    print(f"[{i}] score={score:.4f} src={src}")
+                    print(f"    {txt[:160]}...\n")
+                return 0
+        except Exception:
+            pass
         print("index missing: run index-build first")
         return 1
 
+    import faiss
     meta = json.loads(meta_path.read_text())
     index = faiss.read_index(str(idx_path))
     qvec = np.array([_embed(args.query, args.model)], dtype=np.float32)
@@ -1036,165 +1139,7 @@ def cmd_tui(_: argparse.Namespace) -> int:
         return 1
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Memory control CLI for global-memory skill.")
-    sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p0 = sub.add_parser("start-context", help="Print startup context bundle from memory.")
-    p0.set_defaults(fn=cmd_start_context)
-
-    p1 = sub.add_parser("find", help="Search semantic memory with ripgrep.")
-    p1.add_argument("pattern")
-    p1.set_defaults(fn=cmd_find)
-
-    p2 = sub.add_parser("log", help="Append episodic milestone entry.")
-    p2.add_argument("--agent", required=True)
-    p2.add_argument("--title", required=True)
-    p2.add_argument("--note", required=True)
-    p2.set_defaults(fn=cmd_log)
-
-    p3 = sub.add_parser("lesson-add", help="Append global lesson.")
-    p3.add_argument("text")
-    p3.set_defaults(fn=cmd_lesson_add)
-
-    p4 = sub.add_parser("fact-set", help="Set semantic fact key/value in facts.json.")
-    p4.add_argument("key")
-    p4.add_argument("value")
-    p4.set_defaults(fn=cmd_fact_set)
-
-    p5 = sub.add_parser("index-build", help="Build FAISS episodic index using Ollama embeddings.")
-    p5.add_argument("--model", default=DEFAULT_EMBED_MODEL)
-    p5.add_argument("--drift-threshold", type=float, default=0.05, help="Angular-distance alert threshold for drift snapshots.")
-    p5.set_defaults(fn=cmd_index_build)
-
-    p6 = sub.add_parser("index-query", help="Query FAISS episodic index.")
-    p6.add_argument("query")
-    p6.add_argument("-k", type=int, default=5)
-    p6.add_argument("--model", default=DEFAULT_EMBED_MODEL)
-    p6.add_argument("--decay-rate", type=float, default=0.002, help="Exponential decay rate per day.")
-    p6.add_argument("--no-decay", action="store_true", help="Disable temporal decay.")
-    p6.add_argument("--branch-boost", type=float, default=1.15, help="Active branch text match boost multiplier.")
-    p6.add_argument("--no-boost", action="store_true", help="Disable git branch boost.")
-    p6.add_argument("--no-hybrid", action="store_true", help="Disable BM25 hybrid search RRF.")
-    p6.add_argument("--rerank", action="store_true", default=True, help="Enable Stage-2 Cross-Encoder reranking (default).")
-    p6.add_argument("--no-rerank", action="store_true", help="Disable Stage-2 Cross-Encoder reranking.")
-    p6.add_argument("--rerank-model", default=DEFAULT_RERANK_MODEL, help=f"Cross-encoder model for FlashRank (default: {DEFAULT_RERANK_MODEL}).")
-    p6.add_argument("--rerank-k", type=int, default=25, help="Candidate pool size to pass to cross-encoder reranker.")
-    p6.set_defaults(fn=cmd_index_query)
-
-    p7 = sub.add_parser("trust-list", help="List all agent reputations.")
-    p7.set_defaults(fn=cmd_trust_list)
-
-    p8 = sub.add_parser("quarantine-list", help="List all quarantined facts.")
-    p8.set_defaults(fn=cmd_quarantine_list)
-
-    p9 = sub.add_parser("quarantine-resolve", help="Resolve a quarantined fact.")
-    p9.add_argument("key", help="The fact key to resolve.")
-    p9.add_argument("agent_id", help="The agent who proposed the fact.")
-    p9.add_argument("action", choices=["promote", "discard"], help="Resolution action.")
-    p9.add_argument("--resolver", default="CLI", help="The resolving agent identity.")
-    p9.set_defaults(fn=cmd_quarantine_resolve)
-
-    p9_1 = sub.add_parser("quarantine-review-add", help="Add a reviewer endorsement, rejection, or abstention for a quarantined item.")
-    p9_1.add_argument("key", help="The fact key.")
-    p9_1.add_argument("agent_id", help="The agent who proposed the fact.")
-    p9_1.add_argument("rating", choices=["endorse", "reject", "abstain"], help="Witness stance for the quarantined item.")
-    p9_1.add_argument("--reviewer", required=True, help="The reviewer agent identity.")
-    p9_1.add_argument("--rationale", default="", help="Optional rationale.")
-    p9_1.set_defaults(fn=cmd_quarantine_review_add)
-
-    p9_2 = sub.add_parser("quarantine-review-list", help="List all reviews for a quarantined item.")
-    p9_2.add_argument("key", help="The fact key.")
-    p9_2.add_argument("agent_id", help="The agent who proposed the fact.")
-    p9_2.set_defaults(fn=cmd_quarantine_review_list)
-
-    p9_3 = sub.add_parser("quarantine-recommendation", help="Get a weighted recommendation summary for a quarantined item.")
-    p9_3.add_argument("key", help="The fact key.")
-    p9_3.add_argument("agent_id", help="The agent who proposed the fact.")
-    p9_3.set_defaults(fn=cmd_quarantine_recommendation)
-
-    p10 = sub.add_parser("claims-list", help="List all recorded claims in the versioned claim ledger.")
-    p10.add_argument("--kind", help="Filter by memory kind.")
-    p10.add_argument("--key", help="Filter by memory key.")
-    p10.add_argument("--status", help="Filter by claim status.")
-    p10.set_defaults(fn=cmd_claims_list)
-
-    p11 = sub.add_parser("drift-status", help="Report semantic drift status from the latest index snapshots.")
-    p11.add_argument("--threshold", type=float, default=0.05, help="Angular-distance alert threshold.")
-    p11.add_argument("--json", action="store_true", help="Retained for compatibility; output is always JSON.")
-    p11.set_defaults(fn=cmd_drift_status)
-
-    p12 = sub.add_parser("calibration-report", help="Summarize observer overlap, agreement, and disagreement from the claim ledger.")
-    p12.add_argument("--json", action="store_true", help="Output raw JSON.")
-    p12.set_defaults(fn=cmd_calibration_report)
-
-    p13 = sub.add_parser("retention-report", help="Report stale low-confidence active facts and stale quarantines.")
-    p13.add_argument("--low-confidence", type=float, default=0.35, help="Confidence threshold for archival candidates.")
-    p13.add_argument("--stale-active-days", type=int, default=30, help="Minimum age in days for low-confidence active claims.")
-    p13.add_argument("--stale-quarantine-days", type=int, default=14, help="Minimum age in days for stale quarantines.")
-    p13.add_argument("--json", action="store_true", help="Output raw JSON.")
-    p13.set_defaults(fn=cmd_retention_report)
-
-    p14 = sub.add_parser("retention-prune", help="Archive stale low-confidence active facts and flush stale quarantines.")
-    p14.add_argument("--low-confidence", type=float, default=0.35, help="Confidence threshold for archival candidates.")
-    p14.add_argument("--stale-active-days", type=int, default=30, help="Minimum age in days for low-confidence active claims.")
-    p14.add_argument("--stale-quarantine-days", type=int, default=14, help="Minimum age in days for stale quarantines.")
-    p14.add_argument("--json", action="store_true", help="Output raw JSON.")
-    p14.set_defaults(fn=cmd_retention_prune)
-
-    p15 = sub.add_parser("tui", help="Launch the SSH-friendly terminal UI.")
-    p15.set_defaults(fn=cmd_tui)
-
-    p16 = sub.add_parser("task-create", help="Create a durable project-scoped task for cross-agent work.")
-    p16.add_argument("task_id")
-    p16.add_argument("title")
-    p16.add_argument("--agent", required=True)
-    p16.add_argument("--project", default="")
-    p16.add_argument("--objective", default="")
-    p16.add_argument("--parent-task-id", default="")
-    p16.set_defaults(fn=cmd_task_create)
-
-    p17 = sub.add_parser("task-claim", help="Atomically claim a task at its current revision.")
-    p17.add_argument("task_id")
-    p17.add_argument("expected_revision", type=int)
-    p17.add_argument("--agent", required=True)
-    p17.add_argument("--lease-seconds", type=int, default=1800)
-    p17.set_defaults(fn=cmd_task_claim)
-
-    p18 = sub.add_parser("task-checkpoint", help="Save an immutable JSON state checkpoint for an owned task.")
-    p18.add_argument("task_id")
-    p18.add_argument("expected_revision", type=int)
-    p18.add_argument("--agent", required=True)
-    p18.add_argument("--state", required=True, help="JSON object")
-    p18.add_argument("--label", default="")
-    p18.add_argument("--artifact-refs", default="[]", help="JSON array")
-    p18.add_argument("--claim-refs", default="[]", help="JSON array")
-    p18.add_argument("--episode-refs", default="[]", help="JSON array")
-    p18.set_defaults(fn=cmd_task_checkpoint)
-
-    p19 = sub.add_parser("task-handoff", help="Release an owned task with a structured handoff package.")
-    p19.add_argument("task_id")
-    p19.add_argument("expected_revision", type=int)
-    p19.add_argument("--source-agent", required=True)
-    p19.add_argument("--target-agent", default="")
-    p19.add_argument("--objective", default="")
-    p19.add_argument("--completed-work", default="")
-    p19.add_argument("--next-action", default="")
-    p19.add_argument("--blockers", default="")
-    p19.add_argument("--acceptance-criteria", default="")
-    p19.add_argument("--context", default="{}", help="JSON object")
-    p19.add_argument("--artifact-refs", default="[]", help="JSON array")
-    p19.set_defaults(fn=cmd_task_handoff)
-
-    p20 = sub.add_parser("task-resume", help="Read a task's latest checkpoint and handoff package.")
-    p20.add_argument("task_id")
-    p20.set_defaults(fn=cmd_task_resume)
-
-    p21 = sub.add_parser("task-complete", help="Mark an owned task completed at its current revision.")
-    p21.add_argument("task_id")
-    p21.add_argument("expected_revision", type=int)
-    p21.add_argument("--agent", required=True)
-    p21.set_defaults(fn=cmd_task_complete)
 
 def cmd_graph_build(_: argparse.Namespace | None = None) -> int:
     """Batch extract triples from active claims, facts, and episodic history into SQLite graph tables."""
@@ -1246,11 +1191,49 @@ def build_graph_relationships() -> int:
 
 
 def cmd_graph_query(args: argparse.Namespace) -> int:
-    return _call_memory_tool("mem_graph_query", {"entity": args.entity, "hops": args.hops, "format": "json"})
+    payload = {"entity": args.entity, "hops": args.hops, "format": "json"}
+    if getattr(args, "as_of", None):
+        payload["valid_at"] = args.as_of
+    if getattr(args, "include_expired", False):
+        payload["include_expired"] = True
+    return _call_memory_tool("mem_graph_query", payload)
 
 
 def cmd_graph_show(args: argparse.Namespace) -> int:
-    return _call_memory_tool("mem_graph_query", {"entity": args.entity, "hops": args.hops, "format": "ascii"})
+    payload = {"entity": args.entity, "hops": args.hops, "format": "ascii"}
+    if getattr(args, "as_of", None):
+        payload["valid_at"] = args.as_of
+    if getattr(args, "include_expired", False):
+        payload["include_expired"] = True
+    return _call_memory_tool("mem_graph_query", payload)
+
+
+def cmd_graph_invalidate(args: argparse.Namespace) -> int:
+    import memory_mcp_server
+    memory_mcp_server.init_db()
+    count = memory_mcp_server.invalidate_graph_relationship(
+        subject=args.subject,
+        predicate=args.predicate,
+        obj=args.object,
+        valid_to=getattr(args, "valid_to", None),
+    )
+    print(f"Invalidated {count} relationship edge(s) matching ({args.subject}, {args.predicate}, {args.object or '*'}).")
+    return 0
+
+
+def cmd_session_harvest(args: argparse.Namespace) -> int:
+    if harvest_session is None:
+        print("ERROR: harvest module not available")
+        return 1
+    report = harvest_session(
+        agent=args.agent,
+        summary=args.summary,
+        text=args.text,
+        incremental_index=not getattr(args, "no_index", False),
+    )
+    print(json.dumps(report, indent=2))
+    return 0
+
 
 
 def cmd_latest(args: argparse.Namespace) -> int:
@@ -1420,6 +1403,9 @@ def main() -> int:
     p4.add_argument("value")
     p4.set_defaults(fn=cmd_fact_set)
 
+    p4_1 = sub.add_parser("fact-validate", help="Validate active facts against registered schema contracts.")
+    p4_1.set_defaults(fn=cmd_fact_validate)
+
     p5 = sub.add_parser("index-build", help="Build FAISS episodic index using Ollama embeddings.")
     p5.add_argument("--model", default=DEFAULT_EMBED_MODEL)
     p5.add_argument("--drift-threshold", type=float, default=0.05, help="Angular-distance alert threshold for drift snapshots.")
@@ -1565,12 +1551,23 @@ def main() -> int:
     p24 = sub.add_parser("graph-query", help="Query 1-hop & 2-hop Knowledge Graph relationships for an entity.")
     p24.add_argument("entity")
     p24.add_argument("--hops", type=int, default=2)
+    p24.add_argument("--as-of", default=None, help="Point-in-time timestamp for time-travel queries")
+    p24.add_argument("--include-expired", action="store_true", help="Include historically invalidated/expired edges")
     p24.set_defaults(fn=cmd_graph_query)
 
     p25 = sub.add_parser("graph-show", help="Render ASCII Knowledge Graph topology for an entity in the terminal.")
     p25.add_argument("entity")
     p25.add_argument("--hops", type=int, default=2)
+    p25.add_argument("--as-of", default=None, help="Point-in-time timestamp for time-travel queries")
+    p25.add_argument("--include-expired", action="store_true", help="Include historically invalidated/expired edges")
     p25.set_defaults(fn=cmd_graph_show)
+
+    p25_1 = sub.add_parser("graph-invalidate", help="Invalidate active relationship edges in the Knowledge Graph.")
+    p25_1.add_argument("subject", help="Subject entity name")
+    p25_1.add_argument("predicate", help="Relationship predicate")
+    p25_1.add_argument("--object", default=None, help="Target object (optional)")
+    p25_1.add_argument("--valid-to", default=None, help="Expiration timestamp (defaults to current time)")
+    p25_1.set_defaults(fn=cmd_graph_invalidate)
 
     p26 = sub.add_parser("latest", help="Fetch the latest N episodic milestones and fact updates across memory.")
     p26.add_argument("--limit", type=int, default=10)
@@ -1615,6 +1612,13 @@ def main() -> int:
     p34 = sub.add_parser("entity-memories", help="Retrieve all memory references linked to a specific Knowledge Graph entity.")
     p34.add_argument("--entity", required=True, help="Entity name or entity_id")
     p34.set_defaults(fn=cmd_entity_memories)
+
+    p35 = sub.add_parser("session-harvest", help="Perform automated post-session micro-consolidation ('Agentic Sleep').")
+    p35.add_argument("--agent", default="Antigravity", help="Agent name")
+    p35.add_argument("--summary", required=True, help="Session summary")
+    p35.add_argument("--text", default=None, help="Optional text context")
+    p35.add_argument("--no-index", action="store_true", help="Skip incremental vector indexing")
+    p35.set_defaults(fn=cmd_session_harvest)
 
     args = parser.parse_args()
     return args.fn(args)

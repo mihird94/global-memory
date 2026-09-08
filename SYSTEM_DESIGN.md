@@ -34,6 +34,10 @@ GMS is implemented as a set of local tools around a shared memory root.
   - MCP server and trust-aware write surface
 - `tools/memoryctl.py`
   - CLI and operator commands
+- `tools/schemas.py`
+  - Namespaced Pydantic schema contracts for typed memory validation at the trust gateway
+- `tools/harvest.py`
+  - Automated post-session micro-consolidation ("Agentic Sleep") and fact/graph extraction
 - `tools/gms_tui.py`
   - curses terminal UI for SSH use
 - `tools/dream_cycle.py`
@@ -45,10 +49,10 @@ GMS is implemented as a set of local tools around a shared memory root.
 
 ### Shared Storage
 
-- Typed `facts.json` files for current state
-- `gms_trust.sqlite` for claims, provenance, trust, quarantine, reviews, procedures, and graph edges
-- episodic markdown logs for narrative history
-- optional embedding index files under the memory root
+- Typed `facts.json` files for current state projection
+- `gms_trust.sqlite` for claims, provenance, trust reputations, quarantine, reviews, procedures, bi-temporal graph edges, and ACID `gms_embeddings` vector storage
+- episodic markdown logs (`journal.md`) for narrative history
+- optional FAISS cache index files (`episodic.faiss`) under the memory root exported from SQLite
 
 ## Data Model
 
@@ -67,6 +71,19 @@ GMS routes writes into one of these memory kinds:
 
 Current fact state for non-session kinds is stored in `<kind>/facts.json`.
 
+### Namespaced Schema Contracts
+
+To prevent untyped, malformed, or hallucinated writes from corrupting domain state, GMS enforces namespaced Pydantic contracts at the trust gateway (`tools/schemas.py`):
+
+- `infra.*`: `InfraNodeContract` (host, status, ip, port, services, role)
+- `alphaos.signal.*`, `alphaos.trade.*`, `trading.*`: `TradingSignalContract` (ticker, action, price, confidence, rationale, regime)
+- `models.*`, `ml.*`: `ModelMetadataContract` (model_name, version, context_length, quant, backend)
+- `policies.*`, `rules.*`: `OperationalPolicyContract` (policy_id, scope, enforcement, rule_text)
+- `procedures.*`: `ProceduralTaskContract` (task_name, trigger, steps, expected_outcome)
+- Untyped namespaces remain permissive for full backwards compatibility (`is_valid=True`).
+
+When a client attempts to save a fact under a validated namespace with invalid types or missing required fields, `tool_mem_save_typed` and `memoryctl fact-set` immediately reject the write with an informative validation error and apply a reputation penalty (`beta += 0.5`) to the offending agent.
+
 ### Trust Database
 
 The SQLite trust database is the authoritative audit layer.
@@ -84,7 +101,9 @@ Key tables:
 - `gms_entities`
   - lightweight entity registry
 - `gms_relationships`
-  - graph edges sourced from claims
+  - bi-temporal graph edges (`valid_from`, `valid_to`, `source_claim_id`) with automatic invalidation of single-valued predicates
+- `gms_embeddings`
+  - ACID SQLite vector store (`key`, `kind`, `embedding` BLOB/JSON, `text`, `updated_at`) eliminating synchronization drift
 - `gms_procedures`
   - extracted procedural memory
 - `gms_quarantine_reviews`
@@ -193,46 +212,52 @@ Routing is intentionally simple and heuristic. The system classifies writes by k
 
 This follows the design principle that simple routing is better than a large opaque router until the schema pressure proves otherwise.
 
-## Entity and Relationship Layer
+## Entity and Relationship Layer (Bi-Temporal Graph)
 
-GMS includes a lightweight graph substrate rather than a separate graph database. Claims can source entity and relationship records, which enables:
+GMS implements a bi-temporal knowledge graph substrate directly in SQLite (`gms_relationships` and `gms_entities`), following the Graphiti/Zep pattern:
 
-- provenance-aware structured relations
-- future graph exploration
-- relationship validity windows
+- **Bi-Temporal Validity**: Every edge tracks both ingestion time (`created_at`) and domain validity window (`valid_from`, `valid_to`).
+- **Single-Valued Predicate Invalidation**: For functional relationships where an entity can only have one active target (e.g., `hosted_on`, `current_state`, `version_of`, `assigned_to`, `active_regime`, `status_of`), inserting a new edge automatically invalidates previous active edges by setting their `valid_to` timestamp to `valid_from`.
+- **Time-Travel Queries**: Clients can query the graph as-of any point in time (`valid_at` / `--as-of`), filtering for edges where `valid_from <= as_of AND (valid_to IS NULL OR valid_to > as_of)`.
+- **Lifecycle & Invalidation Tools**: Explicit invalidation via `invalidate_graph_relationship()` (exposed in MCP as `tool_mem_graph_invalidate` and CLI `memoryctl graph-invalidate`), with an `include_expired` flag for historical graph exploration.
 
-This is intentionally narrow. The graph layer exists to enrich memory semantics, not to become an independent persistence platform.
+This provides point-in-time consistency and prevents contradictions from accumulating in the active graph.
 
-## Dream Cycle
+## Consolidation: Dream Cycle & Session Harvesting
 
-The Dream Cycle is the nightly consolidation job. It:
+Memory consolidation operates at two timescales:
 
+### 1. Automated Post-Session Harvesting ("Agentic Sleep")
+Between real-time logging and the nightly Dream Cycle, GMS provides micro-consolidation via `tools/harvest.py`:
+- Triggers automatically upon `tool_mem_session_end` or via CLI hook `tools/post_session_harvest.sh`.
+- Scans recent session episode logs and extracts candidate facts and temporal triples.
+- Validates candidate facts against namespaced Pydantic schemas.
+- Saves clean facts through the trust gateway (`save_fact_with_trust`).
+- Stores vector embeddings incrementally into SQLite (`gms_embeddings`).
+- Boosts agent trust reputation (`alpha += 0.5`) upon successful consolidation.
+
+### 2. Nightly Dream Cycle
+The Dream Cycle (`tools/dream_cycle.py`) is the comprehensive nightly batch job. It:
 1. reads recent episodic journal material
-2. extracts candidate durable facts through a provider cascade
+2. extracts candidate durable facts through a provider cascade (Antigravity CLI -> Gemini CLI -> Ollama local fallback)
 3. routes those candidates through the same trust-aware save path used elsewhere
-4. rebuilds the embedding index when appropriate
-5. emits a calibration report
+4. rebuilds and synchronizes the SQLite embedding store and optional FAISS index
+5. emits a multi-rater calibration report (Dawid-Skene)
 6. runs retention pruning
 7. appends a summary entry to episodic history
 
-Provider cascade:
-
-- Antigravity CLI
-- Gemini CLI
-- Ollama local fallback
-
-The critical design constraint is that Dream Cycle is not privileged to bypass the trust layer.
+The critical design constraint is that neither Dream Cycle nor Session Harvesting is privileged to bypass the trust layer.
 
 ## Retrieval and Search
 
-GMS uses a hybrid retrieval approach:
+GMS uses a multi-stage hybrid retrieval architecture:
 
-- direct fact lookup through typed fact stores
-- semantic and textual retrieval through the CLI and MCP tools
-- recency-aware episodic retrieval
-- drift reporting over embedding/index state
-
-The current system is optimized for local operation and operator visibility rather than maximal retrieval sophistication.
+- **Direct Fact Lookup**: Instant key-value access via typed fact projections (`facts.json`).
+- **Unified SQLite Vector Store**: Embeddings are persisted inside `gms_trust.sqlite` (`gms_embeddings`), using NumPy-vectorized cosine dot-product search with a zero-dependency pure-Python fallback. This eliminates index drift between relational claims and external FAISS files while keeping FAISS available as an optional accelerator.
+- **Cross-Encoder Reranking**: Incorporates FlashRank (`flashrank` with `ms-marco-TinyBERT-L-2-v2` / `MiniLM-L-12-v2`) to re-score Top-K semantic and vector candidates. Cross-attention eliminates bi-encoder semantic ambiguity and improves Top-1 / Top-3 recall precision.
+- **Recency-Biased Episodic Search**: Time-decay scoring (`exp(-decay * days_old)`) for episodic retrieval.
+- **Bi-Temporal Graph Traversal**: Sourced entity-relationship lookups filtered by active or historical temporal validity windows.
+- **Drift Reporting**: Automated telemetry tracking semantic distribution shifts and index staleness across cycles.
 
 ## Retention and Forgetting
 
@@ -347,10 +372,10 @@ This matters because agents and steering files may still call the older skill-er
 
 ## Current Limitations
 
-- Typed routing is still heuristic rather than schema-driven
-- Graph exploration is present in storage but only lightly surfaced
-- Drift monitoring is practical but not yet a full research-grade anomaly pipeline
-- The TUI is strong for queue review but not yet a full graph browser
+- Core namespaces (`infra`, `trading`, `models`, `policies`, `procedures`) enforce strict schema validation, while generic namespaces remain permissive heuristics
+- Graph exploration is present in storage and CLI/MCP queries, but visual UI exploration is not yet added to the curses TUI
+- Drift monitoring is practical and index-synchronized, but not yet an autonomous embedding fine-tuner
+- The TUI is strong for queue review and claims inspection but not yet a full interactive graph visualizer
 
 ## Near-Term Evolution
 
