@@ -13,8 +13,16 @@ ROOT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")/.." && pwd)"
 PY_VENV="${ROOT_DIR}/.venv/bin/python"
 SCRIPT="${ROOT_DIR}/tools/memoryctl.py"
 
+if [[ -n "${PYTHON_BIN:-}" ]] && [[ -x "${PYTHON_BIN}" ]]; then
+  exec "${PYTHON_BIN}" "${SCRIPT}" "$@"
+fi
+
 if [[ -x "${PY_VENV}" ]]; then
   exec "${PY_VENV}" "${SCRIPT}" "$@"
+fi
+
+if [[ -n "${CONDA_PREFIX:-}" ]] && [[ -x "${CONDA_PREFIX}/bin/python" ]]; then
+  exec "${CONDA_PREFIX}/bin/python" "${SCRIPT}" "$@"
 fi
 
 exec python3 "${SCRIPT}" "$@"

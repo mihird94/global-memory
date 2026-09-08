@@ -1589,6 +1589,12 @@ def tool_mem_search(args: dict) -> str:
             cmd_args += ["--no-boost"]
         if args.get("no_hybrid") is True:
             cmd_args += ["--no-hybrid"]
+        if args.get("no_rerank") is True or args.get("rerank") is False:
+            cmd_args += ["--no-rerank"]
+        if "rerank_model" in args:
+            cmd_args += ["--rerank-model", str(args["rerank_model"])]
+        if "rerank_k" in args:
+            cmd_args += ["--rerank-k", str(args["rerank_k"])]
         code, out = _run_memoryctl(*cmd_args)
         if code == 0 and out:
             res_parts.append(f"### [LightRAG High-Level Episodic Retrieval]\n{out}")
@@ -2891,7 +2897,7 @@ TOOLS = {
     },
     "mem_search": {
         "fn": tool_mem_search,
-        "description": "LightRAG dual-level search over Knowledge Graph triples (low-level) and episodic FAISS index (high-level).",
+        "description": "LightRAG dual-level search over Knowledge Graph triples (low-level) and episodic FAISS index (high-level) with FlashRank Stage-2 ONNX cross-encoder reranking.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -2903,6 +2909,10 @@ TOOLS = {
                 "branch_boost": {"type": "number", "description": "Active branch boost multiplier (default 1.15)"},
                 "no_boost":     {"type": "boolean", "description": "Disable git branch boost"},
                 "no_hybrid":    {"type": "boolean", "description": "Disable BM25 hybrid search RRF"},
+                "rerank":       {"type": "boolean", "description": "Enable Stage-2 Cross-Encoder reranking (default true)"},
+                "no_rerank":    {"type": "boolean", "description": "Disable Stage-2 Cross-Encoder reranking"},
+                "rerank_model": {"type": "string", "description": "Cross-encoder model for FlashRank (default ms-marco-TinyBERT-L-2-v2)"},
+                "rerank_k":     {"type": "integer", "description": "Candidate pool size to rerank (default 25)"},
             },
             "required": ["query"],
         },

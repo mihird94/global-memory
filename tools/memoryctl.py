@@ -27,11 +27,37 @@ def _default_mem_root() -> Path:
 MEM_ROOT = _default_mem_root()
 INDEX_ROOT = MEM_ROOT / "episodic" / "index"
 DRIFT_ROOT = INDEX_ROOT / "drift"
-DEFAULT_EMBED_MODEL = os.environ.get("MEMORY_EMBED_MODEL", "nomic-embed-text")
+DEFAULT_EMBED_MODEL = os.environ.get("MEMORY_EMBED_MODEL", "qwen3-embedding:0.6b")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_EMBED_URL = os.environ.get("OLLAMA_EMBED_URL", f"{OLLAMA_URL}/api/embeddings")
 EMBED_TIMEOUT_SEC = int(os.environ.get("MEMORY_EMBED_TIMEOUT_SEC", "180"))
 EMBED_RETRIES = int(os.environ.get("MEMORY_EMBED_RETRIES", "3"))
+DEFAULT_RERANK_MODEL = os.environ.get("MEMORY_RERANK_MODEL", "ms-marco-TinyBERT-L-2-v2")
+_RERANKER_INSTANCE: Dict[str, object] = {}
+
+
+def _get_flashrank_cache_dir() -> Path:
+    custom_dir = os.environ.get("FLASHRANK_CACHE_DIR")
+    if custom_dir:
+        return Path(custom_dir).expanduser()
+    return Path.home() / ".cache" / "flashrank"
+
+
+def _get_reranker(model_name: str | None = None):
+    """Lazy-load and cache the FlashRank cross-encoder ranker.
+    Gracefully returns None if flashrank or dependencies are not installed."""
+    name = model_name or DEFAULT_RERANK_MODEL
+    if name in _RERANKER_INSTANCE:
+        return _RERANKER_INSTANCE[name]
+    try:
+        from flashrank import Ranker
+        cache_dir = _get_flashrank_cache_dir()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        ranker = Ranker(model_name=name, cache_dir=str(cache_dir))
+        _RERANKER_INSTANCE[name] = ranker
+        return ranker
+    except (ImportError, Exception):
+        return None
 
 
 def _resolve(path_a: Path, path_b: Path) -> Path:
@@ -485,6 +511,7 @@ def cmd_index_query(args: argparse.Namespace) -> int:
                 "doc_id": doc_id,
                 "row": row,
                 "rrf_score": rrf_score,
+                "ce_score": None,
                 "rank_vec": rank_vec,
                 "rank_bm25": rank_bm25,
                 "raw_score": vector_score_map.get(doc_id, 0.0),
@@ -533,6 +560,7 @@ def cmd_index_query(args: argparse.Namespace) -> int:
                 "doc_id": doc_id,
                 "row": row,
                 "rrf_score": None,
+                "ce_score": None,
                 "rank_vec": rank,
                 "rank_bm25": None,
                 "raw_score": float(scores[0][rank-1]),
@@ -542,6 +570,38 @@ def cmd_index_query(args: argparse.Namespace) -> int:
                 "branch_matched": branch_matched,
                 "final_score": final_score
             })
+
+    # Stage 2: Cross-Encoder Reranking (FlashRank ONNX)
+    should_rerank = getattr(args, "rerank", True) and not getattr(args, "no_rerank", False)
+    if should_rerank and reranked:
+        rerank_model_name = getattr(args, "rerank_model", DEFAULT_RERANK_MODEL)
+        ranker = _get_reranker(rerank_model_name)
+        if ranker is not None:
+            # Sort initial candidates by final_score descending to select top candidates for cross-encoder
+            reranked.sort(key=lambda x: x["final_score"], reverse=True)
+            rerank_pool_size = min(len(reranked), getattr(args, "rerank_k", 25))
+            candidate_pool = reranked[:rerank_pool_size]
+            remaining_pool = reranked[rerank_pool_size:]
+            
+            try:
+                from flashrank import RerankRequest
+                passages = [{"id": str(item["doc_id"]), "text": item["row"]["text"], "item": item} for item in candidate_pool]
+                rerank_req = RerankRequest(query=args.query, passages=passages)
+                rerank_results = ranker.rerank(rerank_req)
+                
+                reranked_candidates = []
+                for res in rerank_results:
+                    item = res["item"]
+                    ce_score = float(res.get("score", 0.0))
+                    item["ce_score"] = ce_score
+                    # Blend cross-encoder score with temporal decay and branch boost
+                    item["final_score"] = ce_score * item["decay_factor"] * item["boost_factor"]
+                    reranked_candidates.append(item)
+                
+                reranked_candidates.sort(key=lambda x: x["final_score"], reverse=True)
+                reranked = reranked_candidates + remaining_pool
+            except Exception:
+                pass
 
     # Sort descending by final score
     reranked.sort(key=lambda x: x["final_score"], reverse=True)
@@ -554,12 +614,14 @@ def cmd_index_query(args: argparse.Namespace) -> int:
             snippet = snippet[:180] + "..."
             
         details = []
+        if item.get("ce_score") is not None:
+            details.append(f"ce={item['ce_score']:.4f}")
         if item["rrf_score"] is not None:
             details.append(f"rrf={item['rrf_score']:.4f}")
             v_rank = "n/a" if item["rank_vec"] == 1000 else str(item["rank_vec"])
             k_rank = "n/a" if item["rank_bm25"] == 1000 else str(item["rank_bm25"])
             details.append(f"ranks=[v:{v_rank}, k:{k_rank}]")
-        else:
+        elif item.get("raw_score") is not None:
             details.append(f"raw={item['raw_score']:.4f}")
             
         if not args.no_decay:
@@ -1014,6 +1076,10 @@ def main() -> int:
     p6.add_argument("--branch-boost", type=float, default=1.15, help="Active branch text match boost multiplier.")
     p6.add_argument("--no-boost", action="store_true", help="Disable git branch boost.")
     p6.add_argument("--no-hybrid", action="store_true", help="Disable BM25 hybrid search RRF.")
+    p6.add_argument("--rerank", action="store_true", default=True, help="Enable Stage-2 Cross-Encoder reranking (default).")
+    p6.add_argument("--no-rerank", action="store_true", help="Disable Stage-2 Cross-Encoder reranking.")
+    p6.add_argument("--rerank-model", default=DEFAULT_RERANK_MODEL, help=f"Cross-encoder model for FlashRank (default: {DEFAULT_RERANK_MODEL}).")
+    p6.add_argument("--rerank-k", type=int, default=25, help="Candidate pool size to pass to cross-encoder reranker.")
     p6.set_defaults(fn=cmd_index_query)
 
     p7 = sub.add_parser("trust-list", help="List all agent reputations.")
@@ -1130,7 +1196,7 @@ def main() -> int:
     p21.add_argument("--agent", required=True)
     p21.set_defaults(fn=cmd_task_complete)
 
-def cmd_graph_build(_: argparse.Namespace) -> int:
+def cmd_graph_build(_: argparse.Namespace | None = None) -> int:
     """Batch extract triples from active claims, facts, and episodic history into SQLite graph tables."""
     import sys
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -1171,6 +1237,12 @@ def cmd_graph_build(_: argparse.Namespace) -> int:
 
     print(f"Graph build complete: registered/updated {count} entity relationship triple(s).")
     return 0
+
+
+def build_graph_relationships() -> int:
+    """Helper alias for batch extracting graph triples during Dream Cycle."""
+    return cmd_graph_build(None)
+
 
 
 def cmd_graph_query(args: argparse.Namespace) -> int:
@@ -1362,6 +1434,10 @@ def main() -> int:
     p6.add_argument("--branch-boost", type=float, default=1.15, help="Active branch text match boost multiplier.")
     p6.add_argument("--no-boost", action="store_true", help="Disable git branch boost.")
     p6.add_argument("--no-hybrid", action="store_true", help="Disable BM25 hybrid search RRF.")
+    p6.add_argument("--rerank", action="store_true", default=True, help="Enable Stage-2 Cross-Encoder reranking (default).")
+    p6.add_argument("--no-rerank", action="store_true", help="Disable Stage-2 Cross-Encoder reranking.")
+    p6.add_argument("--rerank-model", default=DEFAULT_RERANK_MODEL, help=f"Cross-encoder model for FlashRank (default: {DEFAULT_RERANK_MODEL}).")
+    p6.add_argument("--rerank-k", type=int, default=25, help="Candidate pool size to pass to cross-encoder reranker.")
     p6.set_defaults(fn=cmd_index_query)
 
     p7 = sub.add_parser("trust-list", help="List all agent reputations.")
