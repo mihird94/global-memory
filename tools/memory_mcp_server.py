@@ -1865,28 +1865,18 @@ def tool_mem_judge(args: dict) -> str:
             f"Resolve before saving."
         )
 
-    # Semantic similarity check via FAISS
+    # Semantic similarity check via SQLite vector store
     try:
-        import numpy as np
-        import faiss
-
-        idx_path  = MEM_ROOT / "episodic" / "index" / "episodic.faiss"
-        meta_path = MEM_ROOT / "episodic" / "index" / "episodic_meta.json"
-        if idx_path.exists() and meta_path.exists():
-            meta  = json.loads(meta_path.read_text())
-            index = faiss.read_index(str(idx_path))
-            qvec  = _embed(f"{key}: {value}")
-            if qvec:
-                qmat = np.array([qvec], dtype=np.float32)
-                faiss.normalize_L2(qmat)
-                scores, ids = index.search(qmat, 3)
-                hits = []
-                for score, doc_id in zip(scores[0], ids[0]):
-                    if doc_id >= 0 and score > 0.85:
-                        hits.append(f"  score={score:.3f}: {meta[int(doc_id)]['text'][:120]}...")
-                if hits:
-                    return "SIMILAR CONTENT FOUND in episodic memory:\n" + "\n".join(hits) + \
-                           "\nReview before saving to avoid duplication."
+        qvec = _embed(f"{key}: {value}")
+        if qvec:
+            hits = search_sqlite_embeddings(qvec, top_k=3)
+            close_hits = []
+            for hit in hits:
+                if hit.get("score", 0.0) > 0.85:
+                    close_hits.append(f"  score={hit['score']:.3f}: {hit['text'][:120]}...")
+            if close_hits:
+                return "SIMILAR CONTENT FOUND in episodic memory:\n" + "\n".join(close_hits) + \
+                       "\nReview before saving to avoid duplication."
     except Exception:
         pass
 

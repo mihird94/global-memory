@@ -503,34 +503,62 @@ def cmd_index_build(args: argparse.Namespace) -> int:
 def cmd_index_query(args: argparse.Namespace) -> int:
     import numpy as np
 
-    idx_path = INDEX_ROOT / "episodic.faiss"
-    meta_path = INDEX_ROOT / "episodic_meta.json"
-    if not idx_path.exists() or not meta_path.exists():
-        # Fall back to SQLite embeddings
-        try:
-            import memory_mcp_server
-            qvec = _embed(args.query, args.model)
-            hits = memory_mcp_server.search_sqlite_embeddings(qvec, top_k=args.k, model=args.model)
-            if hits:
-                print(f"\n--- SQLite Vector Query Results ({len(hits)} hits) ---")
-                for i, hit in enumerate(hits, 1):
-                    score = hit["score"]
-                    src = hit["source"]
-                    txt = hit["text"]
-                    print(f"[{i}] score={score:.4f} src={src}")
-                    print(f"    {txt[:160]}...\n")
-                return 0
-        except Exception:
-            pass
-        print("index missing: run index-build first")
-        return 1
+    db_path = MEM_ROOT / "gms_trust.sqlite"
+    meta: list[dict] = []
+    vector_rank_map: dict[int, int] = {}
+    vector_score_map: dict[int, float] = {}
+    use_sqlite = False
 
-    import faiss
-    meta = json.loads(meta_path.read_text())
-    index = faiss.read_index(str(idx_path))
-    qvec = np.array([_embed(args.query, args.model)], dtype=np.float32)
-    faiss.normalize_L2(qvec)
-    
+    # 1. Primary: Unified SQLite Vector Storage (gms_embeddings)
+    if db_path.exists():
+        try:
+            import sqlite3
+            import memory_mcp_server
+            conn = sqlite3.connect(str(db_path))
+            c = conn.cursor()
+            c.execute("SELECT id, source, chunk, text FROM gms_embeddings ORDER BY id ASC")
+            db_rows = c.fetchall()
+            conn.close()
+            if db_rows:
+                use_sqlite = True
+                meta = [{"id": r[0], "source": r[1], "chunk": r[2], "text": r[3]} for r in db_rows]
+                qvec = _embed(args.query, args.model)
+                search_k = min(len(meta), 100)
+                hits = memory_mcp_server.search_sqlite_embeddings(
+                    qvec, top_k=search_k, model=args.model, db_path=db_path
+                )
+                hit_text_map = {h["text"]: (rank, h["score"]) for rank, h in enumerate(hits, 1)}
+                for doc_id, item in enumerate(meta):
+                    if item["text"] in hit_text_map:
+                        rank, score = hit_text_map[item["text"]]
+                        vector_rank_map[doc_id] = rank
+                        vector_score_map[doc_id] = float(score)
+        except Exception:
+            use_sqlite = False
+
+    # 2. Fallback: External FAISS index (legacy compatibility)
+    if not use_sqlite:
+        idx_path = INDEX_ROOT / "episodic.faiss"
+        meta_path = INDEX_ROOT / "episodic_meta.json"
+        if not idx_path.exists() or not meta_path.exists():
+            print("index missing: run memoryctl index-build or memoryctl backfill first")
+            return 1
+        try:
+            import faiss
+            meta = json.loads(meta_path.read_text())
+            index = faiss.read_index(str(idx_path))
+            qvec = np.array([_embed(args.query, args.model)], dtype=np.float32)
+            faiss.normalize_L2(qvec)
+            search_k = min(len(meta), 100)
+            scores, ids = index.search(qvec, search_k)
+            for rank, doc_id in enumerate(ids[0], 1):
+                if doc_id >= 0:
+                    vector_rank_map[int(doc_id)] = rank
+                    vector_score_map[int(doc_id)] = float(scores[0][rank-1])
+        except ImportError:
+            print("ERROR: SQLite embeddings missing and faiss library is not installed.")
+            return 1
+
     # Active branch detection
     active_branch = None
     if not args.no_boost:
@@ -544,7 +572,7 @@ def cmd_index_query(args: argparse.Namespace) -> int:
             pass
 
     today = datetime.now()
-    
+
     # Check for rank_bm25 support
     has_bm25 = False
     bm25_scores = None
@@ -560,7 +588,7 @@ def cmd_index_query(args: argparse.Namespace) -> int:
             pass
 
     reranked = []
-    
+
     if has_bm25 and bm25_scores is not None:
         # Hybrid Search via Reciprocal Rank Fusion (RRF)
         bm25_ranked_indices = np.argsort(bm25_scores)[::-1]
@@ -568,27 +596,17 @@ def cmd_index_query(args: argparse.Namespace) -> int:
         for rank, idx in enumerate(bm25_ranked_indices, 1):
             if bm25_scores[idx] > 0:
                 bm25_rank_map[int(idx)] = rank
-                
-        # Query a larger candidate pool from FAISS
-        search_k = min(len(meta), 100)
-        scores, ids = index.search(qvec, search_k)
-        vector_rank_map = {}
-        vector_score_map = {}
-        for rank, doc_id in enumerate(ids[0], 1):
-            if doc_id >= 0:
-                vector_rank_map[int(doc_id)] = rank
-                vector_score_map[int(doc_id)] = float(scores[0][rank-1])
-                
+
         # Union of candidates in both pools
         candidates = set(vector_rank_map.keys()).union(set(bm25_rank_map.keys()))
         for doc_id in candidates:
             row = meta[doc_id]
             rank_vec = vector_rank_map.get(doc_id, 1000)
             rank_bm25 = bm25_rank_map.get(doc_id, 1000)
-            
+
             # Reciprocal Rank Fusion (RRF) formula
             rrf_score = (1.0 / (60 + rank_vec)) + (1.0 / (60 + rank_bm25))
-            
+
             # Apply temporal decay
             decay_factor = 1.0
             days_ago = 0
@@ -604,10 +622,10 @@ def cmd_index_query(args: argparse.Namespace) -> int:
                     p = Path(row["source"])
                     if p.exists():
                         doc_date = datetime.fromtimestamp(p.stat().st_mtime)
-                
+
                 days_ago = max(0, (today - doc_date).days)
                 decay_factor = math.exp(-args.decay_rate * days_ago)
-                
+
             # Apply branch boost
             boost_factor = 1.0
             branch_matched = False
@@ -616,7 +634,7 @@ def cmd_index_query(args: argparse.Namespace) -> int:
                 if clean_branch in row["text"].lower() or active_branch.lower() in row["text"].lower():
                     boost_factor = args.branch_boost
                     branch_matched = True
-                    
+
             final_score = rrf_score * decay_factor * boost_factor
             reranked.append({
                 "doc_id": doc_id,
@@ -633,14 +651,12 @@ def cmd_index_query(args: argparse.Namespace) -> int:
                 "final_score": final_score
             })
     else:
-        # Fallback: Vector-Only Search with Decay and Boost
-        search_k = max(args.k * 3, 20)
-        scores, ids = index.search(qvec, search_k)
-        for rank, doc_id in enumerate(ids[0], 1):
-            if doc_id < 0:
-                continue
-            row = meta[int(doc_id)]
-            
+        # Vector-Only Search with Decay and Boost
+        sorted_docs = sorted(vector_rank_map.keys(), key=lambda d: vector_rank_map[d])
+        for rank, doc_id in enumerate(sorted_docs, 1):
+            row = meta[doc_id]
+            raw_score = vector_score_map.get(doc_id, 0.0)
+
             decay_factor = 1.0
             days_ago = 0
             if not args.no_decay:
@@ -657,7 +673,7 @@ def cmd_index_query(args: argparse.Namespace) -> int:
                         doc_date = datetime.fromtimestamp(p.stat().st_mtime)
                 days_ago = max(0, (today - doc_date).days)
                 decay_factor = math.exp(-args.decay_rate * days_ago)
-                
+
             boost_factor = 1.0
             branch_matched = False
             if active_branch:
@@ -665,8 +681,8 @@ def cmd_index_query(args: argparse.Namespace) -> int:
                 if clean_branch in row["text"].lower() or active_branch.lower() in row["text"].lower():
                     boost_factor = args.branch_boost
                     branch_matched = True
-                    
-            final_score = float(scores[0][rank-1] * decay_factor * boost_factor)
+
+            final_score = float(raw_score * decay_factor * boost_factor)
             reranked.append({
                 "doc_id": doc_id,
                 "row": row,
@@ -674,7 +690,7 @@ def cmd_index_query(args: argparse.Namespace) -> int:
                 "ce_score": None,
                 "rank_vec": rank,
                 "rank_bm25": None,
-                "raw_score": float(scores[0][rank-1]),
+                "raw_score": raw_score,
                 "decay_factor": decay_factor,
                 "days_ago": days_ago,
                 "boost_factor": boost_factor,
