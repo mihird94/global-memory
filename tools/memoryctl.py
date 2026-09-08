@@ -1318,17 +1318,17 @@ def cmd_ui(args: argparse.Namespace) -> int:
 
     node_modules = desktop_dir / "node_modules"
     if not node_modules.exists():
-        print("Notice: GMS Desktop UI dependencies are not installed.")
+        print("Notice: Mbrain Desktop UI dependencies are not installed.")
         print("To install and run the Mac Electron UI:")
         print("  cd desktop && npm install && npm start")
         return 1
 
     if sys.platform != "darwin" and not os.environ.get("DISPLAY"):
-        print("Notice: GMS Desktop UI is an optional graphical interface.")
+        print("Notice: Mbrain Desktop UI is an optional graphical interface.")
         print("Running in headless Linux environment. UI is disabled.")
         return 0
 
-    print("Launching GMS Desktop Control Center (Electron)...")
+    print("Launching Mbrain Desktop Control Center (Electron)...")
     try:
         subprocess.run(["npm", "start"], cwd=str(desktop_dir))
         return 0
@@ -1735,7 +1735,7 @@ def main() -> int:
     p37.add_argument("--json", action="store_true", help="Output result as JSON.")
     p37.set_defaults(fn=cmd_backup)
 
-    p38 = sub.add_parser("ui", help="Launch GMS Desktop Control Center (macOS Electron App).")
+    p38 = sub.add_parser("ui", help="Launch Mbrain Desktop Control Center (macOS Electron App).")
     p38.set_defaults(fn=cmd_ui)
 
     args = parser.parse_args()

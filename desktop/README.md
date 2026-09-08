@@ -1,6 +1,6 @@
-# GMS Desktop Control Center (macOS)
+# Mbrain — Desktop Control Center (macOS)
 
-An interactive, visual control deck for the Global Memory System (GMS), built with Electron and designed to seamlessly interface with your local GMS SQLite database (`~/memories/gms_trust.sqlite`), markdown episodic stores, schema contracts, and Apple Automation.
+An interactive, visual control deck for your Global Memory System (GMS), built with Electron and designed to seamlessly interface with your local GMS SQLite database (`~/memories/gms_trust.sqlite`), markdown episodic stores, schema contracts, and Apple Automation.
 
 ---
 

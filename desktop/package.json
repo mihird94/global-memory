@@ -1,7 +1,8 @@
 {
-  "name": "gms-desktop",
+  "name": "mbrain",
+  "productName": "Mbrain",
   "version": "1.0.0",
-  "description": "Global Memory System (GMS) macOS Desktop Control Center",
+  "description": "Mbrain — Global Memory System macOS Desktop Control Center",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

@@ -117,7 +117,7 @@ function createWindow() {
     height: 880,
     minWidth: 1020,
     minHeight: 680,
-    title: 'Global Memory System',
+    title: 'Mbrain',
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0d1117',
     icon: iconPath,
