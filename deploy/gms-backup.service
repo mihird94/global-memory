@@ -1,0 +1,13 @@
+[Unit]
+Description=GMS SQLite Database Online Backup
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/%u/projects/global-memory/tools/backup_db.py
+Environment=MEMORY_ROOT=/home/%u/memories
+StandardOutput=append:/home/%u/memories/backup.log
+StandardError=append:/home/%u/memories/backup.err
+
+[Install]
+WantedBy=default.target

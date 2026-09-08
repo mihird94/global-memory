@@ -51,6 +51,14 @@ except ImportError:
     except ImportError:
         run_backfill = None
 
+try:
+    from backup_db import backup_database
+except ImportError:
+    try:
+        from tools.backup_db import backup_database
+    except ImportError:
+        backup_database = None
+
 
 
 def _default_mem_root() -> Path:
@@ -1286,6 +1294,23 @@ def cmd_backfill(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backup(args: argparse.Namespace) -> int:
+    if backup_database is None:
+        print("ERROR: backup_db module not available")
+        return 1
+    root = Path(args.root).resolve() if getattr(args, "root", None) else MEM_ROOT
+    dest = Path(args.dest).resolve() if getattr(args, "dest", None) else None
+    report = backup_database(mem_root=root, dest_path=dest)
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2))
+    else:
+        status = report["status"].upper()
+        if report["status"] == "success":
+            print(f"[{report['timestamp']}] GMS DB Backup: {status} -> {report['destination']} ({report['size_bytes']} bytes, {report['table_count']} tables, integrity: {report['integrity']})")
+        else:
+            print(f"[{datetime.now().isoformat()}] GMS DB Backup FAILED: {report.get('message', 'Unknown error')}")
+    return 0 if report.get("status") == "success" else 1
+
 
 def cmd_latest(args: argparse.Namespace) -> int:
     return _call_memory_tool("mem_latest", {"limit": args.limit, "kind": args.kind})
@@ -1678,6 +1703,12 @@ def main() -> int:
     p36.add_argument("--skip-graph", action="store_true", help="Skip knowledge graph relationship backfill.")
     p36.add_argument("--json", action="store_true", help="Output result as JSON.")
     p36.set_defaults(fn=cmd_backfill)
+
+    p37 = sub.add_parser("backup", help="Perform atomic online backup of gms_trust.sqlite using SQLite native backup API.")
+    p37.add_argument("--root", default=None, help="Custom memory root directory.")
+    p37.add_argument("--dest", default=None, help="Custom destination backup file path.")
+    p37.add_argument("--json", action="store_true", help="Output result as JSON.")
+    p37.set_defaults(fn=cmd_backup)
 
     args = parser.parse_args()
     return args.fn(args)
