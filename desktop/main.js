@@ -110,6 +110,8 @@ function requestAPI(endpoint, method = 'GET', body = null) {
 }
 
 function createWindow() {
+  const iconPath = path.join(__dirname, 'assets', 'icon.png');
+
   mainWindow = new BrowserWindow({
     width: 1320,
     height: 880,
@@ -118,6 +120,7 @@ function createWindow() {
     title: 'Global Memory System',
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0d1117',
+    icon: iconPath,
     trafficLightPosition: { x: 18, y: 16 },
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -159,6 +162,12 @@ ipcMain.handle('gms:createReminder', (event, payload) => requestAPI('/api/remind
 ipcMain.handle('gms:getContracts', () => requestAPI('/api/contracts'));
 
 app.whenReady().then(() => {
+  const iconPath = path.join(__dirname, 'assets', 'icon.png');
+  if (process.platform === 'darwin' && app.dock) {
+    try {
+      app.dock.setIcon(iconPath);
+    } catch (e) {}
+  }
   startBackendServer();
   // Small delay to ensure API server starts before window loads
   setTimeout(createWindow, 300);
