@@ -25,4 +25,14 @@ if [[ -n "${CONDA_PREFIX:-}" ]] && [[ -x "${CONDA_PREFIX}/bin/python" ]]; then
   exec "${CONDA_PREFIX}/bin/python" "${SCRIPT}" "$@"
 fi
 
+for cand in \
+  "/opt/homebrew/Caskroom/miniconda/base/envs/ml/bin/python" \
+  "${HOME}/miniforge3/envs/ml/bin/python" \
+  "${HOME}/miniconda3/envs/ml/bin/python" \
+  "${HOME}/anaconda3/envs/ml/bin/python"; do
+  if [[ -x "${cand}" ]]; then
+    exec "${cand}" "${SCRIPT}" "$@"
+  fi
+done
+
 exec python3 "${SCRIPT}" "$@"

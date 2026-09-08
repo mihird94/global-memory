@@ -43,6 +43,14 @@ except ImportError:
     except ImportError:
         harvest_session = None
 
+try:
+    from backfill import run_backfill
+except ImportError:
+    try:
+        from tools.backfill import run_backfill
+    except ImportError:
+        run_backfill = None
+
 
 
 def _default_mem_root() -> Path:
@@ -1235,6 +1243,33 @@ def cmd_session_harvest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backfill(args: argparse.Namespace) -> int:
+    if run_backfill is None:
+        print("ERROR: backfill module not available")
+        return 1
+    root = Path(args.root).resolve() if getattr(args, "root", None) else MEM_ROOT
+    report = run_backfill(
+        mem_root=root,
+        dry_run=getattr(args, "dry_run", False),
+        skip_embeddings=getattr(args, "skip_embeddings", False),
+        skip_graph=getattr(args, "skip_graph", False),
+    )
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2))
+    else:
+        prefix = "[DRY-RUN] " if report.get("dry_run") else ""
+        print(f"{prefix}GMS v2.1.0 Backfill Report:")
+        print(f"  Target DB: {report['db_path']}")
+        print(f"  Claims backfilled: {report['claims_backfilled']}")
+        print(f"  Provenance backfilled: {report['provenance_backfilled']}")
+        print(f"  Procedures backfilled: {report['procedures_backfilled']}")
+        print(f"  Embeddings backfilled: {report['embeddings_backfilled']} (method: {report['embeddings_method']})")
+        print(f"  Graph relationships backfilled: {report['relationships_backfilled']}")
+        audit = report.get("schema_audit", {})
+        print(f"  Schema Audit: {audit.get('valid_count', 0)}/{audit.get('total_facts', 0)} valid, {audit.get('violation_count', 0)} violations")
+    return 0
+
+
 
 def cmd_latest(args: argparse.Namespace) -> int:
     return _call_memory_tool("mem_latest", {"limit": args.limit, "kind": args.kind})
@@ -1619,6 +1654,14 @@ def main() -> int:
     p35.add_argument("--text", default=None, help="Optional text context")
     p35.add_argument("--no-index", action="store_true", help="Skip incremental vector indexing")
     p35.set_defaults(fn=cmd_session_harvest)
+
+    p36 = sub.add_parser("backfill", help="Idempotently backfill SQLite tables, vectors, claims, procedures, and graph.")
+    p36.add_argument("--root", default=None, help="Custom memory root directory.")
+    p36.add_argument("--dry-run", action="store_true", help="Preview backfill without modifying database.")
+    p36.add_argument("--skip-embeddings", action="store_true", help="Skip vector embedding backfill.")
+    p36.add_argument("--skip-graph", action="store_true", help="Skip knowledge graph relationship backfill.")
+    p36.add_argument("--json", action="store_true", help="Output result as JSON.")
+    p36.set_defaults(fn=cmd_backfill)
 
     args = parser.parse_args()
     return args.fn(args)

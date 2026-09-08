@@ -108,8 +108,9 @@ DB_PATH = MEM_ROOT / "gms_trust.sqlite"
 # Trust Database Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-def init_db():
-    conn = sqlite3.connect(str(DB_PATH))
+def init_db(db_path: Path | None = None):
+    target = db_path or DB_PATH
+    conn = sqlite3.connect(str(target))
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS gms_agent_reputation (
