@@ -34,3 +34,15 @@ class TestSchedulerTelemetry(unittest.TestCase):
         status = self.api.get_harvest_status()
         self.assertNotIn("02:00 AM", status["next_scheduled_run"])
         self.assertIn(status["next_scheduled_run"], ("03:10 AM (Launchd Nightly)", "Unavailable"))
+
+    def test_linux_dream_cycle_units_are_headless_and_model_bounded(self):
+        root = Path(__file__).resolve().parent.parent
+        service = (root / "deploy" / "gms-dream-cycle.service").read_text()
+        timer = (root / "deploy" / "gms-dream-cycle.timer").read_text()
+        self.assertIn("OnCalendar=*-*-* 03:10:00", timer)
+        self.assertIn("Persistent=true", timer)
+        self.assertIn("MEMORY_EMBED_MODEL=nomic-embed-text", service)
+        self.assertIn("DREAM_LLM_MODEL=qwen3.5:9b", service)
+        self.assertIn("CONCEPT_MODEL=qwen3.5:9b", service)
+        self.assertIn("CONCEPT_KEEP_ALIVE=0", service)
+        self.assertNotIn("desktop", service.lower())

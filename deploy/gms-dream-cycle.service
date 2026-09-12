@@ -1,0 +1,21 @@
+[Unit]
+Description=Brain nightly context curation and concept enrichment
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/global-memory
+Environment=MEMORY_ROOT=%h/memories
+Environment=OLLAMA_URL=http://127.0.0.1:11434
+Environment=MEMORY_EMBED_MODEL=nomic-embed-text
+Environment=DREAM_LLM_MODEL=qwen3.5:9b
+Environment=CONCEPT_ENRICHMENT_ENABLED=1
+Environment=CONCEPT_PROVIDER=ollama
+Environment=CONCEPT_MODEL=qwen3.5:9b
+Environment=CONCEPT_KEEP_ALIVE=0
+ExecStart=%h/projects/global-memory/.venv/bin/python %h/projects/global-memory/tools/dream_cycle.py
+TimeoutStartSec=45min
+Nice=10
+
+[Install]
+WantedBy=default.target

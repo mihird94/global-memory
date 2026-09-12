@@ -59,4 +59,5 @@ memoryctl ui
 The `desktop/` directory is **strictly opt-in**:
 - Mini PC Linux and headless servers **never** need to install `node_modules` or launch Electron.
 - The core GMS platform (`tools/memoryctl`, `tools/memory_mcp_server.py`, SQLite databases, background launchd/systemd timers) runs entirely in Python with zero Node.js requirements.
+- Linux installs can copy `deploy/gms-dream-cycle.service` and `deploy/gms-dream-cycle.timer` into `~/.config/systemd/user/`, then run `systemctl --user daemon-reload` and `systemctl --user enable --now gms-dream-cycle.timer`. The checked-in unit uses local `nomic-embed-text` embeddings and `qwen3.5:9b` nightly reasoning; change these values only to models already installed on that host.
 - On Linux, if `memoryctl ui` is invoked, it gracefully detects the headless/Linux environment and informs the user.
