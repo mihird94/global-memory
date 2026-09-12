@@ -20,6 +20,10 @@ def test_write_tool_descriptions_expose_context_engineering_contract():
     assert "what changed" in log_description
     assert "why" in log_description
     assert "not only an activity or status" in log_description
+    note_description = TOOLS["mem_log_event"]["inputSchema"]["properties"]["note"]["description"].lower()
+    assert "project/task" in note_description
+    assert "evidence or verification" in note_description
+    assert "skip routine reads" in note_description
 
 
 def test_retrieval_and_project_descriptions_expose_context_safety():

@@ -69,6 +69,12 @@ Minimum common fields:
 
 Decisions and policies additionally require substantive `rationale` and actionable `implications`. Procedures require trigger, ordered steps, success criteria, failure handling, and last verified environment. Project state requires goal, current truth, progress, remaining work, blockers, evidence, and next action.
 
+### Episodic records
+
+Write an append-only episode for a verified milestone, material external-state change, user correction, failed approach with reusable learning, decision event, handoff, deployment, or newly discovered blocker. Skip routine reads, unchanged checks, speculative narration, duplicated progress, and status-only entries.
+
+An episode should capture project/task, actor, event and observation time, what changed, why it matters, evidence or verification, resulting state, remaining uncertainty or blockers, next action, and links to affected claims, decisions, artifacts, or sources. An episode is event evidence—not a replacement for current structured semantic or project truth. When an event changes a durable decision, policy, procedure, preference, or project state, update that record separately and link the episode.
+
 ## 4. Naming conventions
 
 - Canonical keys use lowercase dotted namespaces: `global_memory.scheduler.dream_cycle.time`.

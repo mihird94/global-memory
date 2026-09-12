@@ -76,10 +76,17 @@ GMS exists to help the next agent reconstruct the right working context, not mer
 - Retrieval must be conflict-aware and time-aware: include active decisions, relevant procedures, freshness, supersession, and unresolved contradictions—not only nearest semantic chunks.
 - Static fixtures validate contracts only. Attribute quality metrics to an LLM only when that model actually generated the evaluated outputs.
 
+#### Episodic Writing Contract
+Write an episode when work changes what a future agent needs to know: a verified milestone, material external-state change, user correction, failed approach with a reusable lesson, decision event, handoff, deployment, or newly discovered blocker. Do not create episodes for routine reads, unchanged monitoring, speculative thoughts, duplicate progress narration, or bare statuses.
+
+Every useful episode should state: **project/task**, **what changed**, **why it matters**, **actor**, **event/observation time**, **evidence or verification**, **resulting state**, **remaining uncertainty/blockers**, and **next action**. Link claim, decision, task, artifact, or source references when available.
+
+Episodes are append-only event evidence, not the current semantic truth. If an event establishes or changes a durable decision, policy, procedure, preference, or project state, update the appropriate structured semantic/project record separately and link the episode. Do not rely on a journal entry to supply rationale that the retrieved semantic record lacks.
+
 #### Phase C: Finalization (Record Last)
 Before ending your task, you MUST run:
 1. **Update Project Memory Bank**: `mem_project(action="update", project="<name>", section="active", content="...")` or `memoryctl project-update <project> --section active --content "..."`.
-2. **Update History**: `memoryctl log --agent <name> --title <title> --note <note>`. The note must include the rationale and resulting context change, not only an activity/status statement.
+2. **Update History**: `memoryctl log --agent <name> --title <title> --note <note>`. Follow the Episodic Writing Contract: log only material context changes, and include why, evidence, resulting state, uncertainty, and next action—not only an activity/status statement.
 3. **Record Lessons**: `memoryctl lesson-add "<correction/rule>"` (If the user corrected your behavior).
 4. **Commit Facts**: `memoryctl fact-set <key> <value>` (If you verified new data points). For decisions or policies, use the Context Engineering Contract above; do not write status-only values.
 5. **Build Index & Graph**: `memoryctl index-build && memoryctl graph-build` (If new episodic data or relationships were added).

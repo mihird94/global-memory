@@ -4149,7 +4149,7 @@ TOOLS = {
             "type": "object",
             "properties": {
                 "agent":   {"type": "string", "description": "Agent name (e.g. Antigravity, Codex)"},
-                "summary": {"type": "string", "description": "What was accomplished this session"},
+                "summary": {"type": "string", "description": "Material context change only: project/task, verified outcome, why it matters, evidence, resulting state, remaining uncertainty/blockers, and next action. Skip routine reads, unchanged checks, speculation, and duplicate narration."},
             },
             "required": ["agent", "summary"],
         },
@@ -4255,9 +4255,9 @@ TOOLS = {
         "inputSchema": {
             "type": "object",
             "properties": {
-                "agent": {"type": "string"},
-                "title": {"type": "string"},
-                "note":  {"type": "string"},
+                "agent": {"type": "string", "description": "Actual actor or observing agent; do not attribute AI interpretation to the user"},
+                "title": {"type": "string", "description": "Concise material event or context change, not a generic status"},
+                "note":  {"type": "string", "description": "Project/task, what changed, why it matters, event/observation time when relevant, evidence or verification, resulting state, uncertainty/blockers, next action, and affected record/artifact references. Skip routine reads, unchanged monitoring, speculation, and duplicates."},
             },
             "required": ["agent", "title", "note"],
         },
