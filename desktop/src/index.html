@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Mbrain</title>
   <link rel="stylesheet" href="styles.css">
-  <!-- Vis.js standalone network bundle for interactive knowledge graph -->
-  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+  <!-- Keep graph rendering local-first and available without internet access. -->
+  <script src="../node_modules/vis-network/standalone/umd/vis-network.min.js"></script>
 </head>
 <body>
   <div class="app-container">
@@ -19,14 +19,24 @@
       </div>
 
       <nav class="nav-menu">
-        <div class="nav-item active" data-view="exploration">
+        <div class="nav-item" data-view="exploration">
           <span class="nav-icon">🔍</span>
           <span>Exploration</span>
           <span class="nav-badge" id="badge-total-memories">-</span>
         </div>
+        <div class="nav-item active" data-view="projects_view">
+          <span class="nav-icon">📁</span>
+          <span>Projects</span>
+          <span class="nav-badge" id="badge-projects">-</span>
+        </div>
+        <div class="nav-item" data-view="action_inbox">
+          <span class="nav-icon">📥</span>
+          <span>Action Inbox</span>
+          <span class="nav-badge alert" id="badge-inbox" style="display:none;">0</span>
+        </div>
         <div class="nav-item" data-view="steering">
-          <span class="nav-icon">⚖️</span>
-          <span>Steer & Verify</span>
+          <span class="nav-icon">🛡️</span>
+          <span>Review & Activity</span>
           <span class="nav-badge alert" id="badge-quarantine">0</span>
         </div>
         <div class="nav-item" data-view="daily_notes">
@@ -48,9 +58,16 @@
           <span>Reminders</span>
           <span class="nav-badge" id="badge-reminders">-</span>
         </div>
+        <div class="nav-item" data-view="memory_quality">
+          <span class="nav-icon">🧭</span><span>Memory Quality</span><span class="nav-badge">↗</span>
+        </div>
       </nav>
 
       <div class="sidebar-footer">
+        <div class="health-indicator" id="dream-cycle-indicator" style="cursor:pointer;" title="Click to view Dream Cycle status">
+          <span style="font-size:12px;">🌙</span>
+          <span id="dream-cycle-status-text" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Dream Cycle: Idle</span>
+        </div>
         <div class="health-indicator">
           <span class="health-dot" id="system-status-dot"></span>
           <span id="system-status-text">SQLite Connected</span>
@@ -157,12 +174,18 @@
   <div class="toast-container" id="toast-container"></div>
 
   <!-- Scripts -->
+  <script src="graph_filter.js"></script>
+  <script src="app_state.js"></script>
   <script src="views/exploration.js"></script>
+  <script src="views/projects_view.js"></script>
+  <script src="views/action_inbox.js"></script>
   <script src="views/steering.js"></script>
   <script src="views/daily_notes.js"></script>
   <script src="views/graph_view.js"></script>
   <script src="views/concepts_view.js"></script>
   <script src="views/reminders_view.js"></script>
+  <script src="views/memory_quality.js"></script>
+  <script src="views/search_palette.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

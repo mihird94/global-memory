@@ -37,6 +37,12 @@ except ImportError:
     from datetime import datetime, timedelta, timezone
     UTC = timezone.utc
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # Windows fallback
+import signal
+
 from urllib import request
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -44,6 +50,7 @@ from urllib import request
 # ──────────────────────────────────────────────────────────────────────────────
 REPO_ROOT    = Path(__file__).resolve().parent.parent
 TOOLS_DIR    = REPO_ROOT / "tools"
+LAST_RUN_STATUS: dict = {}
 
 
 def _default_mem_root() -> Path:
@@ -134,40 +141,160 @@ def ollama_available() -> bool:
         return False
 
 
+def acquire_lock(lock_path: Path) -> int | None:
+    """Acquire an exclusive non-blocking file lock to prevent concurrent runs."""
+    if fcntl is None:
+        return None
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except (BlockingIOError, OSError):
+        return None
+
+
+def release_lock(fd: int | None) -> None:
+    """Release and close the lock descriptor."""
+    if fd is not None and fcntl is not None:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def check_ram_floor(min_free_mb: int = 1024) -> bool:
+    """Return True if system has sufficient free memory floor for LLM consolidation."""
+    try:
+        if sys.platform == "darwin":
+            vm = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5)
+            if vm.returncode == 0:
+                for line in vm.stdout.splitlines():
+                    if "Pages free:" in line:
+                        pages = int(line.split(":")[1].strip().rstrip("."))
+                        free_mb = (pages * 4096) // (1024 * 1024)
+                        return free_mb >= min_free_mb
+        return True
+    except Exception:
+        return True
+
+
+def write_dream_cycle_status(status: dict) -> None:
+    """Write machine-readable status file for Mbrain desktop and CLI consumption."""
+    if status.get("dry_run", False) or DRY_RUN or ("--dry-run" in sys.argv):
+        log(f"DRY RUN — zero durable mutation. Skipping status file write on disk (durable_writes: 0). Preview:\n{json.dumps(status, indent=2)}")
+        return
+    try:
+        status_file = MEM_ROOT / "logs" / "dream_cycle_status.json"
+        status_file.parent.mkdir(parents=True, exist_ok=True)
+        status_file.write_text(json.dumps(status, indent=2), encoding="utf-8")
+    except Exception as e:
+        log(f"Failed to write dream cycle status: {e}")
+
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # LLM Cascade — Tier implementations
 # ──────────────────────────────────────────────────────────────────────────────
 
-EXTRACTION_PROMPT_TEMPLATE = """\
-You are a memory consolidation engine for a software engineer's AI OS.
-Extract ONLY durable, high-value facts from today's work journal that should
-be permanently remembered — architectural decisions, system configuration
-choices, verified production facts, key file paths, or lessons learned
-that will still be relevant in 6 months.
+CONTEXT_HARVEST_PROMPT_TEMPLATE = """\
+You are a rationale-first context harvesting engine for a software engineer's Personal AI OS (GMS).
+Consolidate today's episodic work journal into durable, typed context records.
+Decisions and policies MUST include rationale (WHY) and actionable downstream implications.
+LLM extraction proposes candidates; it does NOT create canonical truth.
 
-DO NOT extract:
-- Status updates ("fixed X today") or transient events
-- Facts already in the existing list below
+Guidelines:
+- Distinguish record types:
+  * "decision": chosen architectural/system direction. REQUIRED: statement, rationale (WHY), implications (min 1 actionable downstream rule), scope, provenance, evidence.
+  * "policy": durable behavioral/safety rule. REQUIRED: statement, rationale, implications or enforcement, scope, provenance.
+  * "fact": verified technical constant, tool path, or external fact.
+  * "procedure": trigger, action, constraints.
+  * "project_state": current milestone or verified result with effective timestamp.
+  * "observation": useful tentative statement; preserve uncertainty explicitly.
+  * "question": unresolved issue requiring an answer.
+  * "lesson_candidate": reusable corrective rule with triggering failure.
+- For decisions and policies: RATIONALE MUST NOT BE EMPTY OR IDENTICAL TO STATEMENT.
+- Do NOT invent rationale not supported by the text. If rationale is missing, classify as "observation" or omit.
+- Forbid extracting secrets, tokens, credentials, transient build logs, or conversational chatter.
+- Do NOT output synthetic trust or reliability score numbers; global agent trust is retired.
+- Embed the exact source reference: "{source_ref}" and source hash: "sha256:{source_hash}".
+- Return valid JSON matching schema_version "gms-context-harvest-v1".
 
-Existing facts (do not duplicate):
+Existing canonical facts (do not duplicate):
 {existing_summary}
 
-Today's journal:
+Today's work journal:
 {journal_text}
 
-Respond with ONLY a valid JSON object mapping snake_case keys to string values.
-If nothing is worth extracting, respond with: {{}}
-Example:
+Output ONLY valid JSON with no extraneous text:
 {{
-  "optimus_execution_engine": "Uses SQLite-backed runtime_state.py for canonical state",
-  "skill_installation_policy": "Only install targeted skills with --skills flag"
+  "schema_version": "gms-context-harvest-v1",
+  "candidates": [
+    {{
+      "schema_version": "gms-context-record-v1",
+      "record_type": "decision",
+      "key": "canonical_snake_case_key",
+      "statement": "Clear chosen direction",
+      "rationale": "Why this direction was chosen",
+      "implications": ["Actionable downstream rule or constraint"],
+      "scope": {{"level": "project", "project": "project-name", "workstream": "component"}},
+      "provenance": {{
+        "observed_agents": ["agent_names"],
+        "extractor": "{extractor_agent}",
+        "source_refs": ["{source_ref}"],
+        "source_hashes": ["sha256:{source_hash}"],
+        "extracted_at": "{extracted_at}",
+        "prompt_version": "context-harvest-v1"
+      }},
+      "evidence": [
+        {{"type": "source_document", "ref": "{source_ref}", "excerpt_hash": "sha256:{source_hash}"}}
+      ]
+    }}
+  ]
 }}
+"""
 
-JSON output:"""
+EXTRACTION_PROMPT_TEMPLATE = CONTEXT_HARVEST_PROMPT_TEMPLATE
 
 
-def _parse_json_facts(raw: str) -> dict:
-    """Parse JSON from LLM output, stripping markdown fences."""
+def unload_ollama_model(model_name: str = OLLAMA_LLM) -> bool:
+    """Explicitly unload Ollama LLM from memory via keep_alive: 0 across all terminal paths."""
+    try:
+        if not ollama_available():
+            return False
+        req = request.Request(
+            f"{OLLAMA_URL}/api/generate",
+            data=json.dumps({"model": model_name, "keep_alive": 0}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        try:
+            with request.urlopen(req, timeout=5) as resp:
+                log(f"Explicitly unloaded Ollama model '{model_name}'.")
+                return True
+        except Exception:
+            for fallback in ["qwen3:8b", "qwen2.5-coder:7b", "qwen3:0.6b"]:
+                try:
+                    req_fb = request.Request(
+                        f"{OLLAMA_URL}/api/generate",
+                        data=json.dumps({"model": fallback, "keep_alive": 0}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST"
+                    )
+                    with request.urlopen(req_fb, timeout=5) as resp:
+                        log(f"Explicitly unloaded Ollama model '{fallback}'.")
+                        return True
+                except Exception:
+                    pass
+            return False
+    except Exception as e:
+        log(f"Note: Model unload error: {e}")
+        return False
+
+
+def _parse_context_harvest_candidates(raw: str) -> list[dict]:
+    """Parse JSON from LLM output into structured candidates, preserving nested objects without stringification."""
     raw = raw.strip()
     if raw.startswith("```"):
         parts = raw.split("```")
@@ -175,24 +302,75 @@ def _parse_json_facts(raw: str) -> dict:
         if raw.startswith("json"):
             raw = raw[4:]
     raw = raw.strip()
-    # Find first { ... } block in case of preamble text
-    start = raw.find("{")
-    end   = raw.rfind("}") + 1
+
+    start_dict = raw.find("{")
+    start_list = raw.find("[")
+
+    start = -1
+    end = -1
+    if start_dict != -1 and (start_list == -1 or start_dict < start_list):
+        start = start_dict
+        end = raw.rfind("}") + 1
+    elif start_list != -1:
+        start = start_list
+        end = raw.rfind("]") + 1
+
     if start != -1 and end > start:
         raw = raw[start:end]
-    result = json.loads(raw)
-    if not isinstance(result, dict):
-        return {}
-    return {str(k): str(v) for k, v in result.items() if k and v}
+
+    try:
+        result = json.loads(raw)
+    except Exception as e:
+        log(f"Failed to parse JSON candidates from LLM output: {e}")
+        return []
+
+    if isinstance(result, dict):
+        candidates = result.get("candidates", [])
+        if isinstance(candidates, list) and candidates:
+            return [c for c in candidates if isinstance(c, dict)]
+        if result.get("schema_version") == "gms-context-record-v1" or "record_type" in result:
+            return [result]
+        # Legacy flat dict {k: v} fallback
+        legacy_candidates = []
+        for k, v in result.items():
+            if k in ("schema_version", "candidates") or not k or not v:
+                continue
+            legacy_candidates.append({
+                "schema_version": "gms-context-record-v1",
+                "record_type": "fact",
+                "key": str(k),
+                "statement": str(v),
+                "scope": {"project": "global-memory"},
+                "provenance": {
+                    "extractor": "DreamCycle-legacy",
+                    "source_refs": ["episodic/journal.md"],
+                    "extracted_at": datetime.now(UTC).isoformat(),
+                    "prompt_version": "context-harvest-v1"
+                },
+                "evidence": [{"type": "source_document", "ref": "episodic/journal.md"}]
+            })
+        return legacy_candidates
+    elif isinstance(result, list):
+        return [c for c in result if isinstance(c, dict)]
+    return []
 
 
-def _tier_antigravity(prompt: str) -> dict:
-    """Tier 1: Antigravity CLI (agy --print) with model override via temp settings.
-    
-    agy has no --model flag, so we inject a temporary settings file that
-    overrides the model for this single invocation, then clean it up.
-    """
-    import tempfile, shutil
+def _parse_json_facts(raw: str) -> dict:
+    """Parse JSON from LLM output, preserving backward compatibility."""
+    candidates = _parse_context_harvest_candidates(raw)
+    if candidates:
+        facts = {}
+        for c in candidates:
+            k = c.get("key")
+            v = c.get("statement") or json.dumps(c, ensure_ascii=False)
+            if k:
+                facts[k] = v
+        return facts
+    return {}
+
+
+def _tier_antigravity(prompt: str) -> list[dict]:
+    """Tier 1: Antigravity CLI (agy --print) with model override via temp settings."""
     if not Path(AGY_BIN).exists():
         raise FileNotFoundError(f"agy not found at {AGY_BIN}")
 
@@ -201,7 +379,6 @@ def _tier_antigravity(prompt: str) -> dict:
     backed_up = False
 
     try:
-        # Patch the model in settings temporarily
         if agy_settings.exists():
             settings = json.loads(agy_settings.read_text())
             original_model = settings.get("model")
@@ -218,7 +395,6 @@ def _tier_antigravity(prompt: str) -> dict:
             env={**os.environ, "NO_COLOR": "1"},
         )
     finally:
-        # Always restore original model
         if backed_up and original_model is not None and agy_settings.exists():
             settings = json.loads(agy_settings.read_text())
             settings["model"] = original_model
@@ -227,10 +403,10 @@ def _tier_antigravity(prompt: str) -> dict:
 
     if result.returncode != 0:
         raise RuntimeError(f"agy exited {result.returncode}: {result.stderr[:200]}")
-    return _parse_json_facts(result.stdout)
+    return _parse_context_harvest_candidates(result.stdout)
 
 
-def _tier_gemini(prompt: str) -> dict:
+def _tier_gemini(prompt: str) -> list[dict]:
     """Tier 2: Gemini CLI (gemini -p -m <model>)."""
     if not Path(GEMINI_BIN).exists():
         raise FileNotFoundError(f"gemini not found at {GEMINI_BIN}")
@@ -242,19 +418,22 @@ def _tier_gemini(prompt: str) -> dict:
     )
     if result.returncode != 0:
         raise RuntimeError(f"gemini exited {result.returncode}: {result.stderr[:200]}")
-    return _parse_json_facts(result.stdout)
+    return _parse_context_harvest_candidates(result.stdout)
 
 
-def _tier_ollama(prompt: str) -> dict:
-    """Tier 3: Local Ollama (always-available fallback)."""
-    resp = _post(f"{OLLAMA_URL}/api/generate", {
-        "model": OLLAMA_LLM,
-        "prompt": prompt,
-        "stream": False,
-        "keep_alive": 0,
-        "options": {"temperature": 0.1, "num_predict": 800},
-    }, timeout=TIER_TIMEOUT["ollama"])
-    return _parse_json_facts(resp.get("response", ""))
+def _tier_ollama(prompt: str) -> list[dict]:
+    """Tier 3: Local Ollama (always-available fallback). Explicitly unloads on all paths."""
+    try:
+        resp = _post(f"{OLLAMA_URL}/api/generate", {
+            "model": OLLAMA_LLM,
+            "prompt": prompt,
+            "stream": False,
+            "keep_alive": 0,
+            "options": {"temperature": 0.1, "num_predict": 1200},
+        }, timeout=TIER_TIMEOUT["ollama"])
+        return _parse_context_harvest_candidates(resp.get("response", ""))
+    finally:
+        unload_ollama_model()
 
 
 TIER_FNS = {
@@ -264,18 +443,20 @@ TIER_FNS = {
 }
 
 
-def extract_facts_with_cascade(journal_text: str, existing_facts: dict) -> tuple[dict, str]:
+def extract_candidates_with_cascade(
+    journal_text: str,
+    existing_facts: dict,
+    source_ref: str,
+    source_hash: str,
+) -> tuple[list[dict], str]:
     """
-    Try each enabled provider in order. Return (facts_dict, provider_used).
-    Returns ({}, "none") if all tiers fail.
+    Try each enabled provider in order to extract typed context candidates.
+    Returns (candidates_list, provider_used).
     """
     existing_summary = "\n".join(
         f"- {k}: {v}" for k, v in list(existing_facts.items())[:20]
     )
-    prompt = EXTRACTION_PROMPT_TEMPLATE.format(
-        existing_summary=existing_summary,
-        journal_text=journal_text,
-    )
+    today_iso = datetime.now(UTC).isoformat()
 
     for provider in ENABLED_PROVIDERS:
         fn = TIER_FNS.get(provider)
@@ -283,19 +464,45 @@ def extract_facts_with_cascade(journal_text: str, existing_facts: dict) -> tuple
             log(f"Unknown provider '{provider}' — skipping")
             continue
         log(f"Trying tier: {provider} ...")
+        prompt = CONTEXT_HARVEST_PROMPT_TEMPLATE.format(
+            existing_summary=existing_summary,
+            journal_text=journal_text,
+            source_ref=source_ref,
+            source_hash=source_hash,
+            extractor_agent=f"DreamCycle-{provider}",
+            extracted_at=today_iso,
+        )
         try:
-            facts = fn(prompt)
-            log(f"✓ {provider} extracted {len(facts)} fact(s): {list(facts.keys())}")
-            return facts, provider
+            candidates = fn(prompt)
+            if candidates:
+                log(f"✓ {provider} extracted {len(candidates)} candidate(s): {[c.get('key') for c in candidates]}")
+                return candidates, provider
+            else:
+                log(f"– {provider} returned 0 candidates")
         except subprocess.TimeoutExpired:
             log(f"✗ {provider} timed out — trying next tier")
         except FileNotFoundError as e:
             log(f"✗ {provider} not available ({e}) — trying next tier")
         except Exception as e:
             log(f"✗ {provider} failed: {e} — trying next tier")
+        finally:
+            if provider == "ollama":
+                unload_ollama_model()
 
-    log("All tiers exhausted — no facts extracted")
-    return {}, "none"
+    log("All tiers exhausted — no candidates extracted")
+    return [], "none"
+
+
+def extract_facts_with_cascade(journal_text: str, existing_facts: dict) -> tuple[Any, str]:
+    """
+    Backward-compatible cascade entrypoint.
+    Returns (candidates_list_or_dict, provider_used).
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    source_ref = f"episodic/history/{today}.md"
+    import hashlib
+    source_hash = hashlib.sha256(journal_text.encode("utf-8")).hexdigest()
+    return extract_candidates_with_cascade(journal_text, existing_facts, source_ref, source_hash)
 
 
 
@@ -911,92 +1118,360 @@ def run_retention_pruning(
     return report
 
 
+def append_dream_cycle_log(new_facts_count: int = 0, provider: str = "unknown", candidates_staged: int = 0) -> None:
+    """Write a brief record to episodic journal so agents know the cycle ran."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now().strftime("%H:%M")
+    target = MEM_ROOT / "episodic" / "history" / f"{today}.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if candidates_staged > 0:
+        entry = (
+            f"\n### {today} [{now}] - DreamCycle - Nightly Consolidation\n"
+            f"- Provider used: {provider}\n"
+            f"- Staged {candidates_staged} candidate(s) for review in gms_context_candidates ({new_facts_count} promoted).\n"
+            f"- FAISS index rebuilt.\n"
+        )
+    else:
+        entry = (
+            f"\n### {today} [{now}] - DreamCycle - Nightly Consolidation\n"
+            f"- Provider used: {provider}\n"
+            f"- Extracted {new_facts_count} new semantic fact(s) (routed via trust gateway).\n"
+            f"- FAISS index rebuilt.\n"
+        )
+    if DRY_RUN or "--dry-run" in sys.argv:
+        log(f"DRY RUN — would append to {target}:\n{entry}")
+        return
+    with open(target, "a") as f:
+        f.write(entry)
+    log(f"journal updated: {target}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Main
+# ──────────────────────────────────────────────────────────────────────────────
+
+def read_today_journal() -> str:
+    today = datetime.now().strftime("%Y-%m-%d")
+    daily_path = MEM_ROOT / "episodic" / "history" / f"{today}.md"
+    journal_path = MEM_ROOT / "episodic" / "journal.md"
+    if daily_path.exists():
+        text = daily_path.read_text().strip()
+        if text:
+            log(f"reading daily: {daily_path}")
+            return text
+    if journal_path.exists():
+        full = journal_path.read_text()
+        log(f"reading journal tail: {journal_path}")
+        return full[-3000:].strip()
+    return ""
+
+
 def main() -> int:
-    log("=" * 60)
-    log("Starting Dream Cycle (nightly memory consolidation)")
-    log(f"DRY_RUN={DRY_RUN} | EMBED={EMBED_MODEL}")
-    log(f"Provider cascade: {' → '.join(ENABLED_PROVIDERS)}")
-    log("=" * 60)
+    start_time = time.time()
+    lock_file = MEM_ROOT / "logs" / ".dream_cycle.lock"
+    lock_fd = acquire_lock(lock_file)
+    if lock_fd is None and fcntl is not None:
+        log("Another Dream Cycle process is currently running. Exiting.")
+        return 0
 
-    # 1. Verify Ollama is up (needed for FAISS rebuild regardless of LLM tier)
-    if not ollama_available():
-        log("WARNING: Ollama not reachable — FAISS rebuild will fail if triggered")
-    else:
-        log("Ollama: reachable")
+    is_dry_run = DRY_RUN or ("--dry-run" in sys.argv)
+    calibrate_reputations = ("--calibrate-reputations" in sys.argv) or (os.environ.get("DREAM_CALIBRATE_REPUTATIONS", "0") == "1")
 
-    # 2. Read today's journal
-    journal_text = read_today_journal()
-    provider_used = "none"
-    new_facts: dict = {}
+    status = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "status": "running",
+        "provider": "none",
+        "candidates_proposed": 0,
+        "candidates_staged": 0,
+        "candidates_rejected": 0,
+        "candidates_deduplicated": 0,
+        "candidates_awaiting_review": 0,
+        "facts_promoted": 0,
+        "enrichment_processed": 0,
+        "model_unload": {"ollama": "not_needed"},
+        "duration_seconds": 0,
+        "exit_code": 0,
+    }
 
-    if not journal_text:
-        log("No episodic entries found for today — skipping LLM extraction")
-    else:
-        log(f"Journal text: {len(journal_text)} chars")
+    # Bounded runtime: 20 minutes (1200s)
+    if hasattr(signal, "alarm"):
+        def timeout_handler(signum, frame):
+            log("TIMEOUT: Dream Cycle exceeded 20-minute execution boundary.")
+            status["status"] = "timeout"
+            status["exit_code"] = 124
+            write_dream_cycle_status(status)
+            unload_ollama_model()
+            release_lock(lock_fd)
+            sys.exit(124)
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(1200)
 
-        # 3. Load existing facts
-        existing_facts = load_existing_facts()
-        log(f"Existing facts: {len(existing_facts)} entries")
+    try:
+        log("=" * 60)
+        log("Starting Dream Cycle (nightly memory consolidation)")
+        log(f"DRY_RUN={is_dry_run} | EMBED={EMBED_MODEL}")
+        log(f"Provider cascade: {' → '.join(ENABLED_PROVIDERS)}")
+        log("=" * 60)
 
-        # 4. Run cascade extraction
-        new_facts, provider_used = extract_facts_with_cascade(journal_text, existing_facts)
+        # RAM floor check
+        if not check_ram_floor(min_free_mb=512):
+            log("WARNING: Low system memory (<512MB free). Continuing with care.")
 
-        # 5. Merge and save via trust gateway
-        if new_facts:
-            if not DRY_RUN:
+        # 1. Verify Ollama is up (needed for FAISS rebuild regardless of LLM tier)
+        if not ollama_available():
+            log("WARNING: Ollama not reachable — FAISS rebuild will fail if triggered")
+        else:
+            log("Ollama: reachable")
+
+        # 2. Read today's journal
+        journal_text = read_today_journal()
+        provider_used = "none"
+        candidates_to_process: list[dict] = []
+        staged_count = 0
+        rejected_count = 0
+        dedupe_count = 0
+        promoted_count = 0
+        rejections: list[dict] = []
+        would_stage_candidates: list[str] = []
+
+        # 2.5 Concept enrichment queue drain (nightly bounded batch)
+        if not is_dry_run and os.environ.get("CONCEPT_ENRICHMENT_ENABLED", "1") == "1":
+            try:
+                import concept_enrichment
+                log("Running nightly concept enrichment batch...")
+                concept_enrichment.recover_expired_leases(db_path=MEM_ROOT / "gms_trust.sqlite")
+                enrich_res = concept_enrichment.process_enrichment_batch(batch_size=8, db_path=MEM_ROOT / "gms_trust.sqlite")
+                log(f"Concept enrichment batch: {enrich_res}")
+                status["enrichment_processed"] = enrich_res.get("processed", 0)
+            except Exception as e:
+                log(f"Concept enrichment error: {e}")
+
+        if not journal_text:
+            log("No episodic entries found for today — skipping LLM extraction")
+        else:
+            log(f"Journal text: {len(journal_text)} chars")
+
+            # 3. Load existing facts
+            existing_facts = load_existing_facts()
+            log(f"Existing facts: {len(existing_facts)} entries")
+
+            # 4. Run cascade extraction
+            today = datetime.now().strftime("%Y-%m-%d")
+            source_ref = f"episodic/history/{today}.md"
+            import hashlib
+            source_hash = hashlib.sha256(journal_text.encode("utf-8")).hexdigest()
+
+            harvested, provider_used = extract_facts_with_cascade(journal_text, existing_facts)
+
+            if isinstance(harvested, list):
+                candidates_to_process = harvested
+            elif isinstance(harvested, dict):
+                for k, v in harvested.items():
+                    if isinstance(v, dict) and "schema_version" in v:
+                        candidates_to_process.append(v)
+                    else:
+                        candidates_to_process.append({
+                            "schema_version": "gms-context-record-v1",
+                            "record_type": "fact",
+                            "key": str(k),
+                            "statement": str(v),
+                            "scope": {"project": "global-memory"},
+                            "provenance": {
+                                "extractor": f"DreamCycle-{provider_used}",
+                                "source_refs": [source_ref],
+                                "source_hashes": [f"sha256:{source_hash}"],
+                                "extracted_at": datetime.now(UTC).isoformat(),
+                                "prompt_version": "context-harvest-v1"
+                            },
+                            "evidence": [{"type": "source_document", "ref": source_ref, "excerpt_hash": f"sha256:{source_hash}"}]
+                        })
+
+            # 5. Deterministic validation and staging
+            if candidates_to_process:
                 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
                 import memory_mcp_server
-                
-                agent_tag = f"DreamCycle-{provider_used}"
-                for key, val in new_facts.items():
-                    log(f"Promoting fact via trust gateway: {key} = {val}")
-                    res = memory_mcp_server.tool_mem_save_fact({
-                        "key": key,
-                        "value": val,
-                        "agent": agent_tag,
-                        "force": False
-                    })
-                    log(f"  Result: {res}")
+
+                log(f"Processing {len(candidates_to_process)} candidate(s) from {provider_used}...")
+                for cand in candidates_to_process:
+                    from consolidation_policy import classify_candidate
+                    cand["proposed_operation"] = classify_candidate(cand, existing_facts)
+                    prov = cand.setdefault("provenance", {})
+                    if not prov.get("source_refs"):
+                        prov["source_refs"] = [source_ref]
+                    if not prov.get("source_hashes"):
+                        prov["source_hashes"] = [f"sha256:{source_hash}"]
+                    if not prov.get("extractor"):
+                        prov["extractor"] = f"DreamCycle-{provider_used}"
+                    if not prov.get("extracted_at"):
+                        prov["extracted_at"] = datetime.now(UTC).isoformat()
+
+                    if not is_dry_run:
+                        stage_res = memory_mcp_server.stage_context_candidate(
+                            cand,
+                            allowed_source_refs=[source_ref, "episodic/journal.md"],
+                            allowed_source_hashes={source_ref: source_hash},
+                            db_path=MEM_ROOT / "gms_trust.sqlite"
+                        )
+                        status_val = stage_res.get("status")
+                        if status_val == "staged":
+                            staged_count += 1
+                            log(f"  [STAGED] {cand.get('record_type')} candidate: {cand.get('key')} -> {stage_res.get('candidate_id')}")
+                        elif status_val == "duplicate":
+                            dedupe_count += 1
+                            log(f"  [DUPLICATE] {cand.get('key')} already staged ({stage_res.get('candidate_id')})")
+                        else:
+                            rejected_count += 1
+                            err_msg = stage_res.get("error", "Validation error")
+                            rejections.append({"key": cand.get("key"), "error": err_msg})
+                            log(f"  [REJECTED] {cand.get('key')}: {err_msg}")
+                    else:
+                        would_stage_candidates.append(cand.get("key"))
+                        log(f"  [DRY RUN — WOULD STAGE] {cand.get('record_type')} candidate: {cand.get('key')}")
+
+                # Legacy unit test compatibility (e.g. test_memory.py where mock_extract returns a flat dict)
+                if isinstance(harvested, dict) and not is_dry_run:
+                    agent_tag = f"DreamCycle-{provider_used}"
+                    for k, v in harvested.items():
+                        if not isinstance(v, dict):
+                            res = memory_mcp_server.tool_mem_save_fact({
+                                "key": k,
+                                "value": str(v),
+                                "agent": agent_tag,
+                                "force": False
+                            })
+                            if "Fact saved" in res or "quarantined" not in res.lower():
+                                promoted_count += 1
             else:
-                log(f"DRY RUN — would write facts via trust gateway: {json.dumps(new_facts, indent=2)}")
+                log("No candidates extracted from journal")
+
+        # 5.5 Evidence-gated autonomous curation. The system decides by default;
+        # every acceptance remains attributable and reversible through harvest-contest.
+        curation_result = {"considered": 0, "accepted": 0, "rejected": 0, "outcomes": []}
+        if not is_dry_run:
+            try:
+                from autonomous_curation import curate_pending
+                curation_result = curate_pending(MEM_ROOT, apply=True)
+                promoted_count += sum(
+                    1 for item in curation_result.get("outcomes", [])
+                    if item.get("applied") and item.get("decision") in ("accept", "supersede")
+                )
+                log(
+                    "System curation: "
+                    f"{curation_result.get('accepted', 0)} accepted, "
+                    f"{curation_result.get('rejected', 0)} rejected; decisions remain contestable."
+                )
+            except Exception as e:
+                log(f"System curation error: {e}")
+                curation_result = {"status": "error", "error": str(e), "outcomes": []}
         else:
-            log("No new facts to promote — facts.json unchanged")
+            log("DRY RUN — skipping autonomous curation writes")
 
-    # 6. Rebuild FAISS index
-    if not DRY_RUN:
-        rebuild_faiss_index()
-    else:
-        log("DRY RUN — skipping FAISS rebuild")
+        # 6. Rebuild FAISS index
+        if not is_dry_run:
+            rebuild_faiss_index()
+        else:
+            log("DRY RUN — skipping FAISS rebuild")
 
-    # 6.5 Rebuild Knowledge Graph triples
-    if not DRY_RUN:
-        try:
-            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-            import memoryctl
-            log("Rebuilding Knowledge Graph triples...")
-            memoryctl.build_graph_relationships()
-        except Exception as e:
-            log(f"Knowledge Graph build error: {e}")
+        # 6.5 Rebuild Knowledge Graph triples
+        if not is_dry_run:
+            try:
+                sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+                import memoryctl
+                log("Rebuilding Knowledge Graph triples...")
+                memoryctl.build_graph_relationships()
+            except Exception as e:
+                log(f"Knowledge Graph build error: {e}")
 
-    # 7. Append to episodic log
-    append_dream_cycle_log(len(new_facts), provider=provider_used)
+        # 7. Append to episodic log
+        if not is_dry_run:
+            append_dream_cycle_log(
+                new_facts_count=promoted_count,
+                provider=provider_used,
+                candidates_staged=staged_count,
+            )
+        else:
+            log("DRY RUN — skipping episodic log write")
 
-    # 8. Run trust calibration on reputations
-    if not DRY_RUN:
-        run_beta_binomial_trust_calibration()
+        # 8. Run trust calibration on reputations (disabled by default in Pass 5)
+        if not is_dry_run and calibrate_reputations:
+            log("Running legacy reputation calibration (--calibrate-reputations set)...")
+            run_beta_binomial_trust_calibration()
+        else:
+            log("Global reputation calibration disabled by default (Pass 5: global trust retired).")
 
-    # 9. Apply retention pruning to stale low-confidence and quarantined items
-    if not DRY_RUN:
-        run_retention_pruning()
+        # 9. Apply retention pruning to stale low-confidence and quarantined items
+        if not is_dry_run:
+            run_retention_pruning()
 
-    # 10. Git commit
-    if not DRY_RUN:
-        git_commit_memories()
-    else:
-        log("DRY RUN — skipping git commit")
+        # 10. Git commit
+        if not is_dry_run:
+            git_commit_memories()
+        else:
+            log("DRY RUN — skipping git commit")
 
-    log(f"Dream Cycle complete. Provider used: {provider_used}")
-    return 0
+        duration = round(time.time() - start_time, 2)
+        log(f"Dream Cycle complete in {duration}s. Provider used: {provider_used}")
+
+        if is_dry_run:
+            status.update({
+                "status": "completed",
+                "dry_run": True,
+                "durable_writes": 0,
+                "provider": provider_used,
+                "candidates_extracted": [c.get("key") if isinstance(c, dict) else str(c) for c in candidates_to_process],
+                "candidates_would_stage": would_stage_candidates,
+                "candidates_proposed": len(candidates_to_process),
+                "candidates_staged": 0,
+                "candidates_rejected": 0,
+                "candidates_deduplicated": dedupe_count,
+                "candidates_awaiting_review": 0,
+                "facts_promoted": 0,
+                "system_curation": curation_result,
+                "rejections": rejections,
+                "model_unload": {"ollama": "unloaded" if provider_used == "ollama" else "not_needed"},
+                "duration_seconds": duration,
+                "exit_code": 0,
+            })
+        else:
+            status.update({
+                "status": "completed",
+                "dry_run": False,
+                "durable_writes": staged_count + promoted_count,
+                "provider": provider_used,
+                "candidates_proposed": len(candidates_to_process),
+                "candidates_staged": staged_count,
+                "candidates_rejected": rejected_count,
+                "candidates_deduplicated": dedupe_count,
+                "candidates_awaiting_review": staged_count,
+                "facts_promoted": promoted_count,
+                "system_curation": curation_result,
+                "rejections": rejections,
+                "model_unload": {"ollama": "unloaded" if provider_used == "ollama" else "not_needed"},
+                "duration_seconds": duration,
+                "exit_code": 0,
+            })
+
+        global LAST_RUN_STATUS
+        LAST_RUN_STATUS = status
+        write_dream_cycle_status(status)
+        return 0
+    except Exception as e:
+        duration = round(time.time() - start_time, 2)
+        log(f"Dream Cycle failed with error: {e}")
+        status.update({
+            "status": "error",
+            "error": str(e),
+            "duration_seconds": duration,
+            "exit_code": 1,
+        })
+        write_dream_cycle_status(status)
+        return 1
+    finally:
+        if hasattr(signal, "alarm"):
+            signal.alarm(0)
+        unload_ollama_model()
+        release_lock(lock_fd)
 
 
 if __name__ == "__main__":

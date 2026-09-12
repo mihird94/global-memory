@@ -1,0 +1,141 @@
+{
+  "surface": "report",
+  "title": "Brain works, but most of its knowledge is still legacy-shaped",
+  "generatedAt": "2026-09-10T17:25:00-07:00",
+  "buildStatus": "creating",
+  "status": "reviewed-live-local",
+  "queries": {
+    "inventory": {
+      "rows": [
+        {"layer":"Semantic facts","records":90,"role":"Direct key-value memory"},
+        {"layer":"Claims ledger","records":113,"role":"Versioned assertions and provenance"},
+        {"layer":"AI candidates","records":11,"role":"Proposed records awaiting human review"},
+        {"layer":"Procedures","records":9,"role":"Operational workflows"},
+        {"layer":"Project tasks","records":1,"role":"Completed task continuity record"},
+        {"layer":"Graph entities","records":266,"role":"Named concepts and objects"},
+        {"layer":"Graph relationships","records":143,"role":"Entity connections"},
+        {"layer":"Embedding vectors","records":297,"role":"Indexed episodic chunks"},
+        {"layer":"History entries","records":78,"role":"Dated episodic milestones"}
+      ],
+      "source": {
+        "label": "Live local Brain inventory",
+        "files": ["~/memories/semantic/facts.json", "~/memories/gms_trust.sqlite", "~/memories/episodic/history/*.md"],
+        "executedAt": "2026-09-10T17:20:00-07:00",
+        "evidenceFlow": [
+          {"title":"SQLite inventory","detail":"Read-only counts from live GMS tables."},
+          {"title":"File inventory","detail":"Counted dated Markdown history entries and semantic facts."}
+        ],
+        "metricDefinitions": [
+          {"label":"Records","definition":"Physical rows, facts, graph objects, vectors, or Markdown entries in the named live layer; counts are not additive across layers because the same knowledge may appear in multiple representations.","componentIds":["inventory-chart","inventory-table"]}
+        ]
+      }
+    },
+    "fact_structure": {
+      "rows": [
+        {"shape":"Flat values","facts":85,"share":0.944},
+        {"shape":"JSON object encoded as string","facts":3,"share":0.033},
+        {"shape":"Native structured object","facts":2,"share":0.022}
+      ],
+      "source": {
+        "label": "Live semantic facts structure profile",
+        "files": ["~/memories/semantic/facts.json"],
+        "executedAt": "2026-09-10T17:20:00-07:00",
+        "methods": ["Classified every value by native JSON type and attempted JSON-object decoding for string values."],
+        "metricDefinitions": [
+          {"label":"Structured fact","definition":"A value represented as a JSON object either natively or inside a decodable JSON string. This is a shape test, not proof that the record satisfies the full context contract.","componentIds":["fact-shape-chart","fact-shape-table"]}
+        ]
+      }
+    },
+    "claim_status": {
+      "rows": [
+        {"status":"Active","claims":110},
+        {"status":"Superseded","claims":3}
+      ],
+      "source": {
+        "label": "Live claims ledger",
+        "tables": ["gms_claims"],
+        "sql": "SELECT status, COUNT(*) AS claims FROM gms_claims GROUP BY status",
+        "executedAt": "2026-09-10T17:20:00-07:00"
+      }
+    },
+    "candidate_queue": {
+      "rows": [
+        {"recordType":"Decision","candidates":5},
+        {"recordType":"Fact","candidates":2},
+        {"recordType":"Policy","candidates":2},
+        {"recordType":"Lesson candidate","candidates":1},
+        {"recordType":"Project state","candidates":1}
+      ],
+      "source": {
+        "label": "Live context candidate review queue",
+        "tables": ["gms_context_candidates"],
+        "sql": "SELECT record_type, review_status, COUNT(*) FROM gms_context_candidates GROUP BY record_type, review_status",
+        "executedAt": "2026-09-10T17:20:00-07:00",
+        "filters": ["review_status = proposed"],
+        "metricDefinitions": [
+          {"label":"Candidate","definition":"A schema-valid proposed context record that has not been accepted into current truth; all 11 records had valid JSON payloads and one evidence item.","componentIds":["candidate-chart","candidate-table"]}
+        ]
+      }
+    },
+    "graph_quality": {
+      "rows": [
+        {"measure":"Entities","value":266},
+        {"measure":"Relationships","value":143},
+        {"measure":"Unlinked entities","value":1},
+        {"measure":"Generic configured_as edges","value":134},
+        {"measure":"Claim-linked edges","value":83},
+        {"measure":"Non-generic edges","value":9}
+      ],
+      "source": {
+        "label": "Live knowledge graph profile",
+        "tables": ["gms_entities", "gms_relationships"],
+        "executedAt": "2026-09-10T17:20:00-07:00",
+        "metricDefinitions": [
+          {"label":"Non-generic edge","definition":"A relationship whose predicate is not configured_as. It measures semantic variety, not correctness.","componentIds":["graph-chart","graph-table"]}
+        ]
+      }
+    },
+    "embedding_coverage": {
+      "rows": [
+        {"source":"episodic/journal.md","chunks":231},
+        {"source":"history/2026-09-08.md","chunks":27},
+        {"source":"history/2026-09-07.md","chunks":9},
+        {"source":"history/2026-09-09.md","chunks":7},
+        {"source":"history/2026-09-10.md","chunks":4},
+        {"source":"other sources","chunks":19}
+      ],
+      "source": {
+        "label": "Live embedding index coverage",
+        "tables": ["gms_embeddings"],
+        "sql": "SELECT source, COUNT(*) AS chunks, MAX(created_at) AS indexed_at FROM gms_embeddings GROUP BY source",
+        "executedAt": "2026-09-10T17:20:00-07:00",
+        "metricDefinitions": [
+          {"label":"Indexed chunk","definition":"One stored vector row for a source chunk. The index contained 297 rows across 16 sources; chunk count is not a count of unique memories.","componentIds":["embedding-chart","embedding-table"]}
+        ]
+      }
+    },
+    "quality_findings": {
+      "rows": [
+        {"priority":1,"severity":"High","finding":"No accepted records use the new structured context schema","evidence":"0 structured active records; 90 legacy flat records","risk":"Agents receive values without consistent rationale, scope, implications, or review conditions.","recommendedAction":"Review and migrate high-value records incrementally; do not bulk-promote."},
+        {"priority":2,"severity":"High","finding":"Fixture-like claims remain in the live ledger","evidence":"18 suspected claims; 9 explicitly cleanup-eligible","risk":"Test-shaped assertions can leak into retrieval and look authoritative.","recommendedAction":"Preview and remove only the 9 high-signal eligible artifacts, then adjudicate the remaining 9."},
+        {"priority":3,"severity":"Medium","finding":"The graph is connected but semantically shallow","evidence":"134 of 143 relationships use configured_as; only 9 use specific predicates","risk":"Graph exploration appears busy while offering little explanatory or causal structure.","recommendedAction":"Extract typed predicates from accepted structured records and project decisions."},
+        {"priority":4,"severity":"Medium","finding":"The review queue is useful but aging","evidence":"11 proposed candidates created on 2026-09-09; none accepted or rejected","risk":"Good AI-curated context remains unavailable to normal retrieval, while users face a growing review backlog.","recommendedAction":"Review the 7 decision/policy candidates first, then project state, facts, and lesson."},
+        {"priority":5,"severity":"Medium","finding":"One canonical-key collision remains unresolved","evidence":"Two AlphaOS plugin-version values map to alphaos.swing.plugin.version","risk":"Exact lookup can surface competing operational values.","recommendedAction":"Resolve with current deployment evidence; preserve the losing value as superseded history."},
+        {"priority":6,"severity":"Medium","finding":"One status-only fact remains opaque","evidence":"car_stickers_status = active","risk":"An agent cannot infer rationale, scope, owner, or next action.","recommendedAction":"Repair from source evidence or archive if it has no durable use."},
+        {"priority":7,"severity":"Low","finding":"The embedding index is current but concentrated","evidence":"231 of 297 vectors come from episodic/journal.md","risk":"Large journal coverage may dominate retrieval over curated project and semantic context.","recommendedAction":"Track retrieval contribution by source and cap redundant journal chunks during evaluation."},
+        {"priority":8,"severity":"Low","finding":"Project coverage is uneven","evidence":"global-memory bank is 37.9 KB; learning-os 11.1 KB; demo-proj 624 B","risk":"Project views can imply equivalent readiness where context depth differs substantially.","recommendedAction":"Show completeness and last-substantive-update indicators per project."}
+      ],
+      "source": {
+        "label": "Derived quality findings from live audits",
+        "files": ["~/memories/semantic/facts.json", "~/memories/projects/*", "~/memories/episodic/history/*"],
+        "tables": ["gms_claims", "gms_context_candidates", "gms_entities", "gms_relationships", "gms_embeddings"],
+        "executedAt": "2026-09-10T17:20:00-07:00",
+        "evidenceFlow": [
+          {"title":"Convention audit","detail":"Used memoryctl convention-audit for lifecycle, evidence, fixture, collision, and migration readiness checks."},
+          {"title":"Pollution audit","detail":"Used memoryctl pollution-audit; confirmed pollutants were zero while preserving 18 warning-only suspected fixtures."},
+          {"title":"Direct reconciliation","detail":"Reconciled audit summaries with read-only SQLite and JSON counts."}
+        ]
+      }
+    }
+  }
+}

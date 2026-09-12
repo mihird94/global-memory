@@ -71,18 +71,8 @@ house_mgmt = [r for r in live_reminders if r["list"] == "House Management"]
 backlog_rems = [r for r in live_reminders if r["list"] == "Reminders"]
 birthday_rems = [r for r in live_reminders if r["list"] == "Birthdays"]
 
-# 2. Load Facts
-facts_file = os.path.join(MEMORY_ROOT, "semantic", "facts.json")
-facts = {}
-if os.path.exists(facts_file):
-    try:
-        with open(facts_file, "r") as f:
-            facts = json.load(f)
-    except Exception:
-        pass
-
-# Update GMS Fact with Reminders Summary
-facts["live_reminders_summary"] = {
+# 2. Update GMS Fact with Reminders Summary via Trust Gateway
+reminders_summary_val = {
     "total_incomplete": len(live_reminders),
     "personal_chores": len(personal_chores),
     "house_management": len(house_mgmt),
@@ -90,8 +80,17 @@ facts["live_reminders_summary"] = {
     "birthdays": len(birthday_rems),
     "last_synced": datetime.now().strftime("%Y-%m-%d %H:%M")
 }
-with open(facts_file, "w") as f:
-    json.dump(facts, f, indent=2)
+try:
+    import memory_mcp_server
+    memory_mcp_server.tool_mem_save_typed({
+        "key": "operational.live_reminders_summary",
+        "value": json.dumps(reminders_summary_val),
+        "kind": "operational",
+        "agent": "Apple-Reminders-Sync",
+        "force": True
+    })
+except Exception as e:
+    print(f"Warning saving reminders summary via trust gateway: {e}")
 
 # 3. Load Vector Meta
 meta_file = os.path.join(MEMORY_ROOT, "episodic", "index", "episodic_meta.json")

@@ -27,7 +27,10 @@ Installation (add to your agent's MCP config):
     command = ["<repo>/.venv/bin/python",
                "<repo>/tools/memory_mcp_server.py"]
 
-Tools exposed (19):
+Tools exposed: 59 capabilities, each available under both ``mem_*`` and
+``brain_*`` aliases (118 registered tool names). Tool metadata carries the GMS
+context-engineering convention so clients see lifecycle, evidence, rationale,
+and authority requirements when selecting a tool.
   Session:    mem_session_start, mem_session_end
   Save:       mem_save_fact, mem_log_event, mem_add_lesson
   Search:     mem_search, mem_context
@@ -39,11 +42,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import subprocess
 import time
 import sqlite3
-from datetime import datetime, timedelta
+try:
+    from datetime import UTC, datetime, timedelta
+except ImportError:
+    from datetime import datetime, timedelta, timezone
+    UTC = timezone.utc
 from pathlib import Path
 from typing import Any
 from urllib import request
@@ -58,10 +66,12 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 try:
-    from schemas import validate_fact, get_namespace_for_key, list_contracts, parse_payload
+    from schemas import (validate_fact, get_namespace_for_key, list_contracts,
+                         parse_payload, validate_source_reference)
 except ImportError:
     try:
-        from tools.schemas import validate_fact, get_namespace_for_key, list_contracts, parse_payload
+        from tools.schemas import (validate_fact, get_namespace_for_key, list_contracts,
+                                   parse_payload, validate_source_reference)
     except ImportError:
         def validate_fact(key: str, value: Any) -> tuple[bool, Any, str | None]:
             return True, value, None
@@ -71,6 +81,9 @@ except ImportError:
             return {}
         def parse_payload(val: Any) -> Any:
             return val
+        def validate_source_reference(ref: str, excerpt_hash: str | None = None,
+                                      mem_root: Path | None = None) -> tuple[bool, str, dict]:
+            return False, "validator_unavailable", {"ref": ref}
 
 def _get_harvest_fn():
     try:
@@ -108,9 +121,21 @@ DB_PATH = MEM_ROOT / "gms_trust.sqlite"
 # Trust Database Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+def get_db_connection(db_path: Path | str | None = None, timeout: float = 30.0) -> sqlite3.Connection:
+    target = Path(db_path or DB_PATH)
+    if not target.parent.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(target), timeout=timeout)
+    conn.execute("PRAGMA journal_mode = WAL;")
+    conn.execute("PRAGMA busy_timeout = 5000;")
+    conn.execute("PRAGMA synchronous = NORMAL;")
+    conn.execute("PRAGMA foreign_keys = ON;")
+    return conn
+
+
 def init_db(db_path: Path | None = None):
     target = db_path or DB_PATH
-    conn = sqlite3.connect(str(target))
+    conn = get_db_connection(target)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS gms_agent_reputation (
@@ -267,9 +292,55 @@ def init_db(db_path: Path | None = None):
             FOREIGN KEY(task_id) REFERENCES gms_tasks(task_id)
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS gms_context_candidates (
+            candidate_id TEXT PRIMARY KEY,
+            schema_version TEXT NOT NULL,
+            record_type TEXT NOT NULL,
+            canonical_key TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            source_fingerprint TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            extractor_agent TEXT NOT NULL,
+            provider TEXT,
+            model TEXT,
+            prompt_version TEXT NOT NULL,
+            review_status TEXT NOT NULL DEFAULT 'proposed',
+            review_rationale TEXT,
+            reviewed_by TEXT,
+            reviewed_at TEXT,
+            merged_claim_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(source_fingerprint, canonical_key, content_hash)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_candidates_status ON gms_context_candidates (review_status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_candidates_type ON gms_context_candidates (record_type)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_candidates_key ON gms_context_candidates (canonical_key)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_candidates_created ON gms_context_candidates (created_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_gms_tasks_status_project ON gms_tasks (status, project)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_gms_task_checkpoints_task ON gms_task_checkpoints (task_id, checkpoint_id DESC)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_gms_handoffs_task ON gms_handoffs (task_id, handoff_id DESC)")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS gms_review_audit (
+            audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            candidate_id TEXT NOT NULL,
+            canonical_key TEXT NOT NULL,
+            action TEXT NOT NULL,
+            reviewer_id TEXT NOT NULL,
+            review_rationale TEXT NOT NULL,
+            original_content_hash TEXT NOT NULL,
+            accepted_content_hash TEXT,
+            supersedes_claim_id INTEGER,
+            resulting_claim_id INTEGER,
+            reviewed_at TIMESTAMP NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_review_audit_cand ON gms_review_audit (candidate_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_review_audit_key ON gms_review_audit (canonical_key)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_review_audit_reviewer ON gms_review_audit (reviewer_id)")
     try:
         cursor.execute("ALTER TABLE gms_claims ADD COLUMN confidence REAL DEFAULT 1.0")
     except sqlite3.OperationalError:
@@ -327,6 +398,65 @@ def init_db(db_path: Path | None = None):
         CREATE UNIQUE INDEX IF NOT EXISTS idx_gms_quarantine_reviews_identity
         ON gms_quarantine_reviews (fact_key, agent_id, reviewer_id)
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS gms_concept_enrichment_queue (
+            queue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_kind TEXT NOT NULL,
+            source_ref TEXT NOT NULL,
+            source_hash TEXT NOT NULL,
+            text_excerpt TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 50,
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            available_at TEXT,
+            leased_at TEXT,
+            lease_owner TEXT,
+            completed_at TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(source_kind, source_ref, source_hash)
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS gms_concept_candidates (
+            candidate_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            queue_id INTEGER NOT NULL,
+            candidate_kind TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            model TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
+            source_hash TEXT NOT NULL,
+            validation_status TEXT NOT NULL,
+            review_status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(queue_id) REFERENCES gms_concept_enrichment_queue(queue_id)
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS gms_concept_run_audit (
+            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
+            items_processed INTEGER NOT NULL DEFAULT 0,
+            candidates_generated INTEGER NOT NULL DEFAULT 0,
+            errors_count INTEGER NOT NULL DEFAULT 0,
+            peak_memory_mb REAL,
+            status TEXT NOT NULL
+        )
+    """)
+    try:
+        cursor.execute("ALTER TABLE gms_quarantine_reviews ADD COLUMN resolution TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE gms_quarantine_reviews ADD COLUMN resolved_at TIMESTAMP")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
@@ -495,6 +625,600 @@ def record_claim(kind: str, key: str, value: str, agent_id: str, branch: str, st
     return claim_id
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Pass 5 Context Harvesting Staging, Review, and Diff Engine
+# ──────────────────────────────────────────────────────────────────────────────
+
+def stage_context_candidate(
+    candidate_data: dict | None = None,
+    *args,
+    allowed_source_refs: list[str] | None = None,
+    allowed_source_hashes: dict[str, str] | None = None,
+    db_path: Path | None = None,
+    candidate: dict | None = None,
+    candidate_envelope: dict | None = None,
+    extractor_agent: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    prompt_version: str | None = None,
+    source_fingerprint: str | None = None,
+    **kwargs,
+) -> dict:
+    """
+    Deterministically validate and stage a candidate into gms_context_candidates.
+    Does NOT auto-promote LLM decisions/policies into active canonical memory.
+    """
+    import schemas
+
+    cand = candidate_data if candidate_data is not None else (candidate or candidate_envelope)
+    if cand is None:
+        return {"status": "rejected", "error": "No candidate provided", "candidate": {}}
+
+    if len(args) >= 1 and extractor_agent is None:
+        extractor_agent = args[0]
+    if len(args) >= 2 and provider is None:
+        provider = args[1]
+    if len(args) >= 3 and model is None:
+        model = args[2]
+    if len(args) >= 4 and prompt_version is None:
+        prompt_version = args[3]
+    if len(args) >= 5 and source_fingerprint is None:
+        source_fingerprint = args[4]
+    if "db_path" in kwargs and db_path is None:
+        db_path = kwargs["db_path"]
+
+    is_valid, normalized, err = schemas.validate_context_candidate(
+        cand,
+        allowed_source_refs=allowed_source_refs,
+        allowed_source_hashes=allowed_source_hashes,
+    )
+    if not is_valid or normalized is None:
+        return {
+            "status": "rejected",
+            "error": err or "Validation failed",
+            "candidate": cand,
+        }
+
+    target = db_path or DB_PATH
+    init_db(target)
+    conn = get_db_connection(target)
+    cursor = conn.cursor()
+
+    candidate_id = normalized["candidate_id"]
+    schema_version = normalized["schema_version"]
+    record_type = normalized["record_type"]
+    canonical_key = normalized["key"]
+    source_fingerprint = source_fingerprint or normalized["source_fingerprint"]
+    content_hash = normalized["content_hash"]
+    provenance = normalized.setdefault("provenance", {})
+    if extractor_agent:
+        provenance["extractor"] = extractor_agent
+    if provider:
+        provenance["provider"] = provider
+    if model:
+        provenance["model"] = model
+    if prompt_version:
+        provenance["prompt_version"] = prompt_version
+
+    extractor_agent = str(provenance.get("extractor") or provenance.get("extractor_agent", "unknown"))
+    provider = str(provenance.get("provider", ""))
+    model = str(provenance.get("model", ""))
+    prompt_version = str(provenance.get("prompt_version", "context-harvest-v1"))
+    review_status = normalized.get("review", {}).get("status", "proposed")
+    payload_json = json.dumps(normalized, sort_keys=True, ensure_ascii=False)
+
+    # 1. Exact deduplication check
+    cursor.execute(
+        """
+        SELECT candidate_id, review_status FROM gms_context_candidates
+        WHERE source_fingerprint = ? AND canonical_key = ? AND content_hash = ?
+        """,
+        (source_fingerprint, canonical_key, content_hash),
+    )
+    dup = cursor.fetchone()
+    if dup:
+        conn.close()
+        return {
+            "status": "duplicate",
+            "candidate_id": dup[0],
+            "canonical_key": canonical_key,
+            "review_status": dup[1],
+            "action": "duplicate",
+            "message": "Identical candidate already staged for this source and key",
+        }
+
+    # 2. Existing record comparison & diff
+    diff_info = get_candidate_diff(canonical_key, normalized, db_path=target)
+
+    # 3. Insert candidate into staging table
+    cursor.execute(
+        """
+        INSERT INTO gms_context_candidates (
+            candidate_id, schema_version, record_type, canonical_key,
+            payload_json, source_fingerprint, content_hash, extractor_agent,
+            provider, model, prompt_version, review_status,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,
+        (
+            candidate_id, schema_version, record_type, canonical_key,
+            payload_json, source_fingerprint, content_hash, extractor_agent,
+            provider, model, prompt_version, review_status
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    return {
+        "status": "staged",
+        "candidate_id": candidate_id,
+        "canonical_key": canonical_key,
+        "record_type": record_type,
+        "content_hash": content_hash,
+        "suggested_action": diff_info.get("suggested_action", "create"),
+        "diff": diff_info,
+    }
+
+
+def get_candidate_diff(
+    canonical_key: str,
+    proposed_payload: dict,
+    db_path: Path | None = None,
+) -> dict:
+    """Generate field-level diff between a proposed candidate and existing canonical memory."""
+    target = db_path or DB_PATH
+    existing_record = None
+
+    # Check active facts.json
+    facts_path = (target.parent / "semantic" / "facts.json") if target else (MEM_ROOT / "semantic" / "facts.json")
+    alt_key = canonical_key.replace(".", "_") if "." in canonical_key else canonical_key.replace("_", ".")
+    if facts_path.exists():
+        try:
+            facts = json.loads(facts_path.read_text(encoding="utf-8"))
+            lookup_key = canonical_key if canonical_key in facts else (alt_key if alt_key in facts else None)
+            if lookup_key:
+                raw_val = facts[lookup_key]
+                if isinstance(raw_val, str) and raw_val.strip().startswith("{"):
+                    try:
+                        existing_record = json.loads(raw_val)
+                    except Exception:
+                        existing_record = raw_val
+                else:
+                    existing_record = raw_val
+        except Exception:
+            pass
+
+    # Check active claim in SQLite if not found in facts.json
+    if existing_record is None and target.exists():
+        conn = get_db_connection(target)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT value FROM gms_claims WHERE (memory_key = ? OR memory_key = ?) AND status = 'active' ORDER BY claim_id DESC LIMIT 1",
+            (canonical_key, alt_key)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            raw_val = row[0]
+            if isinstance(raw_val, str) and raw_val.strip().startswith("{"):
+                try:
+                    existing_record = json.loads(raw_val)
+                except Exception:
+                    existing_record = raw_val
+            else:
+                existing_record = raw_val
+
+    if existing_record is None:
+        return {
+            "has_existing": False,
+            "canonical_key": canonical_key,
+            "existing_record": None,
+            "suggested_action": "create",
+            "field_diff": {},
+        }
+
+    # Compare fields
+    field_diff: dict[str, dict] = {}
+    if isinstance(existing_record, dict):
+        for field in ["statement", "rationale", "implications", "scope"]:
+            old_f = existing_record.get(field)
+            new_f = proposed_payload.get(field)
+            if old_f != new_f:
+                field_diff[field] = {"from": old_f, "to": new_f}
+    else:
+        # Flat record
+        proposed_stmt = proposed_payload.get("statement") or proposed_payload.get("value")
+        if str(existing_record) != str(proposed_stmt):
+            field_diff["statement"] = {"from": existing_record, "to": proposed_stmt}
+
+    suggested_action = "update" if field_diff else "duplicate"
+    if proposed_payload.get("freshness", {}).get("supersedes"):
+        suggested_action = "supersede"
+
+    return {
+        "has_existing": True,
+        "canonical_key": canonical_key,
+        "existing_record": existing_record,
+        "suggested_action": suggested_action,
+        "field_diff": field_diff,
+    }
+
+
+def get_context_candidates(
+    project: str | None = None,
+    record_type: str | None = None,
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Query staged context candidates with filtering and diff generation."""
+    target = db_path or DB_PATH
+    init_db(target)
+    conn = get_db_connection(target)
+    cursor = conn.cursor()
+
+    query = """
+        SELECT candidate_id, schema_version, record_type, canonical_key,
+               payload_json, source_fingerprint, content_hash, extractor_agent,
+               provider, model, prompt_version, review_status, review_rationale,
+               reviewed_by, reviewed_at, merged_claim_id, created_at, updated_at
+        FROM gms_context_candidates
+        WHERE 1=1
+    """
+    params: list[Any] = []
+    if status:
+        query += " AND review_status = ?"
+        params.append(status)
+    if record_type:
+        query += " AND record_type = ?"
+        params.append(record_type)
+    query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
+
+    results: list[dict] = []
+    for r in rows:
+        try:
+            payload = json.loads(r[4])
+        except Exception:
+            payload = {}
+
+        if project:
+            cand_proj = payload.get("project") or payload.get("scope", {}).get("project", "")
+            if cand_proj.lower() != project.lower():
+                continue
+
+        results.append({
+            "candidate_id": r[0],
+            "schema_version": r[1],
+            "record_type": r[2],
+            "canonical_key": r[3],
+            "payload": payload,
+            "source_fingerprint": r[5],
+            "content_hash": r[6],
+            "extractor_agent": r[7],
+            "provider": r[8],
+            "model": r[9],
+            "prompt_version": r[10],
+            "review_status": r[11],
+            "review_rationale": r[12],
+            "reviewed_by": r[13],
+            "reviewed_at": r[14],
+            "merged_claim_id": r[15],
+            "created_at": r[16],
+            "updated_at": r[17],
+        })
+    return results
+
+
+def get_context_candidate_by_id(candidate_id: str, db_path: Path | None = None) -> dict | None:
+    """Fetch single staged candidate by ID with diff against active memory."""
+    target = db_path or DB_PATH
+    init_db(target)
+    conn = get_db_connection(target)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT candidate_id, schema_version, record_type, canonical_key,
+               payload_json, source_fingerprint, content_hash, extractor_agent,
+               provider, model, prompt_version, review_status, review_rationale,
+               reviewed_by, reviewed_at, merged_claim_id, created_at, updated_at
+        FROM gms_context_candidates
+        WHERE candidate_id = ?
+        """,
+        (candidate_id,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+
+    try:
+        payload = json.loads(row[4])
+    except Exception:
+        payload = {}
+
+    diff_info = get_candidate_diff(row[3], payload, db_path=target)
+
+    return {
+        "candidate_id": row[0],
+        "schema_version": row[1],
+        "record_type": row[2],
+        "canonical_key": row[3],
+        "payload": payload,
+        "source_fingerprint": row[5],
+        "content_hash": row[6],
+        "extractor_agent": row[7],
+        "provider": row[8],
+        "model": row[9],
+        "prompt_version": row[10],
+        "review_status": row[11],
+        "review_rationale": row[12],
+        "reviewed_by": row[13],
+        "reviewed_at": row[14],
+        "merged_claim_id": row[15],
+        "created_at": row[16],
+        "updated_at": row[17],
+        "diff": diff_info,
+    }
+
+
+def review_context_candidate(
+    candidate_id: str,
+    action: str,
+    reviewer: str,
+    rationale: str = "",
+    edited_payload: dict | None = None,
+    merge_with_claim_id: int | None = None,
+    expected_content_hash: str | None = None,
+    db_path: Path | None = None,
+) -> dict:
+    """
+    Perform human or agent review action on a staged candidate:
+    Actions: accept, edit, merge, supersede, reject, defer.
+    Enforces registered reviewer identity, substantive rationale (>=10 chars),
+    optimistic concurrency, and records append-only review audit events.
+    """
+    import schemas
+    import reviewers
+
+    target = db_path or DB_PATH
+    init_db(target)
+    cand = get_context_candidate_by_id(candidate_id, db_path=target)
+    if not cand:
+        return {"status": "error", "error": f"Candidate '{candidate_id}' not found"}
+
+    # 1. Reviewer identity validation
+    valid_rev, norm_rev_or_err = reviewers.validate_reviewer_id(reviewer, mem_root=target.parent)
+    if not valid_rev:
+        return {"status": "error", "error_code": "INVALID_REVIEWER", "error": norm_rev_or_err}
+    reviewer = norm_rev_or_err
+
+    now_iso = datetime.now(UTC).isoformat()
+    action = action.lower().strip()
+    payload = cand["payload"]
+    key = cand["canonical_key"]
+    rec_type = cand["record_type"]
+    clean_rationale = str(rationale).strip()
+
+    # 2. Substantive rationale requirement for terminal actions
+    if action in ("accept", "edit", "merge", "supersede", "reject"):
+        if len(clean_rationale) < 10:
+            return {
+                "status": "error",
+                "error_code": "RATIONALE_REQUIRED",
+                "error": f"Review rationale must be at least 10 non-whitespace characters (received {len(clean_rationale)}).",
+            }
+
+    # 3. Optimistic concurrency check
+    original_content_hash = str(cand.get("content_hash") or "")
+    if expected_content_hash and str(expected_content_hash).strip() != original_content_hash:
+        return {
+            "status": "error",
+            "error_code": "CONCURRENCY_CONFLICT",
+            "error": f"Candidate content hash mismatch (expected '{expected_content_hash}', current '{original_content_hash}'). The candidate may have been updated concurrently.",
+        }
+
+    if action in ("reject", "defer"):
+        conn = get_db_connection(target)
+        cursor = conn.cursor()
+        status_str = "deferred" if action == "defer" else "rejected"
+        cursor.execute(
+            """
+            UPDATE gms_context_candidates
+            SET review_status = ?, review_rationale = ?, reviewed_by = ?, reviewed_at = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE candidate_id = ?
+            """,
+            (status_str, clean_rationale, reviewer, now_iso, candidate_id),
+        )
+        cursor.execute(
+            """
+            INSERT INTO gms_review_audit (
+                candidate_id, canonical_key, action, reviewer_id, review_rationale,
+                original_content_hash, accepted_content_hash, supersedes_claim_id,
+                resulting_claim_id, reviewed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+            """,
+            (candidate_id, key, action, reviewer, clean_rationale, original_content_hash, now_iso),
+        )
+        conn.commit()
+        conn.close()
+        return {"status": status_str, "candidate_id": candidate_id}
+
+    if action == "edit":
+        if not edited_payload or not isinstance(edited_payload, dict):
+            return {"status": "error", "error": "Edited payload dictionary required for edit action."}
+        is_valid, norm_edited, err = schemas.validate_context_candidate(edited_payload)
+        if not is_valid or norm_edited is None:
+            return {"status": "error", "error": f"Edited payload validation failed: {err}"}
+        payload = norm_edited
+
+    # Promote to canonical memory (accept, edit, merge, supersede)
+    value_to_store = json.dumps(payload, ensure_ascii=False) if rec_type in ("decision", "policy") else (
+        payload.get("statement") or json.dumps(payload, ensure_ascii=False)
+    )
+
+    # Save to facts.json
+    facts_path = (target.parent / "semantic" / "facts.json") if target else (MEM_ROOT / "semantic" / "facts.json")
+    facts_path.parent.mkdir(parents=True, exist_ok=True)
+    facts: dict = {}
+    if facts_path.exists():
+        try:
+            facts = json.loads(facts_path.read_text(encoding="utf-8"))
+        except Exception:
+            facts = {}
+
+    facts[key] = value_to_store
+    facts_path.write_text(json.dumps(facts, indent=2, sort_keys=True), encoding="utf-8")
+
+    # Record claim in SQLite
+    conn = get_db_connection(target)
+    cursor = conn.cursor()
+
+    supersedes_claim_id = merge_with_claim_id
+    if action in ("accept", "edit", "supersede", "merge"):
+        cursor.execute(
+            "SELECT claim_id FROM gms_claims WHERE memory_key = ? AND status = 'active'",
+            (key,)
+        )
+        prior_rows = cursor.fetchall()
+        for prow in prior_rows:
+            if not supersedes_claim_id:
+                supersedes_claim_id = prow[0]
+            cursor.execute(
+                "UPDATE gms_claims SET status = 'superseded', confidence = 0.0 WHERE claim_id = ?",
+                (prow[0],)
+            )
+
+    cursor.execute(
+        """
+        INSERT INTO gms_claims (
+            memory_kind, memory_key, value, agent_id, branch, status,
+            supersedes_claim_id, confidence, contradiction_type, created_at
+        ) VALUES ('semantic', ?, ?, ?, 'main', 'active', ?, 1.0, ?, CURRENT_TIMESTAMP)
+        """,
+        (
+            key, value_to_store, reviewer,
+            supersedes_claim_id,
+            "temporal_invalidation" if supersedes_claim_id else None
+        ),
+    )
+    new_claim_id = cursor.lastrowid
+
+    # Record fact provenance
+    cursor.execute(
+        """
+        INSERT INTO gms_fact_provenance (fact_key, agent_id, branch, timestamp, quarantined)
+        VALUES (?, ?, 'main', CURRENT_TIMESTAMP, 0)
+        ON CONFLICT(fact_key) DO UPDATE SET
+            agent_id = excluded.agent_id,
+            timestamp = CURRENT_TIMESTAMP,
+            quarantined = 0
+        """,
+        (key, reviewer),
+    )
+
+    accepted_content_hash = schemas.compute_canonical_content_hash(payload)
+
+    # Update candidate record in staging table
+    final_status = "accepted" if action in ("accept", "edit", "supersede") else "merged"
+    cursor.execute(
+        """
+        UPDATE gms_context_candidates
+        SET review_status = ?, review_rationale = ?, reviewed_by = ?, reviewed_at = ?,
+            payload_json = ?, merged_claim_id = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE candidate_id = ?
+        """,
+        (
+            final_status, clean_rationale, reviewer, now_iso,
+            json.dumps(payload, ensure_ascii=False), new_claim_id, candidate_id
+        ),
+    )
+
+    # Insert review audit event
+    cursor.execute(
+        """
+        INSERT INTO gms_review_audit (
+            candidate_id, canonical_key, action, reviewer_id, review_rationale,
+            original_content_hash, accepted_content_hash, supersedes_claim_id,
+            resulting_claim_id, reviewed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            candidate_id, key, action, reviewer, clean_rationale,
+            original_content_hash, accepted_content_hash, supersedes_claim_id,
+            new_claim_id, now_iso
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    return {
+        "status": final_status,
+        "candidate_id": candidate_id,
+        "canonical_key": key,
+        "claim_id": new_claim_id,
+        "merged_claim_id": supersedes_claim_id,
+        "accepted_content_hash": accepted_content_hash,
+    }
+
+
+def get_review_audit_history(candidate_id: str | None = None, limit: int = 50, db_path: Path | None = None) -> list[dict]:
+    """Return append-only audit trail of candidate review actions."""
+    target = db_path or DB_PATH
+    init_db(target)
+    conn = get_db_connection(target)
+    cursor = conn.cursor()
+    if candidate_id:
+        cursor.execute(
+            """
+            SELECT audit_id, candidate_id, canonical_key, action, reviewer_id, review_rationale,
+                   original_content_hash, accepted_content_hash, supersedes_claim_id,
+                   resulting_claim_id, reviewed_at, created_at
+            FROM gms_review_audit
+            WHERE candidate_id = ?
+            ORDER BY audit_id DESC
+            LIMIT ?
+            """,
+            (candidate_id, limit),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT audit_id, candidate_id, canonical_key, action, reviewer_id, review_rationale,
+                   original_content_hash, accepted_content_hash, supersedes_claim_id,
+                   resulting_claim_id, reviewed_at, created_at
+            FROM gms_review_audit
+            ORDER BY audit_id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            "audit_id": r[0],
+            "candidate_id": r[1],
+            "canonical_key": r[2],
+            "action": r[3],
+            "reviewer_id": r[4],
+            "review_rationale": r[5],
+            "original_content_hash": r[6],
+            "accepted_content_hash": r[7],
+            "supersedes_claim_id": r[8],
+            "resulting_claim_id": r[9],
+            "reviewed_at": r[10],
+            "created_at": r[11],
+        }
+        for r in rows
+    ]
+
+
 def get_latest_quarantined_claim_id(kind: str, key: str, agent_id: str) -> int | None:
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -536,15 +1260,23 @@ def record_quarantine_review(fact_key: str, agent_id: str, reviewer_id: str, rat
     conn.close()
 
 
-def get_quarantine_reviews(fact_key: str, agent_id: str) -> list[dict]:
+def get_quarantine_reviews(fact_key: str, agent_id: str, include_resolved: bool = False) -> list[dict]:
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT reviewer_id, rating, rationale, weight_snapshot, claim_id, timestamp
-        FROM gms_quarantine_reviews
-        WHERE fact_key = ? AND agent_id = ?
-        ORDER BY timestamp DESC, review_id DESC
-    """, (fact_key, agent_id))
+    if include_resolved:
+        cursor.execute("""
+            SELECT reviewer_id, rating, rationale, weight_snapshot, claim_id, timestamp
+            FROM gms_quarantine_reviews
+            WHERE fact_key = ? AND agent_id = ?
+            ORDER BY timestamp DESC, review_id DESC
+        """, (fact_key, agent_id))
+    else:
+        cursor.execute("""
+            SELECT reviewer_id, rating, rationale, weight_snapshot, claim_id, timestamp
+            FROM gms_quarantine_reviews
+            WHERE fact_key = ? AND agent_id = ? AND (resolution IS NULL OR resolution = '')
+            ORDER BY timestamp DESC, review_id DESC
+        """, (fact_key, agent_id))
     rows = cursor.fetchall()
     conn.close()
 
@@ -911,17 +1643,34 @@ def query_entity_graph(
         if sub_name and obj_name:
             G.add_edge(sub_name, obj_name, predicate=pred, rel_id=rel_id, valid_from=v_from, valid_to=v_to)
 
-    target_node = None
-    for node in G.nodes():
-        if node.lower() == entity_name.lower() or entity_name.lower() in node.lower():
-            target_node = node
-            break
+    # Candidate entity resolution for exact entities or natural language queries
+    seed_nodes = []
+    query_lower = entity_name.lower().strip()
+    query_tokens = set(re.findall(r'\b\w{3,}\b', query_lower))
 
-    if not target_node:
+    # 1. Exact match
+    for node in G.nodes():
+        if node.lower() == query_lower:
+            seed_nodes.append(node)
+
+    # 2. Substring or token overlap match
+    if not seed_nodes:
+        for node in G.nodes():
+            n_low = node.lower()
+            n_clean = n_low.replace("_", " ").replace("-", " ")
+            if len(n_low) >= 3 and (n_low in query_lower or n_clean in query_lower or query_lower in n_low):
+                seed_nodes.append(node)
+                continue
+            node_tokens = set(re.findall(r'\b\w{3,}\b', n_low))
+            if node_tokens and node_tokens.issubset(query_tokens):
+                seed_nodes.append(node)
+
+    if not seed_nodes:
         return {"entity": entity_name, "found": False, "nodes": [], "edges": []}
 
-    subgraph_nodes = set([target_node])
-    current_frontier = set([target_node])
+    target_node = seed_nodes[0]
+    subgraph_nodes = set(seed_nodes)
+    current_frontier = set(seed_nodes)
     for _ in range(hops):
         next_frontier = set()
         for n in current_frontier:
@@ -929,6 +1678,21 @@ def query_entity_graph(
             next_frontier.update(neighbors)
         subgraph_nodes.update(next_frontier)
         current_frontier = next_frontier
+
+    # HippoRAG Personalized PageRank (PPR) Diffusion
+    ppr_scores = {}
+    if seed_nodes and len(G) > 0:
+        try:
+            pers = {n: 0.0 for n in G.nodes()}
+            weight = 1.0 / len(seed_nodes)
+            for s in seed_nodes:
+                if s in pers:
+                    pers[s] = weight
+            UG = G.to_undirected(as_view=True)
+            raw_ppr = nx.pagerank(UG, alpha=0.85, personalization=pers, max_iter=100, tol=1e-5)
+            ppr_scores = {n: round(score, 4) for n, score in sorted(raw_ppr.items(), key=lambda x: -x[1]) if score > 0.0001}
+        except Exception:
+            ppr_scores = {}
 
     subgraph = G.subgraph(subgraph_nodes)
     edges = []
@@ -943,11 +1707,13 @@ def query_entity_graph(
 
     return {
         "entity": target_node,
+        "matched_entities": seed_nodes,
         "found": True,
         "hops": hops,
         "node_count": len(subgraph_nodes),
         "edge_count": len(edges),
         "nodes": sorted(list(subgraph_nodes)),
+        "ppr_scores": ppr_scores,
         "edges": edges
     }
 
@@ -958,10 +1724,13 @@ def format_ascii_graph(graph_data: dict) -> str:
         return f"Entity '{graph_data.get('entity')}' not found in Knowledge Graph."
 
     root = graph_data["entity"]
-    lines = [f"Knowledge Graph Topology for [{root}] ({graph_data['node_count']} nodes, {graph_data['edge_count']} edges):", ""]
+    seeds = graph_data.get("matched_entities", [root])
+    header_label = root if len(seeds) <= 1 else f"{root} (+{len(seeds)-1} related)"
+    lines = [f"Knowledge Graph Topology for [{header_label}] ({graph_data['node_count']} nodes, {graph_data['edge_count']} edges):", ""]
 
-    outgoing = [e for e in graph_data["edges"] if e["subject"].lower() == root.lower()]
-    incoming = [e for e in graph_data["edges"] if e["object"].lower() == root.lower()]
+    root_lower = root.lower()
+    outgoing = [e for e in graph_data["edges"] if e["subject"].lower() == root_lower]
+    incoming = [e for e in graph_data["edges"] if e["object"].lower() == root_lower]
 
     if outgoing:
         lines.append("  [Outgoing Relationships]")
@@ -974,6 +1743,25 @@ def format_ascii_graph(graph_data: dict) -> str:
         for i, edge in enumerate(incoming):
             prefix = "  ├──" if i < len(incoming) - 1 else "  └──"
             lines.append(f"{prefix} <--({edge['predicate']})-- [{edge['subject']}]")
+
+    # Connected triples between other subgraph nodes
+    handled_edges = set((e["subject"], e["predicate"], e["object"]) for e in outgoing + incoming)
+    connected_triples = [e for e in graph_data["edges"] if (e["subject"], e["predicate"], e["object"]) not in handled_edges]
+    if connected_triples:
+        lines.append("  [Connected Knowledge Triples]")
+        for i, edge in enumerate(connected_triples):
+            prefix = "  ├──" if i < len(connected_triples) - 1 else "  └──"
+            lines.append(f"{prefix} [{edge['subject']}] --({edge['predicate']})--> [{edge['object']}]")
+
+    # Associative Relevance via HippoRAG Personalized PageRank
+    ppr_map = graph_data.get("ppr_scores", {})
+    if ppr_map and len(ppr_map) > 1:
+        top_associations = [f"{n} ({s})" for n, s in list(ppr_map.items()) if n.lower() != root_lower][:5]
+        if top_associations:
+            lines.append("  [Associative Relevance (HippoRAG PPR)]")
+            for i, item in enumerate(top_associations):
+                prefix = "  ├──" if i < len(top_associations) - 1 else "  └──"
+                lines.append(f"{prefix} {item}")
 
     return "\n".join(lines)
 
@@ -1427,6 +2215,250 @@ def tool_mem_validate_schemas(args: dict) -> str:
     return json.dumps(report, indent=2)
 
 
+def tool_mem_project_briefing(args: dict) -> str:
+    """Generate or explain operational project briefing."""
+    from project_briefing import generate_project_briefing, explain_project_briefing
+    project_id = args.get("project") or args.get("project_id", "")
+    if not project_id:
+        return "ERROR: 'project' or 'project_id' is required"
+    as_of = args.get("as_of")
+    profile = args.get("profile", "standard")
+    action = args.get("action", "get")
+    briefing = generate_project_briefing(MEM_ROOT, project_id, as_of=as_of, profile=profile)
+    if action == "explain":
+        return json.dumps(explain_project_briefing(briefing), indent=2)
+    return json.dumps(briefing, indent=2)
+
+
+def tool_mem_context_packet(args: dict) -> str:
+    """Build the deterministic, conflict-aware context packet used for agent resumption."""
+    from context_packet import build_context_packet
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return "ERROR: 'query' is required"
+    try:
+        result = build_context_packet(
+            MEM_ROOT, query, project=str(args.get("project") or "").strip(),
+            profile=str(args.get("profile") or "standard"), as_of=args.get("as_of"),
+        )
+        return json.dumps(result, indent=2)
+    except Exception as exc:
+        return f"ERROR: context packet failed: {exc}"
+
+
+def tool_mem_curation(args: dict) -> str:
+    """Preview/apply system curation or preview/apply an owner contest."""
+    from autonomous_curation import curate_pending, contest_candidate
+    action = str(args.get("action") or "status").strip().lower()
+    limit = max(1, min(int(args.get("limit", 100)), 500))
+    if action == "status":
+        candidates = get_context_candidates(limit=limit, db_path=DB_PATH)
+        counts: dict[str, int] = {}
+        for candidate in candidates:
+            status = str(candidate.get("review_status") or "unknown")
+            counts[status] = counts.get(status, 0) + 1
+        return json.dumps({"policy": "system-decides-user-may-contest-v1", "counts": counts,
+                           "total_returned": len(candidates), "limit": limit}, indent=2)
+    if action in {"preview", "apply"}:
+        return json.dumps(curate_pending(MEM_ROOT, apply=action == "apply", limit=limit), indent=2)
+    if action in {"contest_preview", "contest_apply"}:
+        candidate_id = str(args.get("candidate_id") or "").strip()
+        rationale = str(args.get("rationale") or "").strip()
+        if not candidate_id:
+            return "ERROR: 'candidate_id' is required for contest actions"
+        return json.dumps(contest_candidate(MEM_ROOT, candidate_id, rationale,
+                                            apply=action == "contest_apply"), indent=2)
+    return "ERROR: action must be status, preview, apply, contest_preview, or contest_apply"
+
+
+def tool_mem_memory_quality(args: dict) -> str:
+    """Run convention, pollution, or candidate-source integrity analysis."""
+    action = str(args.get("action") or "summary").strip().lower()
+    from memory_convention_audit import convention_audit
+    import pollution_audit
+    if action == "conventions":
+        return json.dumps(convention_audit(MEM_ROOT), indent=2)
+    if action == "pollution":
+        return json.dumps(pollution_audit.run_pollution_audit(mem_root=MEM_ROOT), indent=2)
+    if action == "source":
+        candidate_id = str(args.get("candidate_id") or "").strip()
+        if not candidate_id:
+            return "ERROR: 'candidate_id' is required for source verification"
+        candidate = get_context_candidate_by_id(candidate_id, db_path=DB_PATH)
+        if not candidate:
+            return f"ERROR: candidate '{candidate_id}' not found"
+        payload = candidate.get("payload") or {}
+        evidence = payload.get("evidence") or [
+            {"ref": ref} for ref in (payload.get("provenance") or {}).get("source_refs", [])
+        ]
+        results = []
+        for item in evidence:
+            valid, status, details = validate_source_reference(
+                str(item.get("ref") or ""), excerpt_hash=item.get("excerpt_hash"), mem_root=MEM_ROOT
+            )
+            results.append({"ref": item.get("ref"), "valid": valid, "status": status, "details": details})
+        return json.dumps({"candidate_id": candidate_id, "evidence_count": len(results),
+                           "all_valid": bool(results) and all(x["valid"] for x in results),
+                           "results": results}, indent=2)
+    if action == "summary":
+        conventions = convention_audit(MEM_ROOT)
+        pollution = pollution_audit.run_pollution_audit(mem_root=MEM_ROOT)
+        return json.dumps({"schema_version": "gms-memory-quality-summary-v1",
+                           "conventions": conventions, "pollution": pollution}, indent=2)
+    return "ERROR: action must be summary, conventions, pollution, or source"
+
+
+def tool_mem_memory_repair(args: dict) -> str:
+    """Analyze, find evidence, stage, or archive an incomplete legacy fact."""
+    from memory_repair import (analyze_missing_fields, archive_opaque_fact,
+                               find_repair_evidence, stage_repair_candidate)
+    action = str(args.get("action") or "analyze").strip().lower()
+    key = str(args.get("key") or "").strip()
+    if not key:
+        return "ERROR: 'key' is required"
+    if action == "analyze":
+        result = analyze_missing_fields(MEM_ROOT, key)
+    elif action == "evidence":
+        result = find_repair_evidence(MEM_ROOT, key)
+    elif action in {"stage_preview", "stage_apply"}:
+        payload = args.get("payload")
+        if payload is None:
+            payload = analyze_missing_fields(MEM_ROOT, key).get("proposed_fields", {})
+        elif not isinstance(payload, dict):
+            payload = _json_value(payload, {})
+        result = stage_repair_candidate(MEM_ROOT, key, payload, actor=str(args.get("actor") or "system"),
+                                        rationale=str(args.get("rationale") or ""),
+                                        apply=action == "stage_apply")
+    elif action in {"archive_preview", "archive_apply"}:
+        result = archive_opaque_fact(MEM_ROOT, key, actor=str(args.get("actor") or "system"),
+                                     rationale=str(args.get("rationale") or ""),
+                                     apply=action == "archive_apply")
+    else:
+        return "ERROR: action must be analyze, evidence, stage_preview, stage_apply, archive_preview, or archive_apply"
+    return json.dumps(result, indent=2)
+
+
+def tool_mem_lifecycle(args: dict) -> str:
+    """Inspect lifecycle history or preview/apply an audited transition."""
+    from memory_lifecycle import lifecycle_history, transition
+    action = str(args.get("action") or "history").strip().lower()
+    record_id = str(args.get("record_id") or "").strip()
+    if action == "history":
+        if not record_id:
+            return "ERROR: 'record_id' is required"
+        return json.dumps(lifecycle_history(DB_PATH, record_id), indent=2)
+    if action in {"transition_preview", "transition_apply"}:
+        request_payload = args.get("request")
+        if not isinstance(request_payload, dict):
+            request_payload = _json_value(request_payload, {})
+        return json.dumps(transition(DB_PATH, request_payload, apply=action == "transition_apply"), indent=2)
+    return "ERROR: action must be history, transition_preview, or transition_apply"
+
+
+def tool_mem_aliases(args: dict) -> str:
+    """Inventory/resolve aliases or preview/apply a recoverable consolidation."""
+    from memory_aliases import alias_inventory, consolidate_collision, resolve_alias
+    action = str(args.get("action") or "inventory").strip().lower()
+    if action == "inventory":
+        result = alias_inventory(MEM_ROOT)
+    elif action == "resolve":
+        result = resolve_alias(MEM_ROOT, str(args.get("key") or ""))
+    elif action in {"consolidate_preview", "consolidate_apply"}:
+        result = consolidate_collision(
+            MEM_ROOT, str(args.get("canonical_key") or ""), str(args.get("preferred_key") or ""),
+            actor=str(args.get("actor") or "system"), rationale=str(args.get("rationale") or ""),
+            apply=action == "consolidate_apply",
+        )
+    else:
+        return "ERROR: action must be inventory, resolve, consolidate_preview, or consolidate_apply"
+    return json.dumps(result, indent=2)
+
+
+def tool_mem_project_timeline(args: dict) -> str:
+    """Return a unified evidence-linked project activity timeline."""
+    from project_timeline import get_project_timeline
+    project = str(args.get("project") or "").strip()
+    if not project:
+        return "ERROR: 'project' is required"
+    result = get_project_timeline(
+        MEM_ROOT, project, event_type=args.get("event_type"), agent=args.get("agent"),
+        limit=max(1, min(int(args.get("limit", 50)), 500)),
+    )
+    event_id = str(args.get("event_id") or "").strip()
+    if event_id:
+        event = next((item for item in result.get("events", []) if item.get("event_id") == event_id), None)
+        return json.dumps(event or {"error": f"event not found: {event_id}"}, indent=2)
+    return json.dumps(result, indent=2)
+
+
+def tool_mem_action_inbox(args: dict) -> str:
+    """Query consequence-ranked action inbox items for unresolved memory states."""
+    from action_inbox import list_inbox_items, preview_inbox_action
+    action = args.get("action", "list")
+    project = args.get("project", "")
+    if action == "preview":
+        inbox_id = args.get("inbox_id", "")
+        if not inbox_id:
+            return "ERROR: 'inbox_id' is required for preview"
+        return json.dumps(preview_inbox_action(MEM_ROOT, inbox_id=inbox_id, project=project), indent=2)
+    category = args.get("category")
+    res = list_inbox_items(MEM_ROOT, project=project)
+    if category:
+        res["items"] = [it for it in res.get("items", []) if it.get("category") == category]
+        res["total_count"] = len(res["items"])
+    return json.dumps(res, indent=2)
+
+
+def tool_mem_task_resume_bundle(args: dict) -> str:
+    """Generate or verify an agent resumption bundle for seamless multi-agent task continuation."""
+    from project_briefing import build_resume_bundle
+    project_id = args.get("project") or args.get("project_id", "")
+    if not project_id:
+        return "ERROR: 'project' or 'project_id' is required"
+    target_format = args.get("target_format", "antigravity")
+    as_of = args.get("as_of")
+    task_id = args.get("task_id")
+    action = args.get("action", "build")
+    bundle = build_resume_bundle(MEM_ROOT, project_id, target_format=target_format, as_of=as_of, task_id=task_id)
+    if action == "verify":
+        valid = bool(bundle.get("packet_hash") and bundle.get("schema_version") == "gms-task-resume-bundle-v1")
+        return json.dumps({"status": "verified" if valid else "invalid", "packet_hash": bundle.get("packet_hash"), "target_format": target_format}, indent=2)
+    if target_format == "json":
+        return json.dumps(bundle, indent=2)
+    return bundle.get("prompt", "")
+
+
+def tool_mem_decision_intelligence(args: dict) -> str:
+    """Inspect binding project decisions, rationale, and supersession impact maps."""
+    from decision_intelligence import list_decisions, get_decision, get_decision_impact
+    action = args.get("action", "list")
+    project = args.get("project", "")
+    if action == "list":
+        inc_sup = args.get("include_superseded", True)
+        return json.dumps(list_decisions(MEM_ROOT, project=project, include_superseded=inc_sup), indent=2)
+    decision_id = args.get("decision_id", "")
+    if not decision_id:
+        return "ERROR: 'decision_id' is required for get/impact"
+    if action == "impact":
+        return json.dumps(get_decision_impact(MEM_ROOT, decision_id), indent=2)
+    res = get_decision(MEM_ROOT, decision_id)
+    if not res:
+        return json.dumps({"error": f"Decision not found: {decision_id}"})
+    return json.dumps(res, indent=2)
+
+
+def tool_mem_morning_briefing(args: dict) -> str:
+    """Generate morning operational briefings answering what changed, what blocks, and what to do first."""
+    from morning_briefing import generate_morning_briefing, list_morning_briefings
+    action = args.get("action", "get")
+    project_id = args.get("project") or args.get("project_id", "")
+    if action == "list" or not project_id:
+        return json.dumps(list_morning_briefings(MEM_ROOT), indent=2)
+    as_of = args.get("as_of")
+    return json.dumps(generate_morning_briefing(MEM_ROOT, project_id, as_of=as_of), indent=2)
+
+
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Durable task handoff and checkpointing
@@ -1758,13 +2790,28 @@ def tool_mem_save_typed(args: dict) -> str:
         log_security_event("SCHEMA_REJECT", f"[{kind.upper()}] Fact '{key}' from agent '{agent_id}' rejected: {schema_err}")
         return f"ERROR: Schema validation failed for '{key}':\n  {schema_err}"
 
-    if isinstance(normalized_val, (dict, list)):
-        value = json.dumps(normalized_val, sort_keys=True)
+    stored_val = normalized_val if isinstance(normalized_val, (dict, list)) else value
+    claim_val_str = json.dumps(stored_val, sort_keys=True) if isinstance(stored_val, (dict, list)) else str(stored_val)
 
     prov_key = key if kind == "semantic" else f"{kind}:{key}"
 
+    def _facts_match(f1, f2):
+        if f1 == f2:
+            return True
+        if isinstance(f1, str) and isinstance(f2, (dict, list)):
+            try:
+                return json.loads(f1) == f2
+            except Exception:
+                return False
+        if isinstance(f2, str) and isinstance(f1, (dict, list)):
+            try:
+                return json.loads(f2) == f1
+            except Exception:
+                return False
+        return False
+
     facts = _load_typed_facts(kind)
-    if key in facts and facts[key] != value:
+    if key in facts and not _facts_match(facts[key], stored_val):
         existing_owner_info = get_fact_provenance(prov_key)
         if existing_owner_info:
             existing_owner, existing_branch, was_quarantined = existing_owner_info
@@ -1776,10 +2823,10 @@ def tool_mem_save_typed(args: dict) -> str:
         old_trust = get_agent_trust(existing_owner)
 
         if existing_owner == "unknown" or agent_id == existing_owner or new_trust > old_trust or force:
-            facts[key] = value
+            facts[key] = stored_val
             _save_typed_facts(kind, facts)
             record_provenance(prov_key, agent_id, branch, quarantined=0)
-            record_claim(kind, key, value, agent_id, branch, "active")
+            record_claim(kind, key, claim_val_str, agent_id, branch, "active")
             increment_agent_alpha(agent_id, 1.0)
             if existing_owner != "unknown" and existing_owner != agent_id:
                 log_security_event("OVERWRITE", f"[{kind.upper()}] Fact '{key}' overwritten by agent '{agent_id}' (Trust: {new_trust:.3f}) replacing '{existing_owner}' (Trust: {old_trust:.3f})")
@@ -1789,8 +2836,8 @@ def tool_mem_save_typed(args: dict) -> str:
                 f"  New Owner: {agent_id} (Trust: {new_trust:.3f})"
             )
         else:
-            quarantine_fact(prov_key, value, agent_id, branch)
-            record_claim(kind, key, value, agent_id, branch, "quarantined")
+            quarantine_fact(prov_key, claim_val_str, agent_id, branch)
+            record_claim(kind, key, claim_val_str, agent_id, branch, "quarantined")
             increment_agent_beta(agent_id, 1.0)
             log_security_event("QUARANTINE", f"[{kind.upper()}] Fact overwrite rejected for key '{key}' from agent '{agent_id}' (Trust: {new_trust:.3f}) vs Owner '{existing_owner}' (Trust: {old_trust:.3f})")
             return (
@@ -1800,7 +2847,7 @@ def tool_mem_save_typed(args: dict) -> str:
                 f"Proposed fact has been quarantined for review."
             )
 
-    if key in facts and facts[key] == value:
+    if key in facts and _facts_match(facts[key], stored_val):
         existing_owner_info = get_fact_provenance(prov_key)
         if not existing_owner_info or existing_owner_info[0] == "unknown":
             record_provenance(prov_key, agent_id, branch, quarantined=0)
@@ -1810,7 +2857,7 @@ def tool_mem_save_typed(args: dict) -> str:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT claim_id, confidence FROM gms_claims WHERE memory_kind = ? AND memory_key = ? AND value = ? AND status = 'active'",
-                (kind, key, value)
+                (kind, key, claim_val_str)
             )
             row = cursor.fetchone()
             if row:
@@ -1823,7 +2870,7 @@ def tool_mem_save_typed(args: dict) -> str:
                 conn.commit()
             else:
                 conn.close()
-                record_claim(kind, key, value, agent_id, branch, "active")
+                record_claim(kind, key, claim_val_str, agent_id, branch, "active")
                 conn = None
             if conn:
                 conn.close()
@@ -1831,12 +2878,12 @@ def tool_mem_save_typed(args: dict) -> str:
             pass
         return f"INFO: Key '{key}' in bucket '{kind}' unchanged (same value exists)."
 
-    facts[key] = value
+    facts[key] = stored_val
     _save_typed_facts(kind, facts)
     record_provenance(prov_key, agent_id, branch, quarantined=0)
-    record_claim(kind, key, value, agent_id, branch, "active")
+    record_claim(kind, key, claim_val_str, agent_id, branch, "active")
     increment_agent_alpha(agent_id, 1.0)
-    return f"[{kind.upper()}] Fact saved: {key} = {value}"
+    return f"[{kind.upper()}] Fact saved: {key} = {claim_val_str}"
 
 
 def tool_mem_save_fact(args: dict) -> str:
@@ -2219,13 +3266,14 @@ def tool_mem_get_reviews(args: dict) -> str:
     """Retrieve all reviews for a quarantined fact."""
     key = args.get("key", "").strip()
     agent_id = args.get("agent_id", "").strip()
+    include_resolved = str(args.get("include_resolved", "false")).lower() in ("true", "1", "yes")
     
     if not key or not agent_id:
         return "ERROR: 'key' and 'agent_id' are required"
         
     try:
         init_db()
-        return json.dumps(get_quarantine_reviews(key, agent_id), indent=2)
+        return json.dumps(get_quarantine_reviews(key, agent_id, include_resolved=include_resolved), indent=2)
     except Exception as e:
         return f"ERROR: Could not retrieve reviews: {e}"
 
@@ -2330,7 +3378,10 @@ def tool_mem_resolve_quarantine(args: dict) -> str:
                 """, (kind, real_key, value, agent_id, branch, prior_active_id, trust))
             
             cursor.execute("DELETE FROM gms_quarantined_facts WHERE fact_key = ? AND agent_id = ?", (key, agent_id))
-            cursor.execute("DELETE FROM gms_quarantine_reviews WHERE fact_key = ? AND agent_id = ?", (key, agent_id))
+            cursor.execute(
+                "UPDATE gms_quarantine_reviews SET resolution = 'promoted', resolved_at = CURRENT_TIMESTAMP WHERE fact_key = ? AND agent_id = ?",
+                (key, agent_id)
+            )
             conn.commit()
             conn.close()
             apply_review_outcome_from_reviews(review_snapshot, "promote")
@@ -2349,7 +3400,10 @@ def tool_mem_resolve_quarantine(args: dict) -> str:
             conn = sqlite3.connect(str(DB_PATH))
             cursor = conn.cursor()
             cursor.execute("DELETE FROM gms_quarantined_facts WHERE fact_key = ? AND agent_id = ?", (key, agent_id))
-            cursor.execute("DELETE FROM gms_quarantine_reviews WHERE fact_key = ? AND agent_id = ?", (key, agent_id))
+            cursor.execute(
+                "UPDATE gms_quarantine_reviews SET resolution = 'discarded', resolved_at = CURRENT_TIMESTAMP WHERE fact_key = ? AND agent_id = ?",
+                (key, agent_id)
+            )
             cursor.execute(
                 "UPDATE gms_claims SET status = 'discarded', confidence = 0.0 WHERE memory_kind = ? AND memory_key = ? AND agent_id = ? AND status = 'quarantined'",
                 (kind, real_key, agent_id)
@@ -2968,7 +4022,7 @@ def tool_mem_get_episode(args: dict) -> str:
         if mode == "summary":
             headers = [line.strip() for line in lines if line.strip().startswith("#")]
             excerpt_lines = lines[-20:] if len(lines) > 20 else lines
-            excerpt = "\n".join(excerpt_lines)
+            excerpt = "\n".join(excerpt_lines).strip()
             
             result = {
                 "metadata": metadata,
@@ -2978,7 +4032,8 @@ def tool_mem_get_episode(args: dict) -> str:
         else:
             result = {
                 "metadata": metadata,
-                "raw_text": content
+                "raw_text": content,
+                "raw_content": content
             }
             
         return json.dumps(result, indent=2)
@@ -3089,7 +4144,7 @@ TOOLS = {
     },
     "mem_session_end": {
         "fn": tool_mem_session_end,
-        "description": "Log a session-end milestone to episodic memory.",
+        "description": "Log a session-end milestone to episodic memory. Summarize the verified outcome, rationale, resulting context change, evidence, remaining work, and next action; do not record a bare status such as done or blocked.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -3101,7 +4156,7 @@ TOOLS = {
     },
     "mem_task_create": {
         "fn": tool_mem_task_create,
-        "description": "Create a durable, project-scoped task for cross-agent coordination.",
+        "description": "Create a durable, project-scoped task for cross-agent coordination. Give it a concrete objective and scope; task state is not a substitute for a durable semantic decision or its rationale.",
         "inputSchema": {"type": "object", "properties": {
             "task_id": {"type": "string"}, "title": {"type": "string"}, "agent": {"type": "string"},
             "project": {"type": "string"}, "objective": {"type": "string"}, "parent_task_id": {"type": "string"},
@@ -3117,7 +4172,7 @@ TOOLS = {
     },
     "mem_task_checkpoint": {
         "fn": tool_mem_task_checkpoint,
-        "description": "Save an immutable task checkpoint and advance its revision. Reference claim and episode IDs instead of copying durable memory.",
+        "description": "Save an immutable task checkpoint and advance its revision. State should capture verified progress, evidence, blockers, and next action. Reference claim, episode, and artifact IDs instead of copying durable memory.",
         "inputSchema": {"type": "object", "properties": {
             "task_id": {"type": "string"}, "agent": {"type": "string"}, "expected_revision": {"type": "integer"},
             "label": {"type": "string"}, "state": {"type": "object"}, "artifact_refs": {"type": "array"},
@@ -3126,7 +4181,7 @@ TOOLS = {
     },
     "mem_handoff_create": {
         "fn": tool_mem_handoff_create,
-        "description": "Release an owned task with a structured context package for another agent to claim.",
+        "description": "Release an owned task with a structured context package for another agent to claim. Include objective, completed work with evidence, rationale behind key choices, blockers, acceptance criteria, and one executable next action.",
         "inputSchema": {"type": "object", "properties": {
             "task_id": {"type": "string"}, "source_agent": {"type": "string"}, "target_agent": {"type": "string"},
             "expected_revision": {"type": "integer"}, "objective": {"type": "string"}, "completed_work": {"type": "string"},
@@ -3141,7 +4196,7 @@ TOOLS = {
     },
     "mem_task_complete": {
         "fn": tool_mem_task_complete,
-        "description": "Mark a currently owned task completed at its expected revision.",
+        "description": "Mark a currently owned task completed at its expected revision. First persist a checkpoint or handoff containing evidence and resulting context; completion alone is not durable knowledge.",
         "inputSchema": {"type": "object", "properties": {
             "task_id": {"type": "string"}, "agent": {"type": "string"}, "expected_revision": {"type": "integer"},
         }, "required": ["task_id", "agent", "expected_revision"]},
@@ -3155,12 +4210,12 @@ TOOLS = {
     },
     "mem_save_fact": {
         "fn": tool_mem_save_fact,
-        "description": "Save a semantic fact to facts.json. Runs conflict detection first.",
+        "description": "Save a semantic fact after conflict detection. Use a lowercase dotted canonical key. Durable decisions and policies must use a structured JSON value containing statement/status, substantive rationale, implications, scope, provenance, evidence, freshness, and review state; never save a bare status or invent missing rationale.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "key":   {"type": "string", "description": "snake_case fact key"},
-                "value": {"type": "string", "description": "Fact value (string)"},
+                "key":   {"type": "string", "description": "Lowercase dotted canonical key, for example global_memory.retrieval.legacy_policy"},
+                "value": {"type": "string", "description": "Fact value. For decisions/policies, pass a JSON-encoded structured context record with rationale, implications, scope, provenance, evidence, freshness, and review state."},
                 "force": {"type": "boolean", "description": "Overwrite existing value if conflicting"},
                 "agent": {"type": "string", "description": "Calling agent name (e.g. Antigravity, Codex)"},
             },
@@ -3169,12 +4224,12 @@ TOOLS = {
     },
     "mem_save_typed": {
         "fn": tool_mem_save_typed,
-        "description": "Save a memory fact using typed routing (semantic, operational, procedural, session). Routes dynamically based on keys/values if kind is omitted.",
+        "description": "Save typed memory using semantic, operational, procedural, or session routing. Use lowercase dotted keys and preserve authority/evidence. Decisions and policies require structured rationale, implications, scope, provenance, freshness, and review state; procedures require trigger, ordered steps, success criteria, and failure handling.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "key":   {"type": "string", "description": "Memory key"},
-                "value": {"type": "string", "description": "Memory value"},
+                "key":   {"type": "string", "description": "Lowercase dotted canonical memory key"},
+                "value": {"type": "string", "description": "Value or JSON-encoded structured context record; do not use a bare status when rationale affects future action"},
                 "kind":  {"type": "string", "description": "Explicit bucket override: semantic, operational, procedural, session"},
                 "force": {"type": "boolean", "description": "Overwrite existing value if conflicting"},
                 "agent": {"type": "string", "description": "Calling agent name (e.g. Antigravity, Codex)"},
@@ -3184,7 +4239,7 @@ TOOLS = {
     },
     "mem_judge": {
         "fn": tool_mem_judge,
-        "description": "Check if a proposed fact conflicts with existing knowledge. Does not write. Use before mem_save_fact if unsure.",
+        "description": "Check whether a proposed fact conflicts with existing knowledge. Read-only. A clear result means no detected collision, not verified truth; provenance, evidence, authority, scope, and rationale are still required before durable promotion.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -3196,7 +4251,7 @@ TOOLS = {
     },
     "mem_log_event": {
         "fn": tool_mem_log_event,
-        "description": "Append an episodic milestone to today's journal.",
+        "description": "Append an episodic milestone to today's journal. Record what changed, why, supporting evidence or verification, remaining uncertainty, and next action—not only an activity or status. Episodic detail does not replace a structured semantic decision.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -3230,7 +4285,7 @@ TOOLS = {
     },
     "mem_project": {
         "fn": tool_mem_project,
-        "description": "Manage Cline Memory Bank style project memory structures (brief, patterns, tech, active, progress).",
+        "description": "Manage the five-file project context bank (brief, patterns, tech, active, progress). Updates should let a future agent recover goals, current truth, decisions with rationale, constraints, evidence, remaining work, blockers, and next action without rereading the repository.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -3245,7 +4300,7 @@ TOOLS = {
     },
     "mem_search": {
         "fn": tool_mem_search,
-        "description": "LightRAG dual-level search over Knowledge Graph triples (low-level) and episodic FAISS index (high-level) with FlashRank Stage-2 ONNX cross-encoder reranking.",
+        "description": "Search local graph and episodic/vector memory using low, high, or hybrid retrieval with optional reranking. Search results are context candidates, not automatic truth: prefer active structured records with rationale/evidence, preserve conflicts and supersession, and corroborate imported legacy or AI-inferred material before consequential use.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -3365,7 +4420,7 @@ TOOLS = {
     },
     "mem_get_reputations": {
         "fn": tool_mem_get_reputations,
-        "description": "Retrieve the trust score and reputation counts of all registered agents.",
+        "description": "Retrieve legacy Bayesian contribution/calibration counts for registered agents. Do not interpret or display them as a global agent trust score; evaluate provenance, recency, evidence quality, disputes, and task-scoped outcomes separately.",
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
     "mem_get_quarantine": {
@@ -3375,11 +4430,11 @@ TOOLS = {
     },
     "mem_resolve_quarantine": {
         "fn": tool_mem_resolve_quarantine,
-        "description": "Resolve a quarantined fact by promoting it to facts.json or discarding it.",
+        "description": "Exceptionally promote or discard a quarantined fact. Promotion requires resolvable source evidence, valid structured context, explicit authority, rationale, implications, scope, provenance, freshness, and review state. Preserve the audit trail; missing evidence or unresolved destructive authority fails closed.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "key":      {"type": "string", "description": "snake_case fact key"},
+                "key":      {"type": "string", "description": "Lowercase dotted canonical fact key"},
                 "agent_id": {"type": "string", "description": "The agent who proposed the fact"},
                 "action":   {"type": "string", "description": "Action to take ('promote' or 'discard')"},
                 "agent":    {"type": "string", "description": "The agent resolving the quarantine (e.g. Master, User)"},
@@ -3389,7 +4444,7 @@ TOOLS = {
     },
     "mem_record_review": {
         "fn": tool_mem_record_review,
-        "description": "Record a witness review for a quarantined fact.",
+        "description": "Record an evidence-based witness review for a quarantined fact. The rationale should identify supporting or conflicting evidence and scope; a vote without reasoning must not establish durable truth.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -3559,7 +4614,7 @@ TOOLS = {
     },
     "mem_session_harvest": {
         "fn": tool_mem_session_harvest,
-        "description": "Execute automated post-session micro-consolidation ('Agentic Sleep') to extract facts, temporal graph edges, and vectors.",
+        "description": "Extract post-session context candidates, temporal graph edges, and vectors. Extraction is interpretation, not authorship or accepted truth. Keep source evidence and AI inference distinct; schema-valid evidence-backed candidates may be activated by the audited system curator and remain owner-contestable.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -3568,6 +4623,147 @@ TOOLS = {
                 "text":    {"type": "string", "description": "Optional extra notes or conversation context"},
             },
             "required": ["summary"],
+        },
+    },
+    "mem_project_briefing": {
+        "fn": tool_mem_project_briefing,
+        "description": "Generate or explain an evidence-linked operational project briefing covering goals, current truth, decisions with rationale, constraints, blockers, uncertainty, and next action. Legacy or inferred context must stay visibly qualified.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "Project identifier (e.g. 'global-memory')"},
+                "as_of":   {"type": "string", "description": "Optional point-in-time ISO timestamp"},
+                "profile": {"type": "string", "description": "Detail profile ('standard', 'condensed', 'deep')", "default": "standard"},
+                "action":  {"type": "string", "description": "Action: 'get' or 'explain'", "default": "get"},
+            },
+            "required": ["project"],
+        },
+    },
+    "mem_context_packet": {
+        "fn": tool_mem_context_packet,
+        "description": "Build a deterministic, token-budgeted context packet with conflict/time-aware retrieval, authority labels, legacy corroboration warnings, source-diversity metadata, and a stable packet hash. Use this for agent resumption and consequential work instead of raw nearest-neighbor search.",
+        "inputSchema": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Concrete context question or objective"},
+            "project": {"type": "string", "description": "Optional project scope"},
+            "profile": {"type": "string", "enum": ["small", "standard", "deep"], "default": "standard"},
+            "as_of": {"type": "string", "description": "Optional ISO point-in-time boundary"},
+        }, "required": ["query"]},
+    },
+    "mem_curation": {
+        "fn": tool_mem_curation,
+        "description": "Operate the audited system-decides/owner-may-contest curation workflow. Preview by default; apply only when explicitly requested. Evidence or schema failures fail closed, and owner contests preserve rollback lineage.",
+        "inputSchema": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["status", "preview", "apply", "contest_preview", "contest_apply"], "default": "status"},
+            "candidate_id": {"type": "string", "description": "Required for contest actions"},
+            "rationale": {"type": "string", "description": "Substantive owner contest rationale; required for contest actions"},
+            "limit": {"type": "integer", "default": 100},
+        }, "required": []},
+    },
+    "mem_memory_quality": {
+        "fn": tool_mem_memory_quality,
+        "description": "Inspect memory quality without mutation: convention compliance, production pollution, or source-reference integrity. A summary combines convention and pollution audits; source verification requires a candidate ID.",
+        "inputSchema": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["summary", "conventions", "pollution", "source"], "default": "summary"},
+            "candidate_id": {"type": "string", "description": "Required for source verification"},
+        }, "required": []},
+    },
+    "mem_memory_repair": {
+        "fn": tool_mem_memory_repair,
+        "description": "Repair incomplete legacy facts without fabricating rationale. Analysis/evidence actions are read-only. Stage/archive actions preview by default and require explicit apply, actor, and substantive rationale; staging preserves the legacy value until reviewed.",
+        "inputSchema": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["analyze", "evidence", "stage_preview", "stage_apply", "archive_preview", "archive_apply"], "default": "analyze"},
+            "key": {"type": "string", "description": "Existing legacy memory key"},
+            "payload": {"type": "object", "description": "Evidence-backed repaired structured context record"},
+            "actor": {"type": "string", "description": "Registered actor identity for mutation"},
+            "rationale": {"type": "string", "description": "Substantive reason for staging or archival"},
+        }, "required": ["key"]},
+    },
+    "mem_lifecycle": {
+        "fn": tool_mem_lifecycle,
+        "description": "Inspect append-only record lifecycle history or preview/apply an optimistic-concurrency transition. Mutations require an explicit transition_apply action, registered actor, substantive rationale, legal state change, and matching expected hash when supplied.",
+        "inputSchema": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["history", "transition_preview", "transition_apply"], "default": "history"},
+            "record_id": {"type": "string", "description": "Required for history"},
+            "request": {"type": "object", "description": "Lifecycle request containing request_id, record_id, canonical_key, next_state, operation, actor_id, actor_kind, rationale, content/source refs, and optional expected_hash"},
+        }, "required": []},
+    },
+    "mem_aliases": {
+        "fn": tool_mem_aliases,
+        "description": "Inventory or resolve canonical aliases and preview/apply recoverable collision consolidation. Consolidation uses lowercase dotted canonical keys, requires an explicit preferred record, actor, and substantive rationale, and preserves supersession history.",
+        "inputSchema": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["inventory", "resolve", "consolidate_preview", "consolidate_apply"], "default": "inventory"},
+            "key": {"type": "string", "description": "Input key for resolve"},
+            "canonical_key": {"type": "string", "description": "Collision group for consolidation"},
+            "preferred_key": {"type": "string", "description": "Existing record whose value should survive"},
+            "actor": {"type": "string"},
+            "rationale": {"type": "string"},
+        }, "required": []},
+    },
+    "mem_project_timeline": {
+        "fn": tool_mem_project_timeline,
+        "description": "Return a unified, newest-first, evidence-linked project timeline across project-bank changes, tasks, decisions, consolidation, and repairs. Filter by event type or agent, or request one event by ID.",
+        "inputSchema": {"type": "object", "properties": {
+            "project": {"type": "string", "description": "Project identifier"},
+            "event_type": {"type": "string"},
+            "agent": {"type": "string"},
+            "event_id": {"type": "string"},
+            "limit": {"type": "integer", "default": 50},
+        }, "required": ["project"]},
+    },
+    "mem_action_inbox": {
+        "fn": tool_mem_action_inbox,
+        "description": "Query or preview consequence-ranked action items requiring human operator attention or review.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project":  {"type": "string", "description": "Optional project filter"},
+                "category": {"type": "string", "description": "Optional category filter"},
+                "action":   {"type": "string", "description": "Action: 'list' or 'preview'", "default": "list"},
+                "inbox_id": {"type": "string", "description": "Inbox item ID for preview action"},
+            },
+            "required": [],
+        },
+    },
+    "mem_task_resume_bundle": {
+        "fn": tool_mem_task_resume_bundle,
+        "description": "Generate or verify a structured agent resumption bundle for Antigravity, Codex, Gemini, or JSON. The bundle should carry evidence-linked current truth, rationale-bearing decisions, constraints, conflicts, freshness, completed work, and one executable next action.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project":       {"type": "string", "description": "Project identifier"},
+                "target_format": {"type": "string", "description": "Target format ('antigravity', 'codex', 'gemini', 'json')", "default": "antigravity"},
+                "as_of":         {"type": "string", "description": "Optional point-in-time timestamp"},
+                "task_id":       {"type": "string", "description": "Optional specific task ID to resume"},
+                "action":        {"type": "string", "description": "Action: 'build' or 'verify'", "default": "build"},
+            },
+            "required": ["project"],
+        },
+    },
+    "mem_decision_intelligence": {
+        "fn": tool_mem_decision_intelligence,
+        "description": "Query decisions, inspect rationale/evidence/scope, or compute supersession impact across tasks and artifacts. Do not treat a status-only or superseded record as current truth; preserve contest and rollback lineage.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action":             {"type": "string", "description": "Action: 'list', 'get', or 'impact'", "default": "list"},
+                "project":            {"type": "string", "description": "Optional project filter"},
+                "decision_id":        {"type": "string", "description": "Decision ID for 'get' or 'impact' actions"},
+                "include_superseded": {"type": "boolean", "description": "Include superseded decisions", "default": True},
+            },
+            "required": [],
+        },
+    },
+    "mem_morning_briefing": {
+        "fn": tool_mem_morning_briefing,
+        "description": "Generate morning operational briefings answering what changed overnight, active blockers, and recommended first action.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "Project identifier"},
+                "as_of":   {"type": "string", "description": "Optional point-in-time timestamp"},
+                "action":  {"type": "string", "description": "Action: 'get' or 'list'", "default": "get"},
+            },
+            "required": [],
         },
     },
 }
@@ -3606,7 +4802,7 @@ def handle(req: dict) -> dict | None:
         return _result(id_, {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "gms-memory", "version": "1.0.0"},
+            "serverInfo": {"name": "brain-memory", "version": "2.1.0"},
         })
 
     if method == "tools/list":

@@ -410,10 +410,15 @@ def cmd_fact_set(args: argparse.Namespace) -> int:
         return 1
 
     val_to_save = json.dumps(norm_val, sort_keys=True) if isinstance(norm_val, (dict, list)) else str(args.value)
-    json_path = MEM_ROOT / "semantic" / "facts.json"
-    _json_update(json_path, args.key, val_to_save)
-    print(f"updated: {json_path}")
-    return 0
+    payload = {
+        "key": args.key,
+        "value": val_to_save,
+        "agent": getattr(args, "agent", "human-cli"),
+        "force": getattr(args, "force", False),
+    }
+    if getattr(args, "kind", None):
+        payload["kind"] = args.kind
+    return _call_memory_tool("mem_save_typed", payload)
 
 
 def cmd_fact_validate(_: argparse.Namespace) -> int:
@@ -506,6 +511,29 @@ def cmd_index_build(args: argparse.Namespace) -> int:
         print("Note: faiss not installed; vectors are fully searchable via SQLite-resident storage.")
 
     return 0
+
+
+NAMESPACE_DECAY_HALFLIVES = {
+    "trading": 3,       # 3 days
+    "task": 14,         # 14 days
+    "procedural": 14,   # 14 days
+    "journal": 90,      # 90 days
+    "episodic": 90,     # 90 days
+    "infra": 365,       # 365 days
+    "system": 365,      # 365 days
+    "policy": 0,        # 0 = infinite (no decay)
+    "contract": 0,      # infinite
+}
+
+
+def get_decay_rate_for_item(source: str, text: str, default_rate: float) -> float:
+    combined = f"{source} {text[:120]}".lower()
+    for ns, half_life in NAMESPACE_DECAY_HALFLIVES.items():
+        if ns in combined:
+            if half_life == 0:
+                return 0.0
+            return math.log(2) / half_life
+    return default_rate
 
 
 def cmd_index_query(args: argparse.Namespace) -> int:
@@ -632,7 +660,8 @@ def cmd_index_query(args: argparse.Namespace) -> int:
                         doc_date = datetime.fromtimestamp(p.stat().st_mtime)
 
                 days_ago = max(0, (today - doc_date).days)
-                decay_factor = math.exp(-args.decay_rate * days_ago)
+                rate = get_decay_rate_for_item(row.get("source", ""), row.get("text", ""), args.decay_rate) if args.decay_rate == 0.002 else args.decay_rate
+                decay_factor = math.exp(-rate * days_ago)
 
             # Apply branch boost
             boost_factor = 1.0
@@ -680,7 +709,8 @@ def cmd_index_query(args: argparse.Namespace) -> int:
                     if p.exists():
                         doc_date = datetime.fromtimestamp(p.stat().st_mtime)
                 days_ago = max(0, (today - doc_date).days)
-                decay_factor = math.exp(-args.decay_rate * days_ago)
+                rate = get_decay_rate_for_item(row.get("source", ""), row.get("text", ""), args.decay_rate) if args.decay_rate == 0.002 else args.decay_rate
+                decay_factor = math.exp(-rate * days_ago)
 
             boost_factor = 1.0
             branch_matched = False
@@ -984,7 +1014,48 @@ def cmd_task_handoff(args: argparse.Namespace) -> int:
 
 
 def cmd_task_resume(args: argparse.Namespace) -> int:
-    return _call_memory_tool("mem_task_resume", {"task_id": args.task_id})
+    arg_val = getattr(args, "action_or_task_id", None)
+    action = None
+    task_id = getattr(args, "task_id_flag", None)
+    if arg_val in ("build", "verify"):
+        action = arg_val
+    elif arg_val:
+        task_id = arg_val
+
+    project_id = getattr(args, "project", None)
+    target_format = getattr(args, "format", "antigravity")
+    as_of = getattr(args, "as_of", None)
+
+    if action in ("build", "verify") or project_id:
+        from project_briefing import build_resume_bundle
+        if not project_id and task_id:
+            import sqlite3
+            db_path = MEM_ROOT / "gms_trust.sqlite"
+            if db_path.exists():
+                try:
+                    with sqlite3.connect(str(db_path)) as conn:
+                        row = conn.execute("SELECT project FROM gms_tasks WHERE task_id = ?", (task_id,)).fetchone()
+                        if row and row[0]:
+                            project_id = row[0]
+                except Exception:
+                    pass
+        if not project_id:
+            project_id = "global-memory"
+        bundle = build_resume_bundle(MEM_ROOT, project_id=project_id, as_of=as_of, target_format=target_format, task_id=task_id)
+        if action == "verify":
+            valid = bool(bundle.get("packet_hash") and bundle.get("schema_version") == "gms-task-resume-bundle-v1")
+            print(json.dumps({"status": "verified" if valid else "invalid", "packet_hash": bundle.get("packet_hash"), "target_format": target_format}, indent=2))
+            return 0 if valid else 1
+        if target_format == "json":
+            print(json.dumps(bundle, indent=2))
+        else:
+            print(bundle.get("prompt", ""))
+        return 0
+
+    if task_id:
+        return _call_memory_tool("mem_task_resume", {"task_id": task_id})
+    print(json.dumps({"error": "Specify task_id or --project"}, indent=2))
+    return 1
 
 
 def cmd_task_complete(args: argparse.Namespace) -> int:
@@ -1173,6 +1244,24 @@ def cmd_tui(_: argparse.Namespace) -> int:
 
 
 
+def _structured_graph_triples(key: str, raw_value: object) -> list[tuple[str,str,str]]:
+    value=raw_value
+    if isinstance(value,str) and value.lstrip().startswith("{"):
+        try: value=json.loads(value)
+        except Exception: return []
+    if not isinstance(value,dict) or value.get("schema_version")!="gms-context-record-v1": return []
+    triples=[]; scope=value.get("scope") or {}; freshness=value.get("freshness") or {}
+    if value.get("record_type"): triples.append((key,"is_a",str(value["record_type"])))
+    if scope.get("project"): triples.append((key,"scoped_to",str(scope["project"])))
+    if scope.get("workstream"): triples.append((key,"part_of_workstream",str(scope["workstream"])))
+    for target in scope.get("applies_to") or []: triples.append((key,"applies_to",str(target)))
+    for implication in value.get("implications") or []: triples.append((key,"implies",str(implication)))
+    for evidence in value.get("evidence") or []:
+        if evidence.get("ref"): triples.append((key,"supported_by",str(evidence["ref"])))
+    for prior in freshness.get("supersedes") or []: triples.append((key,"supersedes",str(prior)))
+    return triples
+
+
 def cmd_graph_build(_: argparse.Namespace | None = None) -> int:
     """Batch extract triples from active claims, facts, and episodic history into SQLite graph tables."""
     import sys
@@ -1191,7 +1280,10 @@ def cmd_graph_build(_: argparse.Namespace | None = None) -> int:
         rows = cursor.fetchall()
         conn.close()
         for cid, kind, key, val in rows:
-            triples = memory_mcp_server.extract_graph_triples(f"{key}: {val}")
+            structured = _structured_graph_triples(key,val)
+            if structured:
+                memory_mcp_server.invalidate_graph_relationship(subject=key,predicate="configured_as")
+            triples = structured or memory_mcp_server.extract_graph_triples(f"{key}: {val}")
             if not triples:
                 triples = [(key, "configured_as", val)]
             for sub, pred, obj in triples:
@@ -1203,7 +1295,10 @@ def cmd_graph_build(_: argparse.Namespace | None = None) -> int:
         try:
             facts = json.loads(facts_file.read_text())
             for k, v in facts.items():
-                triples = memory_mcp_server.extract_graph_triples(f"{k}: {v}")
+                structured = _structured_graph_triples(k,v)
+                if structured:
+                    memory_mcp_server.invalidate_graph_relationship(subject=k,predicate="configured_as")
+                triples = structured or memory_mcp_server.extract_graph_triples(f"{k}: {v}")
                 if not triples:
                     triples = [(k, "configured_as", str(v))]
                 for sub, pred, obj in triples:
@@ -1478,6 +1573,500 @@ def cmd_entity_memories(args: argparse.Namespace) -> int:
     return 0
 
 
+DEFAULT_APPLESCRIPT_TIMEOUT = 10
+
+
+def _run_osascript(script: str, timeout: int = DEFAULT_APPLESCRIPT_TIMEOUT) -> tuple[int, str, str]:
+    """Execute osascript safely with timeout and structured error handling."""
+    try:
+        res = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return res.returncode, res.stdout, res.stderr
+    except subprocess.TimeoutExpired:
+        return 124, "", f"AppleScript execution timed out after {timeout} seconds."
+    except Exception as e:
+        return 1, "", f"AppleScript execution error: {e}"
+
+
+def cmd_apple(args: argparse.Namespace) -> int:
+    """Safe Apple automation commands (reminders, notes, calendar) via native osascript."""
+    if sys.platform != "darwin":
+        print("[ERROR] Apple automation is only supported on macOS.")
+        return 1
+
+    app_type = getattr(args, "app_type", None)
+    action = getattr(args, "action", "list")
+
+    if app_type == "reminder":
+        if action == "list":
+            script = '''
+            tell application "Reminders"
+                set remList to {}
+                repeat with r in (every reminder of default list whose completed is false)
+                    set end of remList to (name of r)
+                end repeat
+                set AppleScript's text item delimiters to linefeed
+                return remList as text
+            end tell
+            '''
+            rc, stdout, stderr = _run_osascript(script)
+            if rc == 0:
+                items = [x.strip() for x in stdout.strip().splitlines() if x.strip()]
+                print(f"[Apple Reminders] ({len(items)} active)")
+                for item in items:
+                    print(f"  • {item}")
+                return 0
+            else:
+                print(f"[ERROR] {stderr.strip()}")
+                return 1
+        elif action == "add":
+            title = getattr(args, "title", "").replace('"', '\\"')
+            notes = (getattr(args, "notes", "") or "").replace('"', '\\"')
+            due = getattr(args, "due", "") or ""
+            if due:
+                notes = f"{notes} (Due: {due})".strip() if notes else f"Due: {due}"
+            props = f'name:"{title}", body:"{notes}"'
+            script = f'tell application "Reminders" to make new reminder with properties {{{props}}}'
+            rc, stdout, stderr = _run_osascript(script)
+            if rc == 0:
+                print(f"[SUCCESS] Created reminder: {getattr(args, 'title', '')}")
+                return 0
+            else:
+                print(f"[ERROR] {stderr.strip()}")
+                return 1
+
+    elif app_type == "note":
+        if action == "list":
+            script = '''
+            tell application "Notes"
+                set noteList to {}
+                repeat with n in (every note)
+                    set end of noteList to (name of n)
+                end repeat
+                set AppleScript's text item delimiters to linefeed
+                return noteList as text
+            end tell
+            '''
+            rc, stdout, stderr = _run_osascript(script)
+            if rc == 0:
+                items = [x.strip() for x in stdout.strip().splitlines() if x.strip()][:25]
+                print(f"[Apple Notes] ({len(items)} notes)")
+                for item in items:
+                    print(f"  • {item}")
+                return 0
+            else:
+                print(f"[ERROR] {stderr.strip()}")
+                return 1
+        elif action == "add":
+            title = getattr(args, "title", "").replace('"', '\\"')
+            body = (getattr(args, "notes", "") or "").replace('"', '\\"')
+            script = f'tell application "Notes" to make new note with properties {{name:"{title}", body:"{body}"}}'
+            rc, stdout, stderr = _run_osascript(script)
+            if rc == 0:
+                print(f"[SUCCESS] Created note: {getattr(args, 'title', '')}")
+                return 0
+            else:
+                print(f"[ERROR] {stderr.strip()}")
+                return 1
+
+    elif app_type == "calendar":
+        script = '''
+        tell application "Calendar"
+            set eventList to {}
+            repeat with c in calendars
+                repeat with e in (every event of c where its start date is greater than (current date) and its start date is less than ((current date) + 7 * days))
+                    set end of eventList to (summary of e)
+                end repeat
+            end repeat
+            set AppleScript's text item delimiters to linefeed
+            return eventList as text
+        end tell
+        '''
+        rc, stdout, stderr = _run_osascript(script)
+        if rc == 0:
+            items = [x.strip() for x in stdout.strip().splitlines() if x.strip()]
+            print(f"[Apple Calendar] ({len(items)} upcoming events next 7 days)")
+            for item in items:
+                print(f"  • {item}")
+            return 0
+        else:
+            print(f"[ERROR] {stderr.strip()}")
+            return 1
+
+    print("[USAGE] memoryctl apple [reminder|note|calendar] [list|add] ...")
+    return 1
+
+
+def cmd_harvest_status(_: argparse.Namespace) -> int:
+    import gms_desktop_api
+    api = gms_desktop_api.GMSDesktopAPI(mem_root=MEM_ROOT)
+    status = api.get_harvest_status()
+    print(json.dumps(status, indent=2))
+    return 0
+
+
+def cmd_harvest_candidates(args: argparse.Namespace) -> int:
+    import gms_desktop_api
+    api = gms_desktop_api.GMSDesktopAPI(mem_root=MEM_ROOT)
+    status_filter = None if args.status == "all" else args.status
+    res = api.get_harvest_candidates(
+        project=args.project,
+        record_type=args.type,
+        status=status_filter,
+        limit=args.limit,
+        offset=args.offset,
+    )
+    print(json.dumps(res, indent=2))
+    return 0
+
+
+def cmd_harvest_show(args: argparse.Namespace) -> int:
+    import gms_desktop_api
+    api = gms_desktop_api.GMSDesktopAPI(mem_root=MEM_ROOT)
+    res = api.get_harvest_candidate(args.candidate_id)
+    print(json.dumps(res, indent=2))
+    return 0 if res.get("status") == "success" else 1
+
+
+def cmd_harvest_review(args: argparse.Namespace) -> int:
+    import gms_desktop_api
+    api = gms_desktop_api.GMSDesktopAPI(mem_root=MEM_ROOT)
+    edited = json.loads(args.edited_payload) if args.edited_payload else None
+    data = {
+        "action": args.action,
+        "reviewer": args.reviewer,
+        "rationale": args.rationale,
+        "edited_payload": edited,
+        "merge_with_claim_id": args.merge_with,
+        "expected_content_hash": getattr(args, "expected_hash", None),
+    }
+    res = api.review_harvest_candidate(args.candidate_id, data)
+    print(json.dumps(res, indent=2))
+    return 0 if res.get("status") == "success" else 1
+
+
+def cmd_harvest_migrate_flat(args: argparse.Namespace) -> int:
+    import migrate_flat_records
+    apply = getattr(args, "apply", False)
+    res = migrate_flat_records.run_migration(apply=apply, mem_root=MEM_ROOT)
+    print(json.dumps(res, indent=2))
+    return 0
+
+
+def cmd_harvest_run(args: argparse.Namespace) -> int:
+    import dream_cycle
+    res = dream_cycle.main()
+    return res
+
+
+def cmd_harvest_curate(args: argparse.Namespace) -> int:
+    from autonomous_curation import curate_pending
+    res = curate_pending(MEM_ROOT, apply=bool(getattr(args, "apply", False)), limit=args.limit)
+    print(json.dumps(res, indent=2))
+    return 0
+
+
+def cmd_harvest_contest(args: argparse.Namespace) -> int:
+    from autonomous_curation import contest_candidate
+    res = contest_candidate(
+        MEM_ROOT, args.candidate_id, args.rationale, apply=bool(getattr(args, "apply", False))
+    )
+    print(json.dumps(res, indent=2))
+    return 0 if res.get("status") != "error" else 1
+
+
+def cmd_pollution_audit(args: argparse.Namespace) -> int:
+    import pollution_audit
+    findings = pollution_audit.run_pollution_audit(mem_root=MEM_ROOT)
+    print(json.dumps(findings, indent=2))
+    return 0
+
+
+def cmd_pollution_cleanup(args: argparse.Namespace) -> int:
+    import pollution_audit
+    apply = getattr(args, "apply", False)
+    res = pollution_audit.run_pollution_cleanup(apply=apply, mem_root=MEM_ROOT)
+    print(json.dumps(res, indent=2))
+    return 0 if res.get("status") in ("dry_run", "applied") else 1
+
+
+def cmd_source_verify(args: argparse.Namespace) -> int:
+    import memory_mcp_server
+    import schemas
+    cand = memory_mcp_server.get_context_candidate_by_id(args.candidate_id, db_path=MEM_ROOT / "gms_trust.sqlite")
+    if not cand:
+        print(json.dumps({"status": "error", "error": f"Candidate '{args.candidate_id}' not found."}, indent=2))
+        return 1
+    payload = cand.get("payload", {})
+    evidence_list = payload.get("evidence", [])
+    if not evidence_list:
+        prov = payload.get("provenance", {})
+        s_refs = prov.get("source_refs", [])
+        evidence_list = [{"ref": r} for r in s_refs]
+
+    results = []
+    all_valid = True
+    for item in evidence_list:
+        ref = item.get("ref", "")
+        e_hash = item.get("excerpt_hash")
+        valid, status, details = schemas.validate_source_reference(ref, excerpt_hash=e_hash, mem_root=MEM_ROOT)
+        if not valid:
+            all_valid = False
+        results.append({"ref": ref, "valid": valid, "status": status, "details": details})
+
+    output = {
+        "candidate_id": args.candidate_id,
+        "canonical_key": cand.get("canonical_key"),
+        "evidence_count": len(results),
+        "all_valid": all_valid,
+        "results": results,
+    }
+    print(json.dumps(output, indent=2))
+    return 0 if all_valid else 1
+
+
+def cmd_eval_harvesting(args: argparse.Namespace) -> int:
+    import eval_model_harvesting
+    report = eval_model_harvesting.run_evaluation(run_live=getattr(args, "live", False))
+    print(json.dumps(report, indent=2))
+    return 0
+
+def cmd_convention_audit(_: argparse.Namespace) -> int:
+    from memory_convention_audit import convention_audit
+    print(json.dumps(convention_audit(MEM_ROOT), indent=2)); return 0
+
+def cmd_convention_cleanup(args: argparse.Namespace) -> int:
+    from memory_convention_audit import cleanup_preview, apply_fixture_cleanup
+    preview = cleanup_preview(MEM_ROOT)
+    if getattr(args, "apply", False):
+        required = bool(args.reviewer and len(args.rationale.strip()) >= 10 and args.expected_hash)
+        if not required:
+            print(json.dumps({"status":"error","error":"apply requires --reviewer, substantive --rationale, and --expected-hash","preview":preview},indent=2)); return 1
+        if args.expected_hash != preview["expected_snapshot_hash"]:
+            print(json.dumps({"status":"error","error":"snapshot changed; rerun preview"},indent=2)); return 1
+        result=apply_fixture_cleanup(MEM_ROOT,actor=args.reviewer,rationale=args.rationale,expected_hash=args.expected_hash,apply=True)
+        print(json.dumps(result,indent=2)); return 0 if result.get("status")=="applied" else 1
+    print(json.dumps(preview,indent=2)); return 0
+
+def cmd_migration_inventory(_: argparse.Namespace) -> int:
+    from memory_convention_audit import migration_inventory
+    print(json.dumps(migration_inventory(MEM_ROOT),indent=2)); return 0
+
+def cmd_migration_action(args: argparse.Namespace) -> int:
+    from memory_convention_audit import stage_migration, rollback_migration
+    keys=[x for x in args.keys.split(",") if x]
+    if args.migration_action=="stage":
+        result=stage_migration(MEM_ROOT,keys,actor=args.actor,rationale=args.rationale,expected_hash=args.expected_hash,apply=args.apply)
+    else:
+        result=rollback_migration(MEM_ROOT,keys,actor=args.actor,rationale=args.rationale,apply=args.apply)
+    print(json.dumps(result,indent=2)); return 0 if not result.get("errors") else 1
+
+def cmd_aliases(args: argparse.Namespace) -> int:
+    from memory_aliases import alias_inventory, resolve_alias, consolidate_collision
+    if getattr(args,"consolidate",""):
+        result=consolidate_collision(MEM_ROOT,args.consolidate,args.preferred,actor=args.actor,rationale=args.rationale,apply=args.apply)
+    else: result=resolve_alias(MEM_ROOT,args.resolve) if args.resolve else alias_inventory(MEM_ROOT)
+    print(json.dumps(result,indent=2)); return 0
+
+def cmd_retrieval_plan(args: argparse.Namespace) -> int:
+    from context_retrieval_planner import retrieve
+    print(json.dumps(retrieve(MEM_ROOT,args.query,project=args.project,as_of=args.as_of,
+                              assurance=args.assurance,token_budget=args.token_budget),indent=2)); return 0
+
+def cmd_context_packet(args: argparse.Namespace) -> int:
+    from context_packet import build_context_packet
+    print(json.dumps(build_context_packet(MEM_ROOT,args.query,project=args.project,profile=args.profile,as_of=args.as_of),indent=2)); return 0
+
+def cmd_lifecycle(args: argparse.Namespace) -> int:
+    from memory_lifecycle import lifecycle_history, transition
+    if args.lifecycle_action == "history":
+        print(json.dumps(lifecycle_history(MEM_ROOT/"gms_trust.sqlite",args.record_id),indent=2)); return 0
+    request=json.loads(args.request)
+    print(json.dumps(transition(MEM_ROOT/"gms_trust.sqlite",request,apply=args.apply),indent=2)); return 0
+
+
+def cmd_project_briefing(args: argparse.Namespace) -> int:
+    from project_briefing import generate_project_briefing, explain_project_briefing
+    action = getattr(args, "action", "get") or "get"
+    project_id = getattr(args, "project", "")
+    if not project_id:
+        print(json.dumps({"error": "Missing required --project"}, indent=2))
+        return 1
+    briefing = generate_project_briefing(MEM_ROOT, project_id, as_of=getattr(args, "as_of", None), profile=getattr(args, "profile", "standard"))
+    if action == "explain":
+        res = explain_project_briefing(briefing)
+        print(json.dumps(res, indent=2))
+    else:
+        print(json.dumps(briefing, indent=2))
+    return 0
+
+
+def cmd_project_timeline(args: argparse.Namespace) -> int:
+    from project_timeline import get_project_timeline
+    action = getattr(args, "action", "list") or "list"
+    project_id = getattr(args, "project", "") or "global-memory"
+    event_type = getattr(args, "event_type", None) or getattr(args, "type", None)
+    agent = getattr(args, "agent", None)
+    limit = getattr(args, "limit", 50)
+    timeline = get_project_timeline(MEM_ROOT, project_id, event_type=event_type, agent=agent, limit=limit)
+    if action == "event":
+        event_id = getattr(args, "event_id", "")
+        if not event_id:
+            print(json.dumps({"error": "Missing --event-id"}, indent=2))
+            return 1
+        found = [e for e in timeline.get("events", []) if e.get("event_id") == event_id]
+        if not found:
+            print(json.dumps({"error": f"Event not found: {event_id}"}, indent=2))
+            return 1
+        print(json.dumps(found[0], indent=2))
+    else:
+        print(json.dumps(timeline, indent=2))
+    return 0
+
+
+def cmd_decision(args: argparse.Namespace) -> int:
+    from decision_intelligence import list_decisions, get_decision, get_decision_impact
+    action = getattr(args, "action", "list") or "list"
+    if action == "list":
+        res = list_decisions(MEM_ROOT, project=getattr(args, "project", "") or "", include_superseded=True)
+        print(json.dumps(res, indent=2))
+    elif action == "get":
+        decision_id = getattr(args, "decision_id", "")
+        if not decision_id:
+            print(json.dumps({"error": "Missing --decision-id"}, indent=2))
+            return 1
+        res = get_decision(MEM_ROOT, decision_id)
+        if not res:
+            print(json.dumps({"error": f"Decision not found: {decision_id}"}, indent=2))
+            return 1
+        print(json.dumps(res, indent=2))
+    elif action == "impact":
+        decision_id = getattr(args, "decision_id", "")
+        if not decision_id:
+            print(json.dumps({"error": "Missing --decision-id"}, indent=2))
+            return 1
+        res = get_decision_impact(MEM_ROOT, decision_id)
+        print(json.dumps(res, indent=2))
+    return 0
+
+
+def cmd_action_inbox(args: argparse.Namespace) -> int:
+    from action_inbox import list_inbox_items, preview_inbox_action
+    action = getattr(args, "action", "list") or "list"
+    project = getattr(args, "project", "") or ""
+    if action == "list":
+        category = getattr(args, "category", None)
+        res = list_inbox_items(MEM_ROOT, project=project)
+        if category:
+            res["items"] = [it for it in res.get("items", []) if it.get("category") == category]
+            res["total_count"] = len(res["items"])
+        print(json.dumps(res, indent=2))
+    elif action in ("preview", "apply"):
+        inbox_id = getattr(args, "inbox_id", "")
+        if not inbox_id:
+            print(json.dumps({"error": "Missing --inbox-id"}, indent=2))
+            return 1
+        preview = preview_inbox_action(MEM_ROOT, inbox_id=inbox_id, project=project)
+        if action == "apply":
+            if not getattr(args, "apply", False):
+                print(json.dumps({"status": "preview_only", "message": "Pass --apply to execute", "preview": preview}, indent=2))
+                return 0
+            if not preview.get("executable"):
+                print(json.dumps({"status": "blocked", "error": preview.get("consequence", "Action not executable directly"), "preview": preview}, indent=2))
+                return 1
+            if preview.get("target_type") == "candidate":
+                from harvest import review_candidate
+                candidate_id = preview.get("target_id")
+                review_action = preview.get("suggested_action", "defer")
+                rev_res = review_candidate(
+                    root=MEM_ROOT,
+                    candidate_id=candidate_id,
+                    action=review_action,
+                    reviewer=getattr(args, "reviewer", "cli") or "cli",
+                    rationale=getattr(args, "rationale", "Applied from action inbox") or "Applied from action inbox",
+                    expected_hash=getattr(args, "expected_hash", None)
+                )
+                print(json.dumps({"status": "applied", "result": rev_res}, indent=2))
+                return 0 if rev_res.get("status") == "ok" else 1
+            else:
+                print(json.dumps({"status": "preview_only", "preview": preview}, indent=2))
+                return 0
+        print(json.dumps(preview, indent=2))
+    return 0
+
+
+def cmd_memory_repair(args: argparse.Namespace) -> int:
+    from memory_repair import find_repair_evidence, analyze_missing_fields, stage_repair_candidate, archive_opaque_fact
+    action = getattr(args, "action", "analyze") or "analyze"
+    key = getattr(args, "key", "")
+    if not key:
+        print(json.dumps({"error": "Missing --key"}, indent=2))
+        return 1
+    if action == "evidence":
+        res = find_repair_evidence(MEM_ROOT, key)
+        print(json.dumps(res, indent=2))
+    elif action == "questions":
+        analysis = analyze_missing_fields(MEM_ROOT, key)
+        print(json.dumps({
+            "key": key,
+            "user_questions": analysis.get("user_questions", []),
+            "current_value": analysis.get("current_value"),
+            "proposed_fields": analysis.get("proposed_fields", {})
+        }, indent=2))
+    elif action == "analyze":
+        res = analyze_missing_fields(MEM_ROOT, key)
+        print(json.dumps(res, indent=2))
+    elif action == "stage":
+        payload_str = getattr(args, "payload", None)
+        if not payload_str:
+            analysis = analyze_missing_fields(MEM_ROOT, key)
+            repaired_payload = analysis.get("proposed_fields", {})
+        else:
+            repaired_payload = json.loads(payload_str)
+        apply = getattr(args, "apply", False)
+        actor = getattr(args, "actor", "cli")
+        rationale = getattr(args, "rationale", "Repaired from source evidence")
+        res = stage_repair_candidate(
+            MEM_ROOT, legacy_key=key, repaired_payload=repaired_payload, apply=apply, actor=actor, rationale=rationale
+        )
+        print(json.dumps(res, indent=2))
+    elif action == "archive":
+        res=archive_opaque_fact(MEM_ROOT,key,actor=getattr(args,"actor","system"),rationale=getattr(args,"rationale",""),apply=getattr(args,"apply",False))
+        print(json.dumps(res,indent=2))
+    return 0
+
+
+def cmd_morning_briefing(args: argparse.Namespace) -> int:
+    from morning_briefing import generate_morning_briefing, list_morning_briefings
+    action = getattr(args, "action", "get") or "get"
+    project_id = getattr(args, "project", None)
+    if action == "list" or not project_id:
+        res = list_morning_briefings(MEM_ROOT)
+        print(json.dumps(res, indent=2))
+    else:
+        res = generate_morning_briefing(MEM_ROOT, project_id, as_of=getattr(args, "as_of", None))
+        print(json.dumps(res, indent=2))
+    return 0
+
+
+def cmd_eval_resumption(args: argparse.Namespace) -> int:
+    from resumption_eval import run_resumption_evaluation
+    res = run_resumption_evaluation(
+        MEM_ROOT,
+        enable_indexed_vector=getattr(args, "indexed_vector", False),
+        run_agent_trial=getattr(args, "live_agent", False),
+        agent_model=getattr(args, "model", "qwen3:8b"),
+    )
+    print(json.dumps(res, indent=2))
+    return 0
+
+
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Memory control CLI for global-memory skill.")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1631,8 +2220,12 @@ def main() -> int:
     p19.add_argument("--artifact-refs", default="[]", help="JSON array")
     p19.set_defaults(fn=cmd_task_handoff)
 
-    p20 = sub.add_parser("task-resume", help="Read a task's latest checkpoint and handoff package.")
-    p20.add_argument("task_id")
+    p20 = sub.add_parser("task-resume", help="Build or verify agent resumption bundle, or read a task's handoff.")
+    p20.add_argument("action_or_task_id", nargs="?", default=None, help="Action ('build', 'verify') or task_id")
+    p20.add_argument("--task-id", dest="task_id_flag", default=None, help="Explicit task ID")
+    p20.add_argument("--project", default=None, help="Project identifier")
+    p20.add_argument("--format", choices=["antigravity", "codex", "gemini", "json"], default="antigravity", help="Target agent prompt format")
+    p20.add_argument("--as-of", default=None, help="Point-in-time timestamp")
     p20.set_defaults(fn=cmd_task_resume)
 
     p21 = sub.add_parser("task-complete", help="Mark an owned task completed at its current revision.")
@@ -1737,6 +2330,163 @@ def main() -> int:
 
     p38 = sub.add_parser("ui", help="Launch Mbrain Desktop Control Center (macOS Electron App).")
     p38.set_defaults(fn=cmd_ui)
+
+    p39 = sub.add_parser("apple", help="Safe Apple ecosystem automation (Reminders, Notes, Calendar).")
+    p39.add_argument("app_type", choices=["reminder", "note", "calendar"], help="Apple app to interact with")
+    p39.add_argument("action", nargs="?", default="list", choices=["list", "add"], help="Action: list or add")
+    p39.add_argument("--title", default="", help="Title / name of reminder or note")
+    p39.add_argument("--notes", "--body", dest="notes", default="", help="Body or notes text")
+    p39.add_argument("--due", default="", help="Due date string for reminder")
+    p39.set_defaults(fn=cmd_apple)
+
+    p_hs = sub.add_parser("harvest-status", help="Show context harvesting and review queue status.")
+    p_hs.set_defaults(fn=cmd_harvest_status)
+
+    p_hc = sub.add_parser("harvest-candidates", help="Query staged context harvest candidates.")
+    p_hc.add_argument("--project", default=None, help="Filter by project")
+    p_hc.add_argument("--type", default=None, help="Filter by record type")
+    p_hc.add_argument("--status", default="proposed", help="Filter by review status (proposed, accepted, rejected, deferred, all)")
+    p_hc.add_argument("--limit", type=int, default=50, help="Max results")
+    p_hc.add_argument("--offset", type=int, default=0, help="Pagination offset")
+    p_hc.set_defaults(fn=cmd_harvest_candidates)
+
+    p_hshow = sub.add_parser("harvest-show", help="Show candidate details and diff against active memory.")
+    p_hshow.add_argument("candidate_id", help="Candidate ID to inspect")
+    p_hshow.set_defaults(fn=cmd_harvest_show)
+
+    p_hr = sub.add_parser("harvest-review", help="Review a staged candidate (accept, edit, merge, supersede, reject, defer).")
+    p_hr.add_argument("candidate_id", help="Candidate ID to review")
+    p_hr.add_argument("--action", required=True, choices=["accept", "edit", "merge", "supersede", "reject", "defer"], help="Review action")
+    p_hr.add_argument("--reviewer", default="mihir", help="Reviewer identity (e.g. mihir, antigravity, codex, gemini, cli)")
+    p_hr.add_argument("--rationale", default="", help="Substantive review rationale (>=10 chars)")
+    p_hr.add_argument("--edited-payload", default=None, help="JSON string for edited payload")
+    p_hr.add_argument("--merge-with", type=int, default=None, help="Claim ID to merge with or supersede")
+    p_hr.add_argument("--expected-hash", default=None, help="Expected candidate content hash for optimistic concurrency")
+    p_hr.set_defaults(fn=cmd_harvest_review)
+
+    p_hmf = sub.add_parser("harvest-migrate-flat", help="Migrate legacy flat facts into typed context records.")
+    p_hmf.add_argument("--apply", action="store_true", help="Stage candidates in SQLite")
+    p_hmf.add_argument("--dry-run", action="store_true", default=True, help="Preview migration without staging (default)")
+    p_hmf.set_defaults(fn=cmd_harvest_migrate_flat)
+
+    p_hrun = sub.add_parser("harvest-run", help="Run context harvesting pipeline.")
+    p_hrun.add_argument("--dry-run", action="store_true", help="Dry run extraction")
+    p_hrun.add_argument("--provider", default=None, help="Force LLM provider")
+    p_hrun.add_argument("--model", default=None, help="Force LLM model")
+    p_hrun.set_defaults(fn=cmd_harvest_run)
+
+    p_hcur = sub.add_parser("harvest-curate", help="Evidence-gated system decisions for pending candidates (preview by default).")
+    p_hcur.add_argument("--apply", action="store_true", help="Apply the system decisions with an audit trail")
+    p_hcur.add_argument("--limit", type=int, default=100, help="Maximum candidates to adjudicate")
+    p_hcur.set_defaults(fn=cmd_harvest_curate)
+
+    p_hcontest = sub.add_parser("harvest-contest", help="Contest a system-accepted candidate and restore prior truth.")
+    p_hcontest.add_argument("candidate_id", help="System-accepted candidate ID")
+    p_hcontest.add_argument("--rationale", required=True, help="Why the system decision is incorrect (>=10 chars)")
+    p_hcontest.add_argument("--apply", action="store_true", help="Apply the contest; otherwise preview")
+    p_hcontest.set_defaults(fn=cmd_harvest_contest)
+
+    p_pa = sub.add_parser("pollution-audit", help="Read-only scan of suspected test fixtures and synthetic pollution.")
+    p_pa.set_defaults(fn=cmd_pollution_audit)
+
+    p_pc = sub.add_parser("pollution-cleanup", help="Surgically clean test fixtures and synthetic pollution.")
+    p_pc.add_argument("--dry-run", action="store_true", default=True, help="Preview cleanup without mutation (default)")
+    p_pc.add_argument("--apply", action="store_true", help="Apply cleanup with audit record")
+    p_pc.set_defaults(fn=cmd_pollution_cleanup)
+
+    p_sv = sub.add_parser("source-verify", help="Verify source file existence, anchors, and excerpt hashes for a candidate.")
+    p_sv.add_argument("candidate_id", help="Candidate ID to verify")
+    p_sv.set_defaults(fn=cmd_source_verify)
+
+    p_eh = sub.add_parser("eval-harvesting", help="Evaluate local model harvesting against checked-in corpus and installed models.")
+    p_eh.add_argument("--live", action="store_true", help="Run live inference and test explicit model unload")
+    p_eh.set_defaults(fn=cmd_eval_harvesting)
+
+    p_ca = sub.add_parser("convention-audit", help="Read-only memory convention and fixture-warning audit.")
+    p_ca.set_defaults(fn=cmd_convention_audit)
+    p_cc = sub.add_parser("convention-cleanup", help="Preview exact fixture cleanup; apply is fail-closed.")
+    p_cc.add_argument("--apply",action="store_true"); p_cc.add_argument("--reviewer",default="")
+    p_cc.add_argument("--rationale",default=""); p_cc.add_argument("--expected-hash",default="")
+    p_cc.set_defaults(fn=cmd_convention_cleanup)
+    p_mi = sub.add_parser("migration-inventory", help="Preview migration of every legacy flat fact.")
+    p_mi.set_defaults(fn=cmd_migration_inventory)
+    p_ma = sub.add_parser("migration-action", help="Preview/stage or rollback selected legacy migrations.")
+    p_ma.add_argument("migration_action",choices=["stage","rollback"]); p_ma.add_argument("--keys",required=True)
+    p_ma.add_argument("--actor",required=True); p_ma.add_argument("--rationale",required=True); p_ma.add_argument("--expected-hash",default="")
+    p_ma.add_argument("--apply",action="store_true"); p_ma.set_defaults(fn=cmd_migration_action)
+    p_al = sub.add_parser("aliases", help="List aliases/collisions or resolve one key without merging.")
+    p_al.add_argument("--resolve",default=""); p_al.set_defaults(fn=cmd_aliases)
+    p_al.add_argument("--consolidate",default=""); p_al.add_argument("--preferred",default="")
+    p_al.add_argument("--actor",default="system"); p_al.add_argument("--rationale",default="")
+    p_al.add_argument("--apply",action="store_true")
+    p_rp = sub.add_parser("retrieval-plan", help="Inspect deterministic multi-lane retrieval.")
+    p_rp.add_argument("query"); p_rp.add_argument("--project",default=""); p_rp.add_argument("--as-of",default=None)
+    p_rp.add_argument("--assurance",default="standard",choices=["low","standard","high"])
+    p_rp.add_argument("--token-budget",type=int,default=2400); p_rp.set_defaults(fn=cmd_retrieval_plan)
+    p_cp = sub.add_parser("context-packet", help="Generate an explainable deterministic context packet.")
+    p_cp.add_argument("query"); p_cp.add_argument("--project",default=""); p_cp.add_argument("--as-of",default=None)
+    p_cp.add_argument("--profile",default="standard",choices=["small","standard","deep"]); p_cp.set_defaults(fn=cmd_context_packet)
+    p_lc = sub.add_parser("lifecycle", help="Preview/apply a lifecycle request or inspect history.")
+    p_lc.add_argument("lifecycle_action",choices=["transition","history"]); p_lc.add_argument("record_id",nargs="?",default="")
+    p_lc.add_argument("--request",default="{}"); p_lc.add_argument("--apply",action="store_true"); p_lc.set_defaults(fn=cmd_lifecycle)
+
+    p_pb = sub.add_parser("project-briefing", help="Generate or explain operational project briefing.")
+    p_pb.add_argument("action", nargs="?", default="get", choices=["get", "generate", "explain"])
+    p_pb.add_argument("--project", required=True, help="Project identifier")
+    p_pb.add_argument("--as-of", default=None, help="Historical point-in-time timestamp")
+    p_pb.add_argument("--profile", default="standard", choices=["standard", "condensed", "deep"])
+    p_pb.set_defaults(fn=cmd_project_briefing)
+
+    p_pt = sub.add_parser("project-timeline", help="Unified stream of project history and lifecycle events.")
+    p_pt.add_argument("action", nargs="?", default="list", choices=["list", "event"])
+    p_pt.add_argument("--project", default="", help="Project identifier")
+    p_pt.add_argument("--event-id", default="", help="Event ID for 'event' action")
+    p_pt.add_argument("--type", "--event-type", dest="event_type", default=None, help="Filter by event type")
+    p_pt.add_argument("--agent", default=None, help="Filter by agent ID")
+    p_pt.add_argument("--limit", type=int, default=50, help="Max events to return")
+    p_pt.add_argument("--as-of", default=None, help="Historical point-in-time timestamp")
+    p_pt.set_defaults(fn=cmd_project_timeline)
+
+    p_dec = sub.add_parser("decision", help="Query and inspect binding project decisions and rationale.")
+    p_dec.add_argument("action", choices=["list", "get", "impact"], help="Decision action")
+    p_dec.add_argument("--project", default=None, help="Project identifier")
+    p_dec.add_argument("--decision-id", default="", help="Decision ID for get/impact")
+    p_dec.add_argument("--status", default=None, help="Status filter (active, superseded, proposed)")
+    p_dec.set_defaults(fn=cmd_decision)
+
+    p_ainbox = sub.add_parser("action-inbox", help="Consequence-ranked action inbox for unresolved memory states.")
+    p_ainbox.add_argument("action", nargs="?", default="list", choices=["list", "preview", "apply"])
+    p_ainbox.add_argument("--project", default=None, help="Project identifier")
+    p_ainbox.add_argument("--inbox-id", default="", help="Item ID for preview/apply")
+    p_ainbox.add_argument("--category", default=None, help="Category filter")
+    p_ainbox.add_argument("--apply", action="store_true", help="Apply executable inbox action")
+    p_ainbox.add_argument("--reviewer", default="cli", help="Reviewer identity for candidate reviews")
+    p_ainbox.add_argument("--rationale", default="Applied from action inbox", help="Review rationale")
+    p_ainbox.add_argument("--expected-hash", default=None, help="Expected content hash")
+    p_ainbox.set_defaults(fn=cmd_action_inbox)
+
+    p_mrep = sub.add_parser("memory-repair", help="Discover source evidence and repair incomplete memory records.")
+    p_mrep.add_argument("action", choices=["evidence", "questions", "analyze", "stage", "archive"], help="Repair action")
+    p_mrep.add_argument("--key", required=True, help="Fact key to repair")
+    p_mrep.add_argument("--payload", default=None, help="Repaired JSON payload for staging")
+    p_mrep.add_argument("--apply", action="store_true", help="Persist staged candidate")
+    p_mrep.add_argument("--actor", default="cli", help="Actor identity")
+    p_mrep.add_argument("--rationale", default="Repaired from source evidence", help="Repair rationale")
+    p_mrep.set_defaults(fn=cmd_memory_repair)
+
+    p_mb = sub.add_parser("morning-briefing", help="Generate or list morning operational briefings.")
+    p_mb.add_argument("action", nargs="?", default="get", choices=["get", "list"])
+    p_mb.add_argument("--project", default=None, help="Project identifier")
+    p_mb.add_argument("--as-of", default=None, help="Historical point-in-time timestamp")
+    p_mb.set_defaults(fn=cmd_morning_briefing)
+
+    p_evr = sub.add_parser("eval-resumption", help="Evaluate project resumption fidelity against benchmark scenarios.")
+    p_evr.add_argument("action", nargs="?", default="run", choices=["run", "report"])
+    p_evr.add_argument("--project", default=None, help="Project identifier filter")
+    p_evr.add_argument("--indexed-vector", action="store_true", help="Explicitly use the installed embedding model and SQLite vector index; never used by desktop navigation.")
+    p_evr.add_argument("--live-agent", action="store_true", help="Run and score one fresh local-model continuation answer; opt-in and unloads the model afterward.")
+    p_evr.add_argument("--model", default="qwen3:8b", help="Installed Ollama model for --live-agent; models are never downloaded automatically.")
+    p_evr.set_defaults(fn=cmd_eval_resumption)
 
     args = parser.parse_args()
     return args.fn(args)

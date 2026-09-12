@@ -39,15 +39,49 @@ Before starting any work, you MUST run:
   - MCP: `mem_graph_query` (Returns Mermaid diagrams) or `mem_graph_extract` (Extracts triples).
   - CLI: `memoryctl graph-query <entity>` (JSON) or `memoryctl graph-show <entity>` (ASCII tree topology).
 - **Keyword Search**: `memoryctl find <pattern>` (Search semantic facts and technical contracts).
+- **Autonomous Context Curation**: `memoryctl harvest-status` (queue summary), `memoryctl harvest-curate` (preview system decisions), `memoryctl harvest-curate --apply` (evidence-gated promotion/rejection), and `memoryctl harvest-contest <id> --rationale "..." --apply` (owner contest and prior-value restoration). Manual `harvest-review` remains available for exceptional edits.
+- **Project Briefing & Continuity**:
+  - Structured Briefing: `memoryctl project-briefing --project <name>` (Answers the 10 operational questions).
+  - Briefing Explanation: `memoryctl project-briefing explain --project <name>` (Human/agent narrative).
+  - Resumption Bundle: `memoryctl task-resume build --project <name> --format [antigravity|codex|gemini]` (Prompt package).
+  - Morning Briefing: `memoryctl morning-briefing get --project <name>` (Overnight changes, blockers, next action).
+  - Resumption Benchmark: `memoryctl eval-resumption run` (Deterministic 10-scenario continuity benchmark).
+- **Decision Intelligence & Action Inbox**:
+  - Decisions: `memoryctl decision list --project <name>`, `memoryctl decision impact --decision-id <id>`
+  - Action Inbox: `memoryctl action-inbox list --project <name>`, `memoryctl action-inbox preview --inbox-id <id>` (Zero durable writes preview).
+  - Memory Repair: `memoryctl memory-repair analyze --key <key>`, `memoryctl memory-repair evidence --key <key>`.
+- **MCP-Native Context Governance**:
+  - Context packet: `mem_context_packet` / `brain_context_packet`.
+  - System curation and owner contest: `mem_curation` / `brain_curation`.
+  - Quality, repair, and lifecycle: `mem_memory_quality`, `mem_memory_repair`, `mem_lifecycle` (or `brain_*` aliases).
+  - Canonical aliases and project history: `mem_aliases`, `mem_project_timeline` (or `brain_*` aliases).
+  - Mutation-capable actions preview by default and require an explicit `*_apply` action plus the tool-specific actor, rationale, evidence, and concurrency guard.
 - **Metric Retrieval**: `cat ${MEMORY_ROOT:-$HOME/memories}/semantic/facts.json` (Get verified numeric/data constants).
 - **Deep-Dive**: Read specialized files linked in `${MEMORY_ROOT:-$HOME/memories}/semantic/knowledge_base.md`.
+
+#### Context Engineering Contract
+GMS exists to help the next agent reconstruct the right working context, not merely to record that something happened.
+
+- Never store a bare status such as `done`, `retired`, `active`, or `blocked` when the rationale affects future decisions.
+- For durable decisions, record: **decision/status**, **rationale**, **implications**, **scope**, and **provenance**. Add supporting evidence, alternatives rejected, or a review condition when they materially change how the memory should be used.
+- Write the explanation at the semantic layer where it will be retrieved. A detailed episodic log does not make an opaque semantic fact self-explanatory.
+- Prefer a compact structured object for machine-consumed facts, for example:
+  `{"status":"retired","rationale":"...","implications":["..."],"scope":"...","provenance":{"agent":"Codex","date":"YYYY-MM-DD"}}`
+- Keep claims inspectable rather than collapsing context into synthetic confidence or global agent-trust scores. Preserve source, recency, disputes, and task-scoped outcomes as separate dimensions.
+- Before finalizing, ask: **Could an agent encountering only this fact understand why it is true, when it applies, and what to do differently?** If not, enrich it or link it to the authoritative project or semantic note.
+- Follow the canonical lifecycle, authority, naming, evidence, consolidation, retrieval, freshness, and evaluation rules in `docs/GMS_MEMORY_CONVENTIONS_V1.md`.
+- Use lowercase dotted canonical keys. Treat underscore/dotted collisions as merge candidates rather than independent truths.
+- Keep source event, AI interpretation, and accepted memory distinct. `extractor` is not `author`; an AI may not impersonate the user or invent missing rationale.
+- Default posture is **system decides, owner may contest**. Schema-valid candidates with resolvable source evidence may become active through the audited system curator. Every decision must preserve its rationale, evidence-integrity warnings, resulting claim, and superseded claim so a later owner contest can restore prior truth. Missing sources, malformed context, unresolved destructive authority, and policies superseded by a newer owner instruction fail closed.
+- Retrieval must be conflict-aware and time-aware: include active decisions, relevant procedures, freshness, supersession, and unresolved contradictions—not only nearest semantic chunks.
+- Static fixtures validate contracts only. Attribute quality metrics to an LLM only when that model actually generated the evaluated outputs.
 
 #### Phase C: Finalization (Record Last)
 Before ending your task, you MUST run:
 1. **Update Project Memory Bank**: `mem_project(action="update", project="<name>", section="active", content="...")` or `memoryctl project-update <project> --section active --content "..."`.
-2. **Update History**: `memoryctl log --agent <name> --title <title> --note <note>`.
+2. **Update History**: `memoryctl log --agent <name> --title <title> --note <note>`. The note must include the rationale and resulting context change, not only an activity/status statement.
 3. **Record Lessons**: `memoryctl lesson-add "<correction/rule>"` (If the user corrected your behavior).
-4. **Commit Facts**: `memoryctl fact-set <key> <value>` (If you verified new data points).
+4. **Commit Facts**: `memoryctl fact-set <key> <value>` (If you verified new data points). For decisions or policies, use the Context Engineering Contract above; do not write status-only values.
 5. **Build Index & Graph**: `memoryctl index-build && memoryctl graph-build` (If new episodic data or relationships were added).
 
 ### 4. Updating Protocols

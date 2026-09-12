@@ -5,8 +5,8 @@ window.DailyNotesView = {
     container.innerHTML = `
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
         <div>
-          <h2 style="font-size: 20px; font-weight: 700; margin-bottom: 4px;">Daily Notes & Ingestion</h2>
-          <p style="font-size: 13px; color: var(--text-secondary);">Write daily thoughts, facts, or tasks. Sucking notes into GMS triggers autonomous micro-consolidation.</p>
+          <h2 style="font-size: 20px; font-weight: 700; margin-bottom: 4px;">Daily Notes</h2>
+          <p style="font-size: 13px; color: var(--text-secondary);">Capture the day, then review and consolidate durable knowledge into Mbrain.</p>
         </div>
         <div style="display: flex; align-items: center; gap: 10px;">
           <button class="btn-secondary" id="btn-prev-day">◀ Prev</button>
@@ -24,7 +24,7 @@ window.DailyNotesView = {
             <button class="btn-secondary" id="btn-save-note">💾 Save Note</button>
             <button class="btn-primary" id="btn-harvest-note" style="background: linear-gradient(135deg, #1f6feb, #238636);">
               <span>⚡</span>
-              <span>Suck into GMS</span>
+              <span>Process into Memory</span>
             </button>
           </div>
         </div>
@@ -132,7 +132,7 @@ window.DailyNotesView = {
     try {
       harvestBtn.disabled = true;
       harvestBtn.innerText = 'Consolidating...';
-      window.App.showToast('Harvesting facts, entities, and vectors into GMS...', 'warning');
+      window.App.showToast('Extracting facts, entities, and relationships...', 'warning');
 
       const report = await window.gms.harvestDailyNote({
         date: this.currentDate,
@@ -178,7 +178,7 @@ window.DailyNotesView = {
       window.App.showToast(`Harvest failed: ${err.message}`, 'error');
     } finally {
       harvestBtn.disabled = false;
-      harvestBtn.innerHTML = `<span>⚡</span><span>Suck into GMS</span>`;
+      harvestBtn.innerHTML = `<span>⚡</span><span>Process into Memory</span>`;
     }
   },
 };

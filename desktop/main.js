@@ -148,11 +148,20 @@ ipcMain.handle('gms:deleteFact', (event, payload) => requestAPI('/api/memories/d
 ipcMain.handle('gms:validateFact', (event, payload) => requestAPI('/api/validate', 'POST', payload));
 ipcMain.handle('gms:getQuarantine', () => requestAPI('/api/quarantine'));
 ipcMain.handle('gms:resolveQuarantine', (event, payload) => requestAPI('/api/quarantine/resolve', 'POST', payload));
+ipcMain.handle('gms:getTriageHistory', (event, limit) => requestAPI(`/api/triage/history?limit=${limit || 25}`));
 ipcMain.handle('gms:getGraph', (event, params) => {
   const query = new URLSearchParams(params || {}).toString();
   return requestAPI(`/api/graph?${query}`);
 });
 ipcMain.handle('gms:getConcepts', () => requestAPI('/api/concepts'));
+ipcMain.handle('gms:getEntityEvidence', (event, id) => requestAPI(`/api/entities/evidence?id=${encodeURIComponent(id || '')}`));
+ipcMain.handle('gms:getRelationshipEvidence', (event, id) => requestAPI(`/api/relationships/evidence?id=${encodeURIComponent(id || '')}`));
+ipcMain.handle('gms:getEntityDuplicates', (event, id) => requestAPI(`/api/entities/duplicates${id ? `?id=${encodeURIComponent(id)}` : ''}`));
+ipcMain.handle('gms:getMemoryQuality', () => requestAPI('/api/v1/memory-quality'));
+ipcMain.handle('gms:getMigrationInventory', () => requestAPI('/api/v1/migration/inventory'));
+ipcMain.handle('gms:getAliases', (event, key) => requestAPI(`/api/v1/aliases${key ? `?key=${encodeURIComponent(key)}` : ''}`));
+ipcMain.handle('gms:inspectRetrievalPlan', (event, payload) => requestAPI('/api/v1/retrieval/plan', 'POST', payload));
+ipcMain.handle('gms:buildContextPacketV1', (event, payload) => requestAPI('/api/v1/context-packet', 'POST', payload));
 ipcMain.handle('gms:extractText', (event, payload) => requestAPI('/api/concepts/extract', 'POST', payload));
 ipcMain.handle('gms:getDailyNote', (event, date) => requestAPI(`/api/daily_note?date=${date || ''}`));
 ipcMain.handle('gms:saveDailyNote', (event, payload) => requestAPI('/api/daily_note', 'POST', payload));
@@ -160,6 +169,111 @@ ipcMain.handle('gms:harvestDailyNote', (event, payload) => requestAPI('/api/dail
 ipcMain.handle('gms:getReminders', () => requestAPI('/api/reminders'));
 ipcMain.handle('gms:createReminder', (event, payload) => requestAPI('/api/reminders', 'POST', payload));
 ipcMain.handle('gms:getContracts', () => requestAPI('/api/contracts'));
+ipcMain.handle('gms:getProjects', (event, params) => {
+  const query = new URLSearchParams(params || {}).toString();
+  return requestAPI(`/api/projects?${query}`);
+});
+ipcMain.handle('gms:getProject', (event, id) => requestAPI(`/api/projects/${encodeURIComponent(id || '')}`));
+ipcMain.handle('gms:getProjectActivity', (event, params) => {
+  const pid = params?.id || params?.projectId || '';
+  const query = new URLSearchParams({
+    limit: params?.limit || 50,
+    ...(params?.before ? { before: params.before } : {})
+  }).toString();
+  return requestAPI(`/api/projects/${encodeURIComponent(pid)}/activity?${query}`);
+});
+ipcMain.handle('gms:getProjectKnowledge', (event, params) => {
+  const pid = params?.id || params?.projectId || '';
+  const query = new URLSearchParams({
+    kind: params?.kind || 'all',
+    limit: params?.limit || 50
+  }).toString();
+  return requestAPI(`/api/projects/${encodeURIComponent(pid)}/knowledge?${query}`);
+});
+ipcMain.handle('gms:getTaskResume', (event, id) => requestAPI(`/api/tasks/${encodeURIComponent(id || '')}/resume`));
+ipcMain.handle('gms:previewContextPacket', (event, payload) => requestAPI('/api/context-packets/preview', 'POST', payload));
+ipcMain.handle('gms:exportContextPacket', (event, payload) => requestAPI('/api/context-packets/export', 'POST', payload));
+ipcMain.handle('gms:hybridSearch', (event, params) => {
+  const query = new URLSearchParams({
+    q: params?.query || params?.q || '',
+    limit: params?.limit || 15
+  }).toString();
+  return requestAPI(`/api/search?${query}`);
+});
+ipcMain.handle('gms:mergeEntities', (event, payload) => requestAPI('/api/entities/merge', 'POST', payload));
+ipcMain.handle('gms:getDreamCycleStatus', () => requestAPI('/api/dream-cycle/status'));
+ipcMain.handle('gms:triggerDreamCycle', () => requestAPI('/api/dream-cycle/trigger', 'POST', {}));
+ipcMain.handle('gms:getHarvestStatus', () => requestAPI('/api/harvest/status'));
+ipcMain.handle('gms:getHarvestCandidates', (event, params) => {
+  const query = new URLSearchParams(params || {}).toString();
+  return requestAPI(`/api/harvest/candidates?${query}`);
+});
+ipcMain.handle('gms:getHarvestCandidate', (event, id) => requestAPI(`/api/harvest/candidates/${encodeURIComponent(id || '')}`));
+ipcMain.handle('gms:reviewHarvestCandidate', (event, id, payload) => requestAPI(`/api/harvest/candidates/${encodeURIComponent(id || '')}/review`, 'POST', payload));
+ipcMain.handle('gms:curateHarvestCandidates', (event, payload) => requestAPI('/api/harvest/curate', 'POST', payload));
+ipcMain.handle('gms:contestHarvestCandidate', (event, id, payload) => requestAPI(`/api/harvest/candidates/${encodeURIComponent(id || '')}/contest`, 'POST', payload));
+ipcMain.handle('gms:previewMigrateFlat', (event, payload) => requestAPI('/api/harvest/migrate-flat/preview', 'POST', payload));
+ipcMain.handle('gms:getHarvestReviewers', () => requestAPI('/api/harvest/reviewers'));
+ipcMain.handle('gms:getReviewAudit', (event, params) => {
+  const query = new URLSearchParams(params || {}).toString();
+  return requestAPI(`/api/harvest/audit?${query}`);
+});
+ipcMain.handle('gms:getPollutionAudit', () => requestAPI('/api/harvest/pollution/audit'));
+ipcMain.handle('gms:runPollutionCleanup', (event, payload) => requestAPI('/api/harvest/pollution/cleanup', 'POST', payload));
+
+// Pass 8: Project Intelligence & Agent Continuity
+ipcMain.handle('gms:getProjectBriefing', (event, params) => {
+  const pid = params?.id || params?.projectId || params?.project || '';
+  const query = new URLSearchParams({
+    ...(params?.as_of ? { as_of: params.as_of } : {}),
+    ...(params?.profile ? { profile: params.profile } : {}),
+  }).toString();
+  return requestAPI(`/api/projects/${encodeURIComponent(pid)}/briefing?${query}`);
+});
+ipcMain.handle('gms:explainProjectBriefing', (event, params) => {
+  const pid = params?.id || params?.projectId || params?.project || '';
+  const query = new URLSearchParams({
+    ...(params?.as_of ? { as_of: params.as_of } : {}),
+    ...(params?.profile ? { profile: params.profile } : {}),
+  }).toString();
+  return requestAPI(`/api/projects/${encodeURIComponent(pid)}/briefing/explain?${query}`);
+});
+ipcMain.handle('gms:getProjectTimeline', (event, params) => {
+  const pid = params?.id || params?.projectId || params?.project || '';
+  const query = new URLSearchParams({
+    ...(params?.type ? { type: params.type } : {}),
+    ...(params?.agent ? { agent: params.agent } : {}),
+    limit: params?.limit || 50,
+  }).toString();
+  return requestAPI(`/api/projects/${encodeURIComponent(pid)}/timeline?${query}`);
+});
+ipcMain.handle('gms:getResumeBundle', (event, params) => {
+  const pid = params?.id || params?.projectId || params?.project || '';
+  return requestAPI(`/api/projects/${encodeURIComponent(pid)}/resume`, 'POST', params);
+});
+ipcMain.handle('gms:getDecisions', (event, params) => {
+  const query = new URLSearchParams(params || {}).toString();
+  return requestAPI(`/api/decisions?${query}`);
+});
+ipcMain.handle('gms:getDecision', (event, id) => requestAPI(`/api/decisions/${encodeURIComponent(id || '')}`));
+ipcMain.handle('gms:getDecisionImpact', (event, id) => requestAPI(`/api/decisions/${encodeURIComponent(id || '')}/impact`));
+ipcMain.handle('gms:getActionInbox', (event, params) => {
+  const query = new URLSearchParams(params || {}).toString();
+  return requestAPI(`/api/inbox?${query}`);
+});
+ipcMain.handle('gms:previewInboxAction', (event, payload) => requestAPI('/api/inbox/preview', 'POST', payload));
+ipcMain.handle('gms:applyInboxAction', (event, payload) => requestAPI('/api/inbox/apply', 'POST', payload));
+ipcMain.handle('gms:getRepairEvidence', (event, key) => requestAPI(`/api/repair/${encodeURIComponent(key || '')}/evidence`));
+ipcMain.handle('gms:analyzeRepairRecord', (event, key) => requestAPI(`/api/repair/${encodeURIComponent(key || '')}/analyze`));
+ipcMain.handle('gms:stageRepairRecord', (event, payload) => requestAPI(`/api/repair/${encodeURIComponent(payload?.key || '')}/stage`, 'POST', payload));
+ipcMain.handle('gms:getMorningBriefing', (event, params) => {
+  const pid = params?.id || params?.projectId || params?.project || '';
+  const query = new URLSearchParams({
+    ...(params?.as_of ? { as_of: params.as_of } : {}),
+  }).toString();
+  return requestAPI(`/api/projects/${encodeURIComponent(pid)}/morning-briefing?${query}`);
+});
+ipcMain.handle('gms:getResumptionEvaluation', () => requestAPI('/api/eval/resumption'));
 
 app.whenReady().then(() => {
   const iconPath = path.join(__dirname, 'assets', 'icon.png');

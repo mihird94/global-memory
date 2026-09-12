@@ -89,6 +89,28 @@ class TestKnowledgeGraph(unittest.TestCase):
         res_q = memory_mcp_server.tool_mem_graph_query({"entity": "Antigravity", "format": "mermaid"})
         self.assertIn("```mermaid", res_q)
 
+    def test_hipporag_personalized_pagerank_diffusion(self):
+        # 1. Construct multi-hop associative chain: Alpha -> Beta -> Gamma -> Delta
+        memory_mcp_server.record_graph_relationship("AlphaNode", "connects_to", "BetaNode")
+        memory_mcp_server.record_graph_relationship("BetaNode", "bridges_to", "GammaNode")
+        memory_mcp_server.record_graph_relationship("GammaNode", "leads_to", "DeltaNode")
+
+        # 2. Query graph centered on AlphaNode
+        graph_data = memory_mcp_server.query_entity_graph("AlphaNode", hops=2)
+        self.assertTrue(graph_data["found"])
+        self.assertIn("ppr_scores", graph_data)
+
+        # 3. Verify probability diffusion: nearer associative bridges have higher stationary probability
+        ppr = graph_data["ppr_scores"]
+        self.assertIn("BetaNode", ppr)
+        self.assertIn("GammaNode", ppr)
+        self.assertGreater(ppr["BetaNode"], ppr["GammaNode"])
+
+        # 4. Verify ASCII output formats associative relevance
+        ascii_out = memory_mcp_server.format_ascii_graph(graph_data)
+        self.assertIn("Associative Relevance (HippoRAG PPR)", ascii_out)
+        self.assertIn("BetaNode", ascii_out)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -184,6 +184,7 @@ def harvest_session(
         "summary": summary,
         "facts_saved": saved_facts,
         "facts_rejected": rejected_facts,
+        "valid_facts": len(saved_facts),
         "triples_recorded": triples_recorded,
         "vectors_indexed": vectors_indexed,
         "timestamp": now.isoformat(),

@@ -56,6 +56,9 @@ brain log --agent "Antigravity" --title "Deployed Brain Engine" --note "Verified
 
 ## MCP Tools Reference (`brain_*` & `mem_*`)
 
+The local server exposes 59 capabilities under both prefixes (118 registered
+names). The aliases have identical schemas and convention-aware descriptions.
+
 - `brain_session_start` / `mem_session_start`: Load complete context bundle on session start.
 - `brain_search` / `mem_search`: LightRAG dual-level search (`mode="low"`, `"high"`, `"hybrid"`).
 - `brain_graph_query` / `mem_graph_query`: Query Knowledge Graph 1-hop & 2-hop Mermaid topology.
@@ -64,6 +67,13 @@ brain log --agent "Antigravity" --title "Deployed Brain Engine" --note "Verified
 - `brain_project` / `mem_project`: Manage Cline Memory Bank style project documentation.
 - `brain_save_typed` / `mem_save_typed`: Save typed memory facts (semantic, operational, procedural).
 - `brain_log_event` / `mem_log_event`: Append episodic milestone entry.
+- `brain_context_packet` / `mem_context_packet`: Build a conflict/time-aware, evidence-labeled context packet for agent resumption.
+- `brain_curation` / `mem_curation`: Preview/apply audited system curation and owner contests.
+- `brain_memory_quality` / `mem_memory_quality`: Run convention, pollution, and candidate-source integrity audits.
+- `brain_memory_repair` / `mem_memory_repair`: Analyze evidence and preview/apply guarded legacy-memory repair.
+- `brain_lifecycle` / `mem_lifecycle`: Inspect history or preview/apply audited lifecycle transitions.
+- `brain_aliases` / `mem_aliases`: Resolve keys and preview/apply recoverable canonical collision consolidation.
+- `brain_project_timeline` / `mem_project_timeline`: Read unified evidence-linked project activity.
 
 ---
 

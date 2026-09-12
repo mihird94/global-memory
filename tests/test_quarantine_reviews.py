@@ -21,6 +21,8 @@ import memory_mcp_server
 
 class TestQuarantineReviews(unittest.TestCase):
     def setUp(self):
+        self.old_mcp_root = memory_mcp_server.MEM_ROOT
+        self.old_db_path = memory_mcp_server.DB_PATH
         self.temp_path = Path(temp_dir)
         self.temp_path.mkdir(parents=True, exist_ok=True)
         for item in self.temp_path.iterdir():
@@ -33,6 +35,12 @@ class TestQuarantineReviews(unittest.TestCase):
         memory_mcp_server.MEM_ROOT = self.temp_path
         memory_mcp_server.DB_PATH = self.temp_path / "gms_trust.sqlite"
         memory_mcp_server.init_db()
+
+    def tearDown(self):
+        memory_mcp_server.MEM_ROOT = self.old_mcp_root
+        memory_mcp_server.DB_PATH = self.old_db_path
+        if self.temp_path.exists():
+            shutil.rmtree(self.temp_path, ignore_errors=True)
 
     def get_db_connection(self):
         return sqlite3.connect(str(self.temp_path / "gms_trust.sqlite"))
