@@ -138,7 +138,7 @@ window.RemindersView = {
       // Bind convert buttons
       container.querySelectorAll('.btn-convert-memory').forEach((btn) => {
         btn.addEventListener('click', (e) => {
-          const title = e.target.dataset.title;
+          const title = e.currentTarget.dataset.title;
           window.App.openAddMemoryModal({
             key: `task.${title.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 30)}`,
             value: JSON.stringify({ task: title, source: 'apple_reminders', status: 'pending' }, null, 2),

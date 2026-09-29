@@ -187,6 +187,50 @@ def _iter_episodic_texts() -> List[Tuple[str, str]]:
     return out
 
 
+def _iter_structured_texts() -> List[Tuple[str, str]]:
+    """Iterate over semantic, operational, procedural facts and claims to embed."""
+    out: List[Tuple[str, str]] = []
+
+    # 1. Facts from JSON stores
+    for bucket in ("semantic", "operational", "procedural"):
+        json_path = MEM_ROOT / bucket / "facts.json"
+        if json_path.exists():
+            try:
+                facts = json.loads(json_path.read_text(encoding="utf-8"))
+                for k, v in facts.items():
+                    if isinstance(v, dict):
+                        stmt = v.get("statement") or v.get("value") or json.dumps(v, sort_keys=True)
+                        rationale = f" Rationale: {v['rationale']}" if v.get("rationale") else ""
+                        text = f"[{bucket}] {k}: {stmt}{rationale}"
+                    else:
+                        text = f"[{bucket}] {k}: {v}"
+                    out.append((f"{bucket}:{k}", text))
+            except Exception:
+                pass
+
+    # 2. Reusable procedures from SQLite
+    db_path = MEM_ROOT / "gms_trust.sqlite"
+    if db_path.exists():
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            has_proc = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gms_procedures'").fetchone()
+            if has_proc:
+                for row in c.execute("SELECT name, description, steps_json FROM gms_procedures WHERE status = 'active'").fetchall():
+                    name = row["name"]
+                    desc = row["description"] or ""
+                    steps = row["steps_json"] or ""
+                    text = f"[procedure] {name}: {desc}\nSteps: {steps}"
+                    out.append((f"procedure:{name}", text))
+            conn.close()
+        except Exception:
+            pass
+
+    return out
+
+
 def _build_drift_snapshot(mat, model: str, doc_count: int, chunk_count: int) -> dict:
     rows = mat.tolist() if hasattr(mat, "tolist") else [list(row) for row in mat]
     if not rows:
@@ -289,11 +333,11 @@ def _read_drift_status(threshold: float) -> dict:
     return _compute_drift_report(latest, previous, threshold)
 
 
-def _embed(text: str, model: str) -> List[float]:
+def _embed(text: str, model: str, *, keep_alive: int | str = "30m") -> List[float]:
     last_err: Exception | None = None
     for attempt in range(1, EMBED_RETRIES + 1):
         try:
-            payload = json.dumps({"model": model, "prompt": text}).encode("utf-8")
+            payload = json.dumps({"model": model, "prompt": text, "keep_alive": keep_alive}).encode("utf-8")
             req = request.Request(
                 OLLAMA_EMBED_URL,
                 data=payload,
@@ -321,10 +365,14 @@ def cmd_start_context(_: argparse.Namespace) -> int:
     history_dir = MEM_ROOT / "episodic" / "history"
     history_daily = datetime.now().strftime("%Y-%m-%d")
     daily = history_dir / f"{history_daily}.md"
-    if daily.exists():
+    if daily.exists() and daily.stat().st_size > 200:
         episodic = daily
-    elif history_dir.exists() and list(history_dir.glob("*.md")):
-        episodic = sorted(history_dir.glob("*.md"))[-1]
+    elif history_dir.exists():
+        valid_files = [p for p in sorted(history_dir.glob("*.md")) if p.stat().st_size > 200]
+        if valid_files:
+            episodic = valid_files[-1]
+        else:
+            episodic = MEM_ROOT / "episodic" / "journal.md"
     else:
         episodic = MEM_ROOT / "episodic" / "journal.md"
 
@@ -335,7 +383,7 @@ def cmd_start_context(_: argparse.Namespace) -> int:
     print(f"\n[projects]\n{projects}\n")
     print(_read(projects)[:2000])
     print(f"\n[lessons]\n{lessons}\n")
-    print(_read(lessons)[:2000])
+    print(_read(lessons)[:8000])
     print(f"\n[episodic]\n{episodic}\n")
     print(_read(episodic)[-2500:])
     return 0
@@ -452,8 +500,10 @@ def cmd_fact_validate(_: argparse.Namespace) -> int:
 
 def cmd_index_build(args: argparse.Namespace) -> int:
     docs = _iter_episodic_texts()
+    structured_docs = _iter_structured_texts()
+    docs = docs + structured_docs
     if not docs:
-        print("no episodic docs found")
+        print("no episodic or structured docs found")
         return 1
 
     meta = []
@@ -464,7 +514,16 @@ def cmd_index_build(args: argparse.Namespace) -> int:
             meta.append({"source": src, "chunk": i, "text": chunk})
             texts.append(chunk)
 
-    vectors = [_embed(t, args.model) for t in texts]
+    # Keep the embedding model resident only for this bounded batch. Unloading
+    # after every chunk turns a rebuild into hundreds of cold model loads.
+    try:
+        vectors = [_embed(t, args.model, keep_alive="5m") for t in texts]
+    finally:
+        try:
+            from eval_model_harvesting import unload_ollama_model
+            unload_ollama_model(args.model)
+        except Exception:
+            pass
 
     # 1. Consolidated SQLite Storage: store directly in gms_trust.sqlite
     try:
@@ -514,20 +573,28 @@ def cmd_index_build(args: argparse.Namespace) -> int:
 
 
 NAMESPACE_DECAY_HALFLIVES = {
-    "trading": 3,       # 3 days
-    "task": 14,         # 14 days
-    "procedural": 14,   # 14 days
-    "journal": 90,      # 90 days
-    "episodic": 90,     # 90 days
-    "infra": 365,       # 365 days
-    "system": 365,      # 365 days
     "policy": 0,        # 0 = infinite (no decay)
     "contract": 0,      # infinite
+    "procedural": 0,    # infinite (reusable skills & runbooks must never decay)
+    "infra": 365,       # 365 days
+    "system": 365,      # 365 days
+    "journal": 90,      # 90 days
+    "episodic": 90,     # 90 days
+    "task": 14,         # 14 days
+    "trading": 3,       # 3 days
 }
 
 
 def get_decay_rate_for_item(source: str, text: str, default_rate: float) -> float:
-    combined = f"{source} {text[:120]}".lower()
+    source_lower = source.lower()
+    text_prefix = text[:200].lower()
+    combined = f"{source_lower} {text_prefix}"
+
+    # Invariants (policies, contracts, procedures) must never be decayed even if mentioning other words
+    for zero_ns in ("policy", "contract", "procedural"):
+        if zero_ns in combined:
+            return 0.0
+
     for ns, half_life in NAMESPACE_DECAY_HALFLIVES.items():
         if ns in combined:
             if half_life == 0:
@@ -660,7 +727,7 @@ def cmd_index_query(args: argparse.Namespace) -> int:
                         doc_date = datetime.fromtimestamp(p.stat().st_mtime)
 
                 days_ago = max(0, (today - doc_date).days)
-                rate = get_decay_rate_for_item(row.get("source", ""), row.get("text", ""), args.decay_rate) if args.decay_rate == 0.002 else args.decay_rate
+                rate = get_decay_rate_for_item(row.get("source", ""), row.get("text", ""), args.decay_rate)
                 decay_factor = math.exp(-rate * days_ago)
 
             # Apply branch boost
@@ -709,7 +776,7 @@ def cmd_index_query(args: argparse.Namespace) -> int:
                     if p.exists():
                         doc_date = datetime.fromtimestamp(p.stat().st_mtime)
                 days_ago = max(0, (today - doc_date).days)
-                rate = get_decay_rate_for_item(row.get("source", ""), row.get("text", ""), args.decay_rate) if args.decay_rate == 0.002 else args.decay_rate
+                rate = get_decay_rate_for_item(row.get("source", ""), row.get("text", ""), args.decay_rate)
                 decay_factor = math.exp(-rate * days_ago)
 
             boost_factor = 1.0
@@ -1424,11 +1491,39 @@ def cmd_ui(args: argparse.Namespace) -> int:
         return 0
 
     print("Launching Mbrain Desktop Control Center (Electron)...")
+    mbrain_app = Path.home() / "Applications" / "Mbrain.app"
+    if sys.platform == "darwin" and mbrain_app.exists():
+        try:
+            subprocess.run(["open", str(mbrain_app)])
+            return 0
+        except Exception as e:
+            print(f"Failed to open Mbrain.app, falling back to npm start: {e}")
+
     try:
         subprocess.run(["npm", "start"], cwd=str(desktop_dir))
         return 0
     except Exception as e:
         print(f"Failed to launch desktop UI: {e}")
+        return 1
+
+
+def cmd_sync_stores(args: argparse.Namespace) -> int:
+    try:
+        from dream_cycle import sync_json_and_sqlite_claims
+        root = Path(args.root).resolve() if getattr(args, "root", None) else MEM_ROOT
+        res = sync_json_and_sqlite_claims(root)
+        if getattr(args, "json", False):
+            print(json.dumps(res, indent=2))
+        else:
+            print(f"Store Sync: {res.get('status')}")
+            print(f"  Facts updated in JSON: {res.get('updated_in_json', 0)}")
+            print(f"  Claims added to SQLite: {res.get('added_to_claims', 0)}")
+            print(f"  Divergences resolved: {res.get('divergences_resolved', 0)}")
+            for d in res.get("divergences", []):
+                print(f"    - {d.get('key')}: {d.get('action')}")
+        return 0
+    except Exception as e:
+        print(f"ERROR syncing stores: {e}")
         return 1
 
 
@@ -1875,7 +1970,12 @@ def cmd_aliases(args: argparse.Namespace) -> int:
 def cmd_retrieval_plan(args: argparse.Namespace) -> int:
     from context_retrieval_planner import retrieve
     print(json.dumps(retrieve(MEM_ROOT,args.query,project=args.project,as_of=args.as_of,
-                              assurance=args.assurance,token_budget=args.token_budget),indent=2)); return 0
+                              assurance=args.assurance,token_budget=args.token_budget,
+                              enable_indexed_vector=args.indexed_vector,
+                              embedding_model=args.embedding_model,
+                              enable_reranking=args.rerank,
+                              rerank_model=args.rerank_model,
+                              rerank_k=args.rerank_k),indent=2)); return 0
 
 def cmd_context_packet(args: argparse.Namespace) -> int:
     from context_packet import build_context_packet
@@ -2063,6 +2163,18 @@ def cmd_eval_resumption(args: argparse.Namespace) -> int:
     )
     print(json.dumps(res, indent=2))
     return 0
+
+
+def cmd_eval_lab(args: argparse.Namespace) -> int:
+    import eval.cli
+    action = getattr(args, "action", "run")
+    if action == "run":
+        eval.cli.run_evals(suite=getattr(args, "suite", "all"), export=not getattr(args, "no_export", False), live=getattr(args, "live", False))
+        return 0
+    elif action == "ablate":
+        eval.cli.run_ablations(export=not getattr(args, "no_export", False), live=getattr(args, "live", False))
+        return 0
+    return 1
 
 
 
@@ -2328,6 +2440,11 @@ def main() -> int:
     p37.add_argument("--json", action="store_true", help="Output result as JSON.")
     p37.set_defaults(fn=cmd_backup)
 
+    p_sync = sub.add_parser("sync-stores", help="Reconcile facts.json and gms_claims in SQLite.")
+    p_sync.add_argument("--root", default=None, help="Custom memory root directory.")
+    p_sync.add_argument("--json", action="store_true", help="Output result as JSON.")
+    p_sync.set_defaults(fn=cmd_sync_stores)
+
     p38 = sub.add_parser("ui", help="Launch Mbrain Desktop Control Center (macOS Electron App).")
     p38.set_defaults(fn=cmd_ui)
 
@@ -2422,7 +2539,13 @@ def main() -> int:
     p_rp = sub.add_parser("retrieval-plan", help="Inspect deterministic multi-lane retrieval.")
     p_rp.add_argument("query"); p_rp.add_argument("--project",default=""); p_rp.add_argument("--as-of",default=None)
     p_rp.add_argument("--assurance",default="standard",choices=["low","standard","high"])
-    p_rp.add_argument("--token-budget",type=int,default=2400); p_rp.set_defaults(fn=cmd_retrieval_plan)
+    p_rp.add_argument("--token-budget",type=int,default=2400)
+    p_rp.add_argument("--indexed-vector", action="store_true", help="Use the local indexed embedding lane (loads the embedding model lazily).")
+    p_rp.add_argument("--embedding-model", default=DEFAULT_EMBED_MODEL)
+    p_rp.add_argument("--rerank", action="store_true", help="Rerank fused candidates with the local FlashRank cross-encoder.")
+    p_rp.add_argument("--rerank-model", default=DEFAULT_RERANK_MODEL)
+    p_rp.add_argument("--rerank-k", type=int, default=25)
+    p_rp.set_defaults(fn=cmd_retrieval_plan)
     p_cp = sub.add_parser("context-packet", help="Generate an explainable deterministic context packet.")
     p_cp.add_argument("query"); p_cp.add_argument("--project",default=""); p_cp.add_argument("--as-of",default=None)
     p_cp.add_argument("--profile",default="standard",choices=["small","standard","deep"]); p_cp.set_defaults(fn=cmd_context_packet)
@@ -2487,6 +2610,13 @@ def main() -> int:
     p_evr.add_argument("--live-agent", action="store_true", help="Run and score one fresh local-model continuation answer; opt-in and unloads the model afterward.")
     p_evr.add_argument("--model", default="qwen3:8b", help="Installed Ollama model for --live-agent; models are never downloaded automatically.")
     p_evr.set_defaults(fn=cmd_eval_resumption)
+
+    p_evlab = sub.add_parser("eval-lab", help="Run academic memory evaluations (LongMemEval, MemoryAgentBench, Ablations).")
+    p_evlab.add_argument("action", nargs="?", default="run", choices=["run", "ablate"], help="Action to perform (run or ablate)")
+    p_evlab.add_argument("--suite", choices=["all", "longmemeval", "agentbench", "continuation"], default="all", help="Evaluation suite to run")
+    p_evlab.add_argument("--no-export", action="store_true", help="Do not write JSON report")
+    p_evlab.add_argument("--live", action="store_true", help="Evaluate live ~/memories instead of sandbox")
+    p_evlab.set_defaults(fn=cmd_eval_lab)
 
     args = parser.parse_args()
     return args.fn(args)

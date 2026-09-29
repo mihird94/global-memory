@@ -40,6 +40,7 @@ and authority requirements when selecting a tool.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -55,6 +56,8 @@ except ImportError:
 from pathlib import Path
 from typing import Any
 from urllib import request
+
+PEER_CONSENSUS_AGENTS = {"Antigravity", "Codex", "Gemini CLI", "Mihir"}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Config
@@ -558,6 +561,10 @@ def quarantine_fact(fact_key: str, value: str, agent_id: str, branch: str):
     """, (fact_key, value, agent_id, branch))
     conn.commit()
     conn.close()
+    try:
+        increment_agent_beta(agent_id, 0.5)
+    except Exception:
+        pass
 
 
 def record_claim(kind: str, key: str, value: str, agent_id: str, branch: str, status: str, confidence: float = None, contradiction_type: str = None) -> int:
@@ -565,55 +572,69 @@ def record_claim(kind: str, key: str, value: str, agent_id: str, branch: str, st
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     
+    # Query existing active claims before any state mutation
+    cursor.execute(
+        "SELECT claim_id, value, agent_id FROM gms_claims WHERE memory_kind = ? AND memory_key = ? AND status = 'active' ORDER BY claim_id ASC",
+        (kind, key)
+    )
+    active_rows = cursor.fetchall()
+
+    time_keywords = ["valid_from", "valid_to", "expires", "since", "until", "timestamp", "start_date", "end_date", "current_task"]
+    has_time_kw = any(kw in key.lower() or kw in value.lower() for kw in time_keywords)
+    has_date_pattern = bool(re.search(r'\d{4}-\d{2}-\d{2}', key + " " + value))
+    is_contextual = "@" in key or "[" in key or "]" in key or (":" in key and not any(key.startswith(p + ":") for p in ["semantic", "operational", "procedural", "session"]))
+
+    norm_agent = _normalize_agent_id(agent_id).lower()
+    last_owner = _normalize_agent_id(active_rows[-1][2]).lower() if active_rows else ""
+    if contradiction_type is None:
+        if is_contextual:
+            contradiction_type = "contextual_coexistence"
+        elif active_rows:
+            last_val = active_rows[-1][1]
+            if last_val != value:
+                # Provenance is evidence, not a global reputation score. A
+                # direct update is only safe when it is temporal or comes from
+                # the incumbent author; other conflicts must stay inspectable.
+                if has_time_kw or has_date_pattern or norm_agent == last_owner:
+                    contradiction_type = "temporal_invalidation"
+                else:
+                    contradiction_type = "exact_conflict"
+            else:
+                contradiction_type = "reinforcement"
+        elif has_time_kw or has_date_pattern:
+            contradiction_type = "temporal_invalidation"
+
+    # Exact conflict defense: conflicts without temporal supersession stay
+    # quarantined for evidence-backed review.
+    if contradiction_type == "exact_conflict" and status == "active":
+        if norm_agent not in {"mihir", last_owner}:
+            status = "quarantined"
+            confidence = 0.2
+            try:
+                increment_agent_beta(agent_id, 1.0)
+            except Exception:
+                pass
+            log_security_event("EXACT_CONFLICT_QUARANTINE", f"Claim '{key}' from agent '{agent_id}' conflicted with incumbent active claim from '{last_owner}'. Quarantined.")
+
     supersedes_id = None
-    if status == "active":
-        cursor.execute(
-            "SELECT claim_id FROM gms_claims WHERE memory_kind = ? AND memory_key = ? AND status = 'active'",
-            (kind, key)
-        )
-        rows = cursor.fetchall()
-        if rows:
-            supersedes_id = rows[-1][0]
-            for row in rows:
-                cursor.execute(
-                    "UPDATE gms_claims SET status = 'superseded', confidence = 0.0 WHERE claim_id = ?",
-                    (row[0],)
-                )
-    
-    trust = get_agent_trust(agent_id)
+    if status == "active" and active_rows:
+        supersedes_id = active_rows[-1][0]
+        for row in active_rows:
+            cursor.execute(
+                "UPDATE gms_claims SET status = 'superseded', confidence = 0.0 WHERE claim_id = ?",
+                (row[0],)
+            )
+
     if confidence is None:
         if status == "active":
-            confidence = trust
+            confidence = 1.0
         elif status == "quarantined":
             confidence = 0.2
         elif status == "discarded":
             confidence = 0.0
         else:
-            confidence = trust
+            confidence = 1.0
 
-    if contradiction_type is None:
-        # Contextual coexistence check
-        if "@" in key or "[" in key or "]" in key or (":" in key and not any(key.startswith(p + ":") for p in ["semantic", "operational", "procedural", "session"])):
-            contradiction_type = "contextual_coexistence"
-        else:
-            # Temporal invalidation check
-            time_keywords = ["valid_from", "valid_to", "expires", "since", "until", "timestamp", "start_date", "end_date", "current_task"]
-            has_time_kw = any(kw in key.lower() or kw in value.lower() for kw in time_keywords)
-            has_date_pattern = bool(re.search(r'\d{4}-\d{2}-\d{2}', key + " " + value))
-            
-            if supersedes_id is not None or has_time_kw or has_date_pattern:
-                contradiction_type = "temporal_invalidation"
-            else:
-                cursor.execute(
-                    "SELECT value FROM gms_claims WHERE memory_kind = ? AND memory_key = ? AND status = 'active' ORDER BY claim_id DESC LIMIT 1",
-                    (kind, key)
-                )
-                row = cursor.fetchone()
-                if row and row[0] != value:
-                    contradiction_type = "exact_conflict"
-                    if status == "quarantined":
-                        confidence = 0.2
-                        
     cursor.execute("""
         INSERT INTO gms_claims (memory_kind, memory_key, value, agent_id, branch, status, supersedes_claim_id, confidence, contradiction_type, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -1240,7 +1261,6 @@ def get_latest_quarantined_claim_id(kind: str, key: str, agent_id: str) -> int |
 def record_quarantine_review(fact_key: str, agent_id: str, reviewer_id: str, rating: str, rationale: str):
     kind, real_key = parse_prov_key(fact_key)
     claim_id = get_latest_quarantined_claim_id(kind, real_key, agent_id)
-    trust = get_agent_trust(reviewer_id)
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute("""
@@ -1255,7 +1275,7 @@ def record_quarantine_review(fact_key: str, agent_id: str, reviewer_id: str, rat
             rationale = excluded.rationale,
             weight_snapshot = excluded.weight_snapshot,
             timestamp = CURRENT_TIMESTAMP
-    """, (fact_key, agent_id, reviewer_id, claim_id, rating, rationale, trust))
+    """, (fact_key, agent_id, reviewer_id, claim_id, rating, rationale, 1.0))
     conn.commit()
     conn.close()
 
@@ -1286,8 +1306,7 @@ def get_quarantine_reviews(fact_key: str, agent_id: str, include_resolved: bool 
             "reviewer_id": reviewer_id,
             "rating": rating,
             "rationale": rationale or "",
-            "trust": round(get_agent_trust(reviewer_id), 4),
-            "weight_snapshot": round(weight_snapshot, 4) if weight_snapshot is not None else None,
+            "weight_snapshot": 1.0,
             "claim_id": claim_id,
             "timestamp": timestamp,
         })
@@ -1301,47 +1320,43 @@ def get_quarantine_recommendation(fact_key: str, agent_id: str) -> dict:
             "recommendation": "neutral",
             "score": 0.5,
             "reviewer_count": 0,
-            "endorse_weight": 0.0,
-            "reject_weight": 0.0,
-            "abstain_weight": 0.0,
-            "total_weight": 0.0,
+            "endorse_count": 0,
+            "reject_count": 0,
+            "abstain_count": 0,
             "reviews": [],
         }
 
-    endorse_weight = 0.0
-    reject_weight = 0.0
-    abstain_weight = 0.0
-    decisive_weight = 0.0
+    endorse_count = 0
+    reject_count = 0
+    abstain_count = 0
 
     for review in reviews:
-        trust = review["trust"]
         if review["rating"] == "endorse":
-            endorse_weight += trust
-            decisive_weight += trust
+            endorse_count += 1
         elif review["rating"] == "reject":
-            reject_weight += trust
-            decisive_weight += trust
+            reject_count += 1
         else:
-            abstain_weight += trust
+            abstain_count += 1
 
-    final_score = endorse_weight / decisive_weight if decisive_weight > 0 else 0.5
-    if decisive_weight == 0:
+    # Mixed human/agent reviews are a conflict to inspect, not a popularity or
+    # reputation contest. An unopposed review can guide the default workflow;
+    # any disagreement remains neutral until an explicit owner/system decision.
+    if endorse_count and reject_count:
         rec = "neutral"
-    elif final_score >= 0.6:
+    elif endorse_count:
         rec = "promote"
-    elif final_score <= 0.4:
+    elif reject_count:
         rec = "discard"
     else:
         rec = "neutral"
 
     return {
         "recommendation": rec,
-        "score": round(final_score, 4),
+        "score": None,
         "reviewer_count": len(reviews),
-        "endorse_weight": round(endorse_weight, 4),
-        "reject_weight": round(reject_weight, 4),
-        "abstain_weight": round(abstain_weight, 4),
-        "total_weight": round(decisive_weight, 4),
+        "endorse_count": endorse_count,
+        "reject_count": reject_count,
+        "abstain_count": abstain_count,
         "reviews": reviews,
     }
 
@@ -1356,14 +1371,9 @@ def apply_review_outcome_from_reviews(reviews: list[dict], action: str) -> None:
         reviewer_id = review["reviewer_id"]
         if rating == "abstain":
             continue
-        aligned = (
-            (action == "promote" and rating == "endorse")
-            or (action == "discard" and rating == "reject")
-        )
-        if aligned:
-            increment_agent_alpha(reviewer_id, 0.5)
-        else:
-            increment_agent_beta(reviewer_id, 0.5)
+        # Review history is evidence. It must not be converted into a global
+        # reliability score that affects unrelated future claims.
+        _ = reviewer_id, action, rating
 
 
 def parse_prov_key(prov_key: str) -> tuple[str, str]:
@@ -1944,7 +1954,7 @@ def determine_routing(key: str, value: str) -> str:
 
 def _embed(text: str) -> list[float] | None:
     try:
-        payload = json.dumps({"model": EMBED_MODEL, "prompt": text}).encode()
+        payload = json.dumps({"model": EMBED_MODEL, "prompt": text, "keep_alive": "30m"}).encode()
         req = request.Request(
             f"{OLLAMA_URL}/api/embeddings", data=payload,
             headers={"Content-Type": "application/json"}, method="POST"
@@ -2116,10 +2126,14 @@ def tool_mem_session_start(_: dict) -> str:
     today     = datetime.now().strftime("%Y-%m-%d")
     history_dir = MEM_ROOT / "episodic" / "history"
     daily     = history_dir / f"{today}.md"
-    if daily.exists():
+    if daily.exists() and daily.stat().st_size > 200:
         episodic = _read(daily)
-    elif history_dir.exists() and list(history_dir.glob("*.md")):
-        episodic = _read(sorted(history_dir.glob("*.md"))[-1])
+    elif history_dir.exists():
+        valid_files = [p for p in sorted(history_dir.glob("*.md")) if p.stat().st_size > 200]
+        if valid_files:
+            episodic = _read(valid_files[-1])
+        else:
+            episodic = _read(MEM_ROOT / "episodic" / "journal.md")
     else:
         episodic = _read(MEM_ROOT / "episodic" / "journal.md")
 
@@ -2130,7 +2144,7 @@ def tool_mem_session_start(_: dict) -> str:
         f"## GMS Session Context — {today}\n\n"
         f"### Preferences\n{prefs[:1500]}\n\n"
         f"### Active Projects\n{projects[:1500]}\n\n"
-        f"### Lessons\n{lessons[:1000]}\n\n"
+        f"### Lessons\n{lessons[:8000]}\n\n"
         f"### Top Facts\n{json.dumps(top_facts, indent=2)}\n\n"
         f"### Recent Episodic\n{episodic[-2000:]}"
     )
@@ -2760,9 +2774,10 @@ def tool_mem_task_complete(args: dict) -> str:
 
 def tool_mem_save_typed(args: dict) -> str:
     """Save a memory fact using typed routing (semantic, operational, procedural, session)."""
-    key   = args.get("key", "").strip()
-    value = args.get("value", "").strip()
-    if not key or not value:
+    key   = str(args.get("key", "")).strip()
+    raw_val = args.get("value", "")
+    value = raw_val.strip() if isinstance(raw_val, str) else raw_val
+    if not key or value is None or (isinstance(value, (str, list, dict)) and len(value) == 0):
         return "ERROR: 'key' and 'value' are required"
 
     kind = args.get("kind", "").strip().lower()
@@ -2819,31 +2834,62 @@ def tool_mem_save_typed(args: dict) -> str:
         else:
             existing_owner, existing_branch = "unknown", "main"
 
-        new_trust = get_agent_trust(agent_id)
-        old_trust = get_agent_trust(existing_owner)
+        norm_agent = _normalize_agent_id(agent_id)
+        is_authorized_override = force and norm_agent in {"mihir", "system", "migration-pass5", "migration-pass6"}
 
-        if existing_owner == "unknown" or agent_id == existing_owner or new_trust > old_trust or force:
+        # Protected namespace check: policy: and procedural: require operator authority or force
+        is_protected_rule = key.startswith("policy:") or key.startswith("procedural:")
+        if is_protected_rule and norm_agent not in {"mihir", "system", "migration-pass5", "migration-pass6"} and not force:
+            quarantine_fact(prov_key, claim_val_str, agent_id, branch)
+            record_claim(kind, key, claim_val_str, agent_id, branch, "quarantined")
+            log_security_event("POLICY_OVERWRITE_QUARANTINE", f"Attempted policy overwrite for '{key}' by '{agent_id}' quarantined.")
+            return (
+                f"CONFLICT/QUARANTINE: Protected namespace '{key}' cannot be directly overwritten by agent '{agent_id}'.\n"
+                f"Requires human operator review or staged candidate approval.\n"
+                f"Proposed fact has been quarantined for review."
+            )
+
+        if existing_owner == "unknown" or norm_agent == _normalize_agent_id(existing_owner) or is_authorized_override:
+            claim_id = record_claim(
+                kind, key, claim_val_str, agent_id, branch, "active",
+                contradiction_type="authorized_override" if is_authorized_override else None,
+            )
+            # Verify if claim was accepted as active or quarantined by conflict defense
+            conn_chk = sqlite3.connect(str(DB_PATH))
+            chk_status = conn_chk.execute("SELECT status FROM gms_claims WHERE claim_id = ?", (claim_id,)).fetchone()
+            conn_chk.close()
+            claim_status = chk_status[0] if chk_status else "active"
+
+            if claim_status == "quarantined":
+                quarantine_fact(prov_key, claim_val_str, agent_id, branch)
+                return (
+                    f"CONFLICT/QUARANTINE: Overwrite of key '{key}' in bucket '{kind}' rejected due to exact conflict with incumbent active claim.\n"
+                    f"  Existing Owner: {existing_owner}\n"
+                    f"  Proposing Agent: {agent_id}\n"
+                    f"Proposed fact has been quarantined for review."
+                )
+
+            prev_fact_val = facts[key]
             facts[key] = stored_val
             _save_typed_facts(kind, facts)
             record_provenance(prov_key, agent_id, branch, quarantined=0)
-            record_claim(kind, key, claim_val_str, agent_id, branch, "active")
             increment_agent_alpha(agent_id, 1.0)
             if existing_owner != "unknown" and existing_owner != agent_id:
-                log_security_event("OVERWRITE", f"[{kind.upper()}] Fact '{key}' overwritten by agent '{agent_id}' (Trust: {new_trust:.3f}) replacing '{existing_owner}' (Trust: {old_trust:.3f})")
+                log_security_event("OVERWRITE", f"[{kind.upper()}] Fact '{key}' overwritten by agent '{agent_id}' replacing '{existing_owner}' under explicit authority.")
             return (
                 f"[{kind.upper()}] Fact saved (overwrote existing key '{key}').\n"
-                f"  Previous Owner: {existing_owner} (Trust: {old_trust:.3f})\n"
-                f"  New Owner: {agent_id} (Trust: {new_trust:.3f})"
+                f"  Previous Owner: {existing_owner}\n"
+                f"  New Owner: {agent_id}"
             )
         else:
             quarantine_fact(prov_key, claim_val_str, agent_id, branch)
             record_claim(kind, key, claim_val_str, agent_id, branch, "quarantined")
-            increment_agent_beta(agent_id, 1.0)
-            log_security_event("QUARANTINE", f"[{kind.upper()}] Fact overwrite rejected for key '{key}' from agent '{agent_id}' (Trust: {new_trust:.3f}) vs Owner '{existing_owner}' (Trust: {old_trust:.3f})")
+            # Overwrite staged for human/peer review without punitive beta degradation
+            log_security_event("QUARANTINE", f"[{kind.upper()}] Fact overwrite staged for key '{key}' from '{agent_id}' against incumbent '{existing_owner}'; explicit review is required.")
             return (
-                f"CONFLICT/QUARANTINE: Overwrite of key '{key}' in bucket '{kind}' rejected due to insufficient trust.\n"
-                f"  Existing Owner: {existing_owner} (Trust: {old_trust:.3f})\n"
-                f"  Proposing Agent: {agent_id} (Trust: {new_trust:.3f})\n"
+                f"CONFLICT/QUARANTINE: Overwrite of key '{key}' in bucket '{kind}' requires explicit review.\n"
+                f"  Existing Owner: {existing_owner}\n"
+                f"  Proposing Agent: {agent_id}\n"
                 f"Proposed fact has been quarantined for review."
             )
 
@@ -2852,7 +2898,6 @@ def tool_mem_save_typed(args: dict) -> str:
         if not existing_owner_info or existing_owner_info[0] == "unknown":
             record_provenance(prov_key, agent_id, branch, quarantined=0)
         try:
-            trust = get_agent_trust(agent_id)
             conn = sqlite3.connect(str(DB_PATH))
             cursor = conn.cursor()
             cursor.execute(
@@ -2862,7 +2907,9 @@ def tool_mem_save_typed(args: dict) -> str:
             row = cursor.fetchone()
             if row:
                 claim_id, current_conf = row
-                new_conf = min(1.0, (current_conf if current_conf is not None else 1.0) + 0.1 * trust)
+                # Repeated identical writes are provenance events, not evidence
+                # of globally measured agent reliability.
+                new_conf = current_conf if current_conf is not None else 1.0
                 cursor.execute(
                     "UPDATE gms_claims SET confidence = ? WHERE claim_id = ?",
                     (new_conf, claim_id)
@@ -3003,10 +3050,14 @@ def tool_mem_context(args: dict) -> str:
     today = datetime.now().strftime("%Y-%m-%d")
     history_dir = MEM_ROOT / "episodic" / "history"
     daily = history_dir / f"{today}.md"
-    if daily.exists():
+    if daily.exists() and daily.stat().st_size > 200:
         text = _read(daily)
-    elif history_dir.exists() and list(history_dir.glob("*.md")):
-        text = _read(sorted(history_dir.glob("*.md"))[-1])
+    elif history_dir.exists():
+        valid_files = [p for p in sorted(history_dir.glob("*.md")) if p.stat().st_size > 200]
+        if valid_files:
+            text = _read(valid_files[-1])
+        else:
+            text = _read(MEM_ROOT / "episodic" / "journal.md")
     else:
         text = _read(MEM_ROOT / "episodic" / "journal.md")
     lines = text.splitlines()
@@ -3051,16 +3102,21 @@ def tool_mem_latest(args: dict) -> str:
                 lines = _read(f).splitlines()
                 current_heading = ""
                 buf = []
+                day_entries = []
                 for line in lines:
                     if line.startswith("### "):
                         if current_heading and buf:
-                            entries.append(f"[{f.stem}] {current_heading}\n  " + "\n  ".join(buf[:3]))
+                            day_entries.append(f"[{f.stem}] {current_heading}\n  " + "\n  ".join(buf[:3]))
                         current_heading = line.strip("# ").strip()
                         buf = []
                     elif current_heading:
                         buf.append(line)
                 if current_heading and buf:
-                    entries.append(f"[{f.stem}] {current_heading}\n  " + "\n  ".join(buf[:3]))
+                    day_entries.append(f"[{f.stem}] {current_heading}\n  " + "\n  ".join(buf[:3]))
+                for entry in reversed(day_entries):
+                    entries.append(entry)
+                    if len(entries) >= limit:
+                        break
                 if len(entries) >= limit:
                     break
         if entries:
@@ -3327,8 +3383,8 @@ def tool_mem_resolve_quarantine(args: dict) -> str:
             rec_text = (
                 "\nRecommendation: "
                 f"{rec_summary['recommendation']} "
-                f"(Score: {rec_summary['score']}, Reviewers: {rec_summary['reviewer_count']}, "
-                f"Endorse: {rec_summary['endorse_weight']}, Reject: {rec_summary['reject_weight']})"
+                f"(Reviewers: {rec_summary['reviewer_count']}, "
+                f"Endorse: {rec_summary['endorse_count']}, Reject: {rec_summary['reject_count']})"
             )
         
         kind, real_key = parse_prov_key(key)
@@ -3364,18 +3420,17 @@ def tool_mem_resolve_quarantine(args: dict) -> str:
                 (kind, real_key, agent_id)
             )
             quar_rows = cursor.fetchall()
-            trust = get_agent_trust(agent_id)
             if quar_rows:
                 target_quar_id = quar_rows[-1][0]
                 cursor.execute(
-                    "UPDATE gms_claims SET status = 'active', supersedes_claim_id = ?, confidence = ?, contradiction_type = 'temporal_invalidation' WHERE claim_id = ?",
-                    (prior_active_id, trust, target_quar_id)
+                "UPDATE gms_claims SET status = 'active', supersedes_claim_id = ?, confidence = ?, contradiction_type = 'authorized_review' WHERE claim_id = ?",
+                    (prior_active_id, 1.0, target_quar_id)
                 )
             else:
                 cursor.execute("""
                     INSERT INTO gms_claims (memory_kind, memory_key, value, agent_id, branch, status, supersedes_claim_id, confidence, contradiction_type, created_at)
-                    VALUES (?, ?, ?, ?, ?, 'active', ?, ?, 'temporal_invalidation', CURRENT_TIMESTAMP)
-                """, (kind, real_key, value, agent_id, branch, prior_active_id, trust))
+                    VALUES (?, ?, ?, ?, ?, 'active', ?, ?, 'authorized_review', CURRENT_TIMESTAMP)
+                """, (kind, real_key, value, agent_id, branch, prior_active_id, 1.0))
             
             cursor.execute("DELETE FROM gms_quarantined_facts WHERE fact_key = ? AND agent_id = ?", (key, agent_id))
             cursor.execute(
@@ -3387,12 +3442,6 @@ def tool_mem_resolve_quarantine(args: dict) -> str:
             apply_review_outcome_from_reviews(review_snapshot, "promote")
             
             resolver = args.get("agent", "unknown")
-            increment_agent_alpha(resolver, 1.0)
-            increment_agent_alpha(agent_id, 1.0)
-            
-            if existing_owner != "unknown" and existing_owner != agent_id:
-                increment_agent_beta(existing_owner, 1.0)
-                
             log_security_event("PROMOTION", f"Fact '{key}' promoted from quarantine for agent '{agent_id}' by resolver '{resolver}'")
             return f"SUCCESS: Fact '{key}' promoted. Owner is now '{agent_id}'.{rec_text}"
             
@@ -3412,7 +3461,6 @@ def tool_mem_resolve_quarantine(args: dict) -> str:
             conn.close()
             apply_review_outcome_from_reviews(review_snapshot, "discard")
             
-            increment_agent_beta(agent_id, 0.5)
             log_security_event("DISCARD", f"Quarantined fact '{key}' from agent '{agent_id}' discarded")
             return f"SUCCESS: Quarantined fact '{key}' from agent '{agent_id}' discarded.{rec_text}"
             

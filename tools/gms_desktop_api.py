@@ -502,7 +502,7 @@ class GMSDesktopAPI:
         self,
         key: str,
         value: Any,
-        agent: str = "human-ui",
+        agent: str = "",
         kind: str = "semantic",
     ) -> dict[str, Any]:
         # Validate schema first
@@ -515,13 +515,20 @@ class GMSDesktopAPI:
                 "error": err_msg,
             }
 
+        # A browser surface is an origin, never a durable author. Require an
+        # explicit registered local identity instead of recording `human-ui`.
+        import reviewers
+        actor_ok, actor_or_error = reviewers.validate_reviewer_id(agent, mem_root=self.mem_root)
+        if not actor_ok:
+            return {"status": "error", "message": actor_or_error, "error": actor_or_error}
+
         # Store via MCP server logic
         val_str = json.dumps(norm_val) if isinstance(norm_val, (dict, list)) else str(norm_val)
         res_str = memory_mcp_server.tool_mem_save_typed({
             "key": key,
             "value": val_str,
             "kind": kind,
-            "agent": agent,
+            "agent": actor_or_error,
         })
         return {
             "status": "success" if "error" not in res_str.lower() else "warning",
@@ -530,7 +537,11 @@ class GMSDesktopAPI:
             "value": norm_val,
         }
 
-    def delete_fact(self, key: str, agent: str = "human-ui") -> dict[str, Any]:
+    def delete_fact(self, key: str, agent: str = "") -> dict[str, Any]:
+        import reviewers
+        actor_ok, actor_or_error = reviewers.validate_reviewer_id(agent, mem_root=self.mem_root)
+        if not actor_ok:
+            return {"status": "error", "message": actor_or_error, "error": actor_or_error}
         # Invalidate across JSON tiers
         deleted = False
         for folder in ("semantic", "operational", "procedural"):
@@ -687,7 +698,7 @@ class GMSDesktopAPI:
         agent_id: str,
         action: str,  # "accept", "promote", "reject", "discard"
         edited_value: Any = None,
-        reviewer: str = "human-ui",
+        reviewer: str = "",
         rationale: str = "Resolved via GMS Desktop UI",
     ) -> dict[str, Any]:
         if edited_value is not None:
@@ -716,12 +727,17 @@ class GMSDesktopAPI:
                         "fact_key": fact_key,
                     }
 
+        import reviewers
+        reviewer_ok, reviewer_or_error = reviewers.validate_reviewer_id(reviewer, mem_root=self.mem_root)
+        if not reviewer_ok:
+            return {"status": "error", "message": reviewer_or_error, "error": reviewer_or_error}
+
         action_norm = "promote" if action in ("accept", "promote") else "discard"
         res = memory_mcp_server.tool_mem_resolve_quarantine({
             "key": fact_key,
             "agent_id": agent_id,
             "action": action_norm,
-            "agent": reviewer,
+            "agent": reviewer_or_error,
             "rationale": rationale,
         })
         is_error = res.startswith("ERROR:")
@@ -732,7 +748,23 @@ class GMSDesktopAPI:
             "action_normalized": action_norm,
             "fact_key": fact_key,
             "agent_id": agent_id,
-            "reviewer": reviewer,
+            "reviewer": reviewer_or_error,
+        }
+
+    def stage_in_quarantine(
+        self,
+        fact_key: str,
+        value: Any,
+        agent_id: str = "daily-note",
+        branch: str = "main",
+    ) -> dict[str, Any]:
+        val_str = json.dumps(value) if isinstance(value, (dict, list)) else str(value)
+        memory_mcp_server.quarantine_fact(fact_key, val_str, agent_id, branch)
+        return {
+            "status": "success",
+            "message": f"Fact '{fact_key}' staged in quarantine for operator review.",
+            "fact_key": fact_key,
+            "agent_id": agent_id,
         }
 
     def get_triage_history(self, limit: int = 25) -> list[dict[str, Any]]:
@@ -760,7 +792,7 @@ class GMSDesktopAPI:
                         "type": "review",
                         "fact_key": r[0],
                         "agent_id": r[1],
-                        "reviewer": r[2] or "human-ui",
+                        "reviewer": r[2] or "unattributed",
                         "action": "promoted" if r[3] in ("endorse", "promote") else "discarded",
                         "rationale": r[4] or "Quarantine review",
                         "timestamp": r[5],
@@ -784,7 +816,7 @@ class GMSDesktopAPI:
                     "fact_key": f"{r[1]}.{r[2]}" if r[1] != "semantic" and not r[2].startswith(f"{r[1]}.") else r[2],
                     "agent_id": r[3],
                     "action": action_str,
-                    "reviewer": "system" if r[3] != "human-ui" else "human-ui",
+                    "reviewer": "system",
                     "rationale": r[5] or "Ledger transition",
                     "timestamp": r[6],
                     "supersedes": r[7],
@@ -1322,11 +1354,23 @@ class GMSDesktopAPI:
             except Exception:
                 pass
         else:
-            content = f"# Daily Note — {dt}\n\n- Quick notes, observations, or facts here...\n"
+            journal_file = self.mem_root / "episodic" / "journal.md"
+            if journal_file.exists():
+                try:
+                    j_text = journal_file.read_text(errors="replace")
+                    pattern = rf"(###\s+{re.escape(dt)}[\s\S]*?)(?=\n###|\Z)"
+                    matched_entries = [m.group(1).strip() for m in re.finditer(pattern, j_text)]
+                    if matched_entries:
+                        content = f"# Daily Note — {dt} (Archived Journal)\n\n" + "\n\n".join(matched_entries)
+                        exists = True
+                except Exception:
+                    pass
+            if not exists:
+                content = f"# Daily Note — {dt}\n\n- Quick notes, observations, or facts here...\n"
 
         return {
             "date": dt,
-            "path": str(daily_file),
+            "path": str(daily_file) if not exists and not content.startswith("# Daily Note —") else (str(journal_file) if exists and not daily_file.exists() else str(daily_file)),
             "exists": exists,
             "content": content,
         }
@@ -1372,7 +1416,10 @@ class GMSDesktopAPI:
             text = daily_file.read_text(errors="replace")
 
         report = harvest.harvest_session(
-            agent="human-ui",
+            # The desktop requested the harvest; the deterministic harvest
+            # worker is the extractor. It is not a claim that a person wrote
+            # every source sentence.
+            agent="system",
             summary=f"Daily Note Consolidation ({date_str})",
             text=text,
             incremental_index=True,
@@ -2820,7 +2867,16 @@ class GMSDesktopAPI:
                     if lines:
                         header = lines[0]
                         body = " ".join(lines[1:]) if len(lines) > 1 else ""
-                        vector_hits.append({"header": header, "snippet": body})
+                        file_match = re.search(r'src=([^\s]+)', header)
+                        hit_file = file_match.group(1) if file_match else ""
+                        date_match = re.search(r'\b(\d{4}-\d{2}-\d{2})\b', header + " " + body)
+                        hit_date = date_match.group(1) if date_match else None
+                        vector_hits.append({
+                            "header": header,
+                            "snippet": body,
+                            "date": hit_date,
+                            "file": hit_file,
+                        })
         except Exception:
             pass
 
@@ -3070,7 +3126,11 @@ class GMSDesktopAPI:
     def preview_inbox_action(self, inbox_id: str, action: str = "accept", project: str = "", reviewer: str = "mihir", rationale: str = "") -> dict[str, Any]:
         return preview_inbox_action(self.mem_root, inbox_id=inbox_id, action=action, project=project, reviewer=reviewer, rationale=rationale)
 
-    def apply_inbox_action(self, inbox_id: str, project: str = "", reviewer: str = "human-ui", rationale: str = "", expected_hash: str | None = None) -> dict[str, Any]:
+    def apply_inbox_action(self, inbox_id: str, project: str = "", reviewer: str = "", rationale: str = "", expected_hash: str | None = None) -> dict[str, Any]:
+        import reviewers
+        valid, normalized = reviewers.validate_reviewer_id(reviewer, mem_root=self.mem_root)
+        if not valid:
+            return {"status": "error", "error": normalized}
         preview = self.preview_inbox_action(inbox_id, project=project)
         if not preview.get("executable"):
             return {"status": "blocked", "error": preview.get("consequence", "Action not executable directly"), "preview": preview}
@@ -3082,7 +3142,7 @@ class GMSDesktopAPI:
                 root=self.mem_root,
                 candidate_id=candidate_id,
                 action=review_action,
-                reviewer=reviewer or "human-ui",
+                reviewer=normalized,
                 rationale=rationale or "Applied from action inbox",
                 expected_hash=expected_hash
             )
@@ -3094,8 +3154,12 @@ class GMSDesktopAPI:
     def analyze_repair_record(self, key: str) -> dict[str, Any]:
         return analyze_missing_fields(self.mem_root, key)
 
-    def stage_repair_record(self, key: str, payload: dict[str, Any], apply: bool = False, actor: str = "human-ui", rationale: str = "Repaired from UI") -> dict[str, Any]:
-        return stage_repair_candidate(self.mem_root, legacy_key=key, repaired_payload=payload, apply=apply, actor=actor, rationale=rationale)
+    def stage_repair_record(self, key: str, payload: dict[str, Any], apply: bool = False, actor: str = "", rationale: str = "Repaired from UI") -> dict[str, Any]:
+        import reviewers
+        valid, normalized = reviewers.validate_reviewer_id(actor, mem_root=self.mem_root)
+        if not valid:
+            return {"status": "error", "error": normalized}
+        return stage_repair_candidate(self.mem_root, legacy_key=key, repaired_payload=payload, apply=apply, actor=normalized, rationale=rationale)
 
     def get_morning_briefing(self, project_id: str, as_of: str | None = None) -> dict[str, Any]:
         return generate_morning_briefing(self.mem_root, project_id, as_of=as_of)
@@ -3312,21 +3376,27 @@ class GMSHTTPHandler(BaseHTTPRequestHandler):
         elif path == "/api/memories/fact":
             key = data.get("key", "")
             val = data.get("value", "")
-            agent = data.get("agent", "human-ui")
+            agent = data.get("agent", "")
             kind = data.get("kind", "semantic")
             self._send_json(self.api.save_fact(key, val, agent, kind))
         elif path == "/api/memories/delete":
             key = data.get("key", "")
-            agent = data.get("agent", "human-ui")
+            agent = data.get("agent", "")
             self._send_json(self.api.delete_fact(key, agent))
         elif path == "/api/quarantine/resolve":
             key = data.get("fact_key", "") or data.get("key", "")
             agent = data.get("agent_id", "") or data.get("agent", "")
             action = data.get("action", "accept")
-            reviewer = data.get("reviewer", "human-ui")
+            reviewer = data.get("reviewer", "")
             edited = data.get("edited_value", None)
             rationale = data.get("rationale", "Resolved via GMS Desktop UI")
             self._send_json(self.api.resolve_quarantine(key, agent, action, edited_value=edited, reviewer=reviewer, rationale=rationale))
+        elif path == "/api/quarantine/stage":
+            key = data.get("fact_key", "") or data.get("key", "")
+            val = data.get("value", "")
+            agent = data.get("agent_id", "") or data.get("agent", "daily-note")
+            branch = data.get("branch", "main")
+            self._send_json(self.api.stage_in_quarantine(key, val, agent, branch))
         elif path == "/api/quarantine/review":
             self._send_json(self.api.record_quarantine_review(data))
         elif path == "/api/tasks/create":
@@ -3422,7 +3492,7 @@ class GMSHTTPHandler(BaseHTTPRequestHandler):
         elif path == "/api/inbox/apply":
             inbox_id = data.get("inbox_id", "")
             proj = data.get("project", "")
-            reviewer = data.get("reviewer", "human-ui")
+            reviewer = data.get("reviewer", "")
             rationale = data.get("rationale", "")
             exp_hash = data.get("expected_hash")
             self._send_json(self.api.apply_inbox_action(inbox_id, project=proj, reviewer=reviewer, rationale=rationale, expected_hash=exp_hash))
@@ -3431,7 +3501,7 @@ class GMSHTTPHandler(BaseHTTPRequestHandler):
             key = parts[2]
             payload = data.get("payload", {})
             apply = bool(data.get("apply", False))
-            actor = data.get("actor", "human-ui")
+            actor = data.get("actor", "")
             rationale = data.get("rationale", "Repaired from UI")
             self._send_json(self.api.stage_repair_record(key, payload=payload, apply=apply, actor=actor, rationale=rationale))
         else:

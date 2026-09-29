@@ -185,4 +185,12 @@ def contest_candidate(mem_root: Path, candidate_id: str, rationale: str, *, appl
     )
     conn.commit()
     conn.close()
+
+    extractor = candidate.get("extractor_agent")
+    if extractor and str(extractor).lower() not in {"mihir", "system"}:
+        try:
+            memory_mcp_server.increment_agent_beta(str(extractor), 1.5)
+        except Exception:
+            pass
+
     return {**preview, "status": "contested", "restored": prior_value is not None}

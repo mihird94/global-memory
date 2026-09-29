@@ -201,6 +201,17 @@ if PYDANTIC_AVAILABLE:
             "verified", "partially_verified", "unverified", "contradicted"
         ] = "unverified"
 
+    class ConceptContract(BaseModel):
+        statement: str = Field(..., description="Canonical concept definition or summary")
+        content: str = Field("", description="Full concept documentation or notes")
+        rationale: str = Field("", description="Why this concept is modeled")
+        implications: list[str] = Field(default_factory=list)
+        scope: dict[str, Any] = Field(default_factory=dict)
+        provenance: dict[str, Any] = Field(default_factory=dict)
+        evidence: list[dict[str, Any]] = Field(default_factory=list)
+        freshness: dict[str, Any] = Field(default_factory=dict)
+        review_state: dict[str, Any] = Field(default_factory=dict)
+
     CONTRACT_REGISTRY: dict[str, type[BaseModel]] = {
         "infra": InfraNodeContract,
         "trading": TradingSignalContract,
@@ -210,6 +221,9 @@ if PYDANTIC_AVAILABLE:
         "operational": OperationalPolicyContract,
         "procedure": ProceduralTaskContract,
         "procedural": ProceduralTaskContract,
+        "concept": ConceptContract,
+        "decision": ContextRecordEnvelope,
+        "context_record": ContextRecordEnvelope,
     }
 else:
     CONTRACT_REGISTRY = {}
@@ -236,11 +250,15 @@ def get_namespace_for_key(key: str) -> str | None:
         return "policy"
     if clean_k.startswith(("procedure.", "procedure:", "procedural.task.")):
         return "procedure"
+    if clean_k.startswith(("learning.notes.concept.", "concept.", "concept:")):
+        return "concept"
+    if clean_k.startswith(("decision.", "decision:")):
+        return "decision"
 
     for delimiter in [".", ":", "/"]:
         if delimiter in clean_k:
             prefix = clean_k.split(delimiter)[0]
-            if prefix in ("infra", "trading", "model", "ml", "policy", "procedure"):
+            if prefix in ("infra", "trading", "model", "ml", "policy", "procedure", "operational", "procedural", "concept", "decision"):
                 return prefix
     return None
 
@@ -280,13 +298,18 @@ def validate_fact(key: str, value: Any) -> tuple[bool, Any, str | None]:
         # Fallback gracefully if pydantic is not present
         return True, value, None
 
-    namespace = get_namespace_for_key(key)
-    if not namespace:
-        # Permissive untyped fact
-        return True, value, None
-
-    model_cls = CONTRACT_REGISTRY[namespace]
     payload = parse_payload(value)
+
+    if isinstance(payload, dict) and payload.get("schema_version") == "gms-context-record-v1":
+        model_cls = ContextRecordEnvelope
+    else:
+        namespace = get_namespace_for_key(key)
+        if not namespace:
+            # Permissive untyped fact
+            return True, value, None
+        model_cls = CONTRACT_REGISTRY.get(namespace)
+        if not model_cls:
+            return True, value, None
 
     if not isinstance(payload, dict):
         return False, None, (
@@ -427,7 +450,16 @@ def compute_canonical_content_hash(payload: dict) -> str:
         "review_status", "reviewed_by", "reviewed_at", "review_rationale",
         "merged_claim_id", "created_at", "updated_at"
     }
-    canonical_dict = {k: v for k, v in payload.items() if k not in volatile_keys}
+    canonical_dict = {}
+    for k, v in payload.items():
+        if k in volatile_keys:
+            continue
+        if k == "provenance" and isinstance(v, dict):
+            # Normalize provenance by stripping non-reproducible run timestamps
+            prov = {pk: pv for pk, pv in v.items() if pk not in {"extracted_at", "session_id"}}
+            canonical_dict[k] = prov
+        else:
+            canonical_dict[k] = v
     canonical_str = json.dumps(canonical_dict, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical_str.encode("utf-8")).hexdigest()
 

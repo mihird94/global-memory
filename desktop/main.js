@@ -1,13 +1,65 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, dialog } = require('electron');
+app.setName('Mbrain');
 const path = require('path');
 const { spawn, execFile } = require('child_process');
 const http = require('http');
+const net = require('net');
 const fs = require('fs');
 
 let mainWindow = null;
 let apiProcess = null;
 const API_PORT = 28765;
 const REPO_ROOT = path.resolve(__dirname, '..');
+
+const ICON_ICNS = path.join(__dirname, 'assets', 'icon.icns');
+const ICON_PNG = path.join(__dirname, 'assets', 'icon.png');
+const ICON_DARK_PNG = path.join(__dirname, 'assets', 'icon-dark.png');
+const ICON_LIGHT_PNG = path.join(__dirname, 'assets', 'icon-light.png');
+
+// Ensure system theme tracking
+nativeTheme.themeSource = 'system';
+
+function getActiveIconPath() {
+  if (fs.existsSync(ICON_DARK_PNG)) return ICON_DARK_PNG;
+  return ICON_PNG;
+}
+
+function updateDockIcon() {
+  if (process.platform === 'darwin' && app.dock) {
+    try {
+      const iconPath = getActiveIconPath();
+      if (fs.existsSync(iconPath)) {
+        const iconImg = nativeImage.createFromPath(iconPath);
+        if (!iconImg.isEmpty()) {
+          app.dock.setIcon(iconImg);
+        }
+      }
+    } catch (e) {
+      console.error('[Desktop] Dock icon update error:', e);
+    }
+  }
+}
+
+// Fast TCP Port Check
+function isPortOpen(port, timeoutMs = 350) {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    socket.setTimeout(timeoutMs);
+    socket.on('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.on('timeout', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.on('error', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.connect(port, '127.0.0.1');
+  });
+}
 
 // Discover Python binary
 function getPythonPath() {
@@ -38,6 +90,15 @@ function startBackendServer() {
   apiProcess.on('close', (code) => {
     console.log(`[GMS API] exited with code ${code}`);
   });
+}
+
+async function ensureBackendServer() {
+  const isOpen = await isPortOpen(API_PORT);
+  if (isOpen) {
+    console.log(`[GMS API] Port ${API_PORT} is already open and ready.`);
+    return;
+  }
+  startBackendServer();
 }
 
 // Fallback CLI invoke if needed
@@ -95,11 +156,7 @@ function requestAPI(endpoint, method = 'GET', body = null) {
     });
 
     req.on('error', (err) => {
-      // Fallback to CLI execution if HTTP server is not yet ready
-      const action = endpoint.replace('/api/', '').split('?')[0].replace('/', '_');
-      callCLI(action, body || {})
-        .then(resolve)
-        .catch(reject);
+      reject(new Error(`API server unavailable: ${err.message}`));
     });
 
     if (postData) {
@@ -109,8 +166,32 @@ function requestAPI(endpoint, method = 'GET', body = null) {
   });
 }
 
+// Wait for API server to be ready before creating the window
+function waitForServer(maxRetries = 20, interval = 250) {
+  return new Promise((resolve, reject) => {
+    let attempts = 0;
+    const check = () => {
+      attempts++;
+      const req = http.get(`http://127.0.0.1:${API_PORT}/api/snapshot`, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => resolve());
+      });
+      req.on('error', () => {
+        if (attempts >= maxRetries) {
+          reject(new Error('API server failed to start'));
+        } else {
+          setTimeout(check, interval);
+        }
+      });
+      req.end();
+    };
+    check();
+  });
+}
+
 function createWindow() {
-  const iconPath = path.join(__dirname, 'assets', 'icon.png');
+  const isDark = nativeTheme.shouldUseDarkColors;
 
   mainWindow = new BrowserWindow({
     width: 1320,
@@ -119,8 +200,8 @@ function createWindow() {
     minHeight: 680,
     title: 'Mbrain',
     titleBarStyle: 'hiddenInset',
-    backgroundColor: '#0d1117',
-    icon: iconPath,
+    backgroundColor: isDark ? '#0d1117' : '#ffffff',
+    icon: getActiveIconPath(),
     trafficLightPosition: { x: 18, y: 16 },
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -148,6 +229,7 @@ ipcMain.handle('gms:deleteFact', (event, payload) => requestAPI('/api/memories/d
 ipcMain.handle('gms:validateFact', (event, payload) => requestAPI('/api/validate', 'POST', payload));
 ipcMain.handle('gms:getQuarantine', () => requestAPI('/api/quarantine'));
 ipcMain.handle('gms:resolveQuarantine', (event, payload) => requestAPI('/api/quarantine/resolve', 'POST', payload));
+ipcMain.handle('gms:stageInQuarantine', (event, payload) => requestAPI('/api/quarantine/stage', 'POST', payload));
 ipcMain.handle('gms:getTriageHistory', (event, limit) => requestAPI(`/api/triage/history?limit=${limit || 25}`));
 ipcMain.handle('gms:getGraph', (event, params) => {
   const query = new URLSearchParams(params || {}).toString();
@@ -275,16 +357,27 @@ ipcMain.handle('gms:getMorningBriefing', (event, params) => {
 });
 ipcMain.handle('gms:getResumptionEvaluation', () => requestAPI('/api/eval/resumption'));
 
-app.whenReady().then(() => {
-  const iconPath = path.join(__dirname, 'assets', 'icon.png');
-  if (process.platform === 'darwin' && app.dock) {
-    try {
-      app.dock.setIcon(iconPath);
-    } catch (e) {}
+app.whenReady().then(async () => {
+  updateDockIcon();
+  nativeTheme.on('updated', () => {
+    updateDockIcon();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#0d1117' : '#ffffff');
+    }
+  });
+
+  await ensureBackendServer();
+
+  try {
+    await waitForServer();
+    createWindow();
+  } catch (err) {
+    dialog.showErrorBox(
+      'Mbrain API Error',
+      `Could not connect to the GMS backend server.\n\n${err.message}\n\nPlease check if port ${API_PORT} is blocked.`
+    );
+    app.quit();
   }
-  startBackendServer();
-  // Small delay to ensure API server starts before window loads
-  setTimeout(createWindow, 300);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

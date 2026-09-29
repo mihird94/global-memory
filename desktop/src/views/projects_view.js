@@ -6,6 +6,8 @@ window.ProjectsView = {
   searchQuery: '',
   sortBy: 'recent', // 'recent', 'name', 'attention'
   inspectorItem: null,
+  masterColCollapsed: false,
+  inspectorColCollapsed: false,
 
   asOfTimestamp: null,
 
@@ -38,9 +40,13 @@ window.ProjectsView = {
     container.innerHTML = `
       <div class="projects-workspace-layout">
         <!-- Column 1: Projects Master List -->
-        <aside class="projects-master-col card">
+        <aside class="projects-master-col card" id="projects-master-col">
           <div class="projects-master-header">
-            <div class="panel-label">Projects Workspace</div>
+            <div class="projects-col-title-row">
+              <div class="panel-label">Projects Workspace</div>
+              <button class="btn-icon btn-collapse-col" id="btn-toggle-master-col" title="Collapse Sidebar">◀</button>
+            </div>
+            <div class="collapsed-rail-text">Projects</div>
             <button class="btn-secondary open-memory-quality" style="width:100%;margin:8px 0">Memory Quality</button>
             <div class="projects-search-bar">
               <input type="text" id="projects-search-input" class="search-input" placeholder="Filter projects..." value="${this.escapeHtml(this.searchQuery)}">
@@ -71,10 +77,17 @@ window.ProjectsView = {
 
         <!-- Column 3: Inspector Drawer -->
         <aside class="projects-inspector-col card" id="projects-inspector">
-          <div class="empty-inspector">
-            <div class="empty-icon">⌁</div>
-            <strong>Project Inspector</strong>
-            <span>Select any decision, task, handoff, or knowledge record to inspect provenance and actions.</span>
+          <div class="projects-col-title-row" style="margin-bottom: 8px;">
+            <div class="panel-label">Project Inspector</div>
+            <button class="btn-icon btn-collapse-col" id="btn-toggle-inspector-col" title="Collapse Inspector">▶</button>
+          </div>
+          <div class="collapsed-rail-text">Inspector</div>
+          <div id="projects-inspector-body">
+            <div class="empty-inspector">
+              <div class="empty-icon">⌁</div>
+              <strong>Project Inspector</strong>
+              <span>Select any decision, task, handoff, or knowledge record to inspect provenance and actions.</span>
+            </div>
           </div>
         </aside>
       </div>
@@ -193,6 +206,33 @@ window.ProjectsView = {
   },
 
   bindEvents(container) {
+    // Column collapse toggles
+    const btnToggleMaster = container.querySelector('#btn-toggle-master-col');
+    const masterCol = container.querySelector('#projects-master-col');
+    if (btnToggleMaster && masterCol) {
+      const toggleMaster = () => {
+        this.masterColCollapsed = !this.masterColCollapsed;
+        masterCol.classList.toggle('collapsed', this.masterColCollapsed);
+        btnToggleMaster.innerText = this.masterColCollapsed ? '▶' : '◀';
+        btnToggleMaster.title = this.masterColCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar';
+      };
+      btnToggleMaster.addEventListener('click', toggleMaster);
+      masterCol.querySelector('.collapsed-rail-text')?.addEventListener('click', toggleMaster);
+    }
+
+    const btnToggleInspector = container.querySelector('#btn-toggle-inspector-col');
+    const inspectorCol = container.querySelector('#projects-inspector');
+    if (btnToggleInspector && inspectorCol) {
+      const toggleInspector = () => {
+        this.inspectorColCollapsed = !this.inspectorColCollapsed;
+        inspectorCol.classList.toggle('collapsed', this.inspectorColCollapsed);
+        btnToggleInspector.innerText = this.inspectorColCollapsed ? '◀' : '▶';
+        btnToggleInspector.title = this.inspectorColCollapsed ? 'Expand Inspector' : 'Collapse Inspector';
+      };
+      btnToggleInspector.addEventListener('click', toggleInspector);
+      inspectorCol.querySelector('.collapsed-rail-text')?.addEventListener('click', toggleInspector);
+    }
+
     const mq=container.querySelector('.open-memory-quality'); if(mq) mq.addEventListener('click',()=>window.App.openMemoryQuality());
     // Search input with debounce
     const searchInput = container.querySelector('#projects-search-input');
@@ -1272,8 +1312,19 @@ window.ProjectsView = {
   // ---------------------------------------------------------------------------
   inspectItem(type, item) {
     this.inspectorItem = { type, item };
-    const inspectorEl = document.getElementById('projects-inspector');
+    const inspectorEl = document.getElementById('projects-inspector-body') || document.getElementById('projects-inspector');
+    const inspectorCol = document.getElementById('projects-inspector');
+    const btnToggleInspector = document.getElementById('btn-toggle-inspector-col');
     if (!inspectorEl) return;
+
+    if (this.inspectorColCollapsed && inspectorCol) {
+      this.inspectorColCollapsed = false;
+      inspectorCol.classList.remove('collapsed');
+      if (btnToggleInspector) {
+        btnToggleInspector.innerText = '▶';
+        btnToggleInspector.title = 'Collapse Inspector';
+      }
+    }
 
     if (type === 'decision') {
       inspectorEl.innerHTML = `

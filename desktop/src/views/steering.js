@@ -11,6 +11,7 @@ window.SteeringView = {
   fleetMetrics: { total_agents: 0, total_claims: 0, quarantine_pending: 0 },
   triageHistory: [],
   editingItem: null,
+  selectedTriageIndex: 0,
   keyboardBound: false,
 
   async render(container) {
@@ -185,18 +186,49 @@ window.SteeringView = {
       if (document.querySelector('.triage-edit-modal-backdrop')) return;
 
       const key = e.key.toLowerCase();
+
+      // Navigation: J/Down and K/Up
+      if (['j', 'arrowdown'].includes(key) && this.quarantineItems.length > 0) {
+        e.preventDefault();
+        this.selectedTriageIndex = Math.min(this.selectedTriageIndex + 1, this.quarantineItems.length - 1);
+        this.updateTriageFocusVisuals(true);
+        return;
+      }
+      if (['k', 'arrowup'].includes(key) && this.quarantineItems.length > 0) {
+        e.preventDefault();
+        this.selectedTriageIndex = Math.max(this.selectedTriageIndex - 1, 0);
+        this.updateTriageFocusVisuals(true);
+        return;
+      }
+
+      // Actions: A (Approve), R (Reject), E (Edit) operating on currently focused card
       if (['a', 'r', 'e'].includes(key) && this.quarantineItems.length > 0) {
-        const firstItem = this.quarantineItems[0];
-        if (!firstItem) return;
+        const activeIndex = (this.selectedTriageIndex >= 0 && this.selectedTriageIndex < this.quarantineItems.length)
+          ? this.selectedTriageIndex
+          : 0;
+        const targetItem = this.quarantineItems[activeIndex];
+        if (!targetItem) return;
 
         e.preventDefault();
         if (key === 'a') {
-          this.executeResolve(firstItem.fact_key, firstItem.agent_id, 'accept');
+          this.executeResolve(targetItem.fact_key, targetItem.agent_id, 'accept');
         } else if (key === 'r') {
-          this.executeResolve(firstItem.fact_key, firstItem.agent_id, 'reject');
+          this.executeResolve(targetItem.fact_key, targetItem.agent_id, 'reject');
         } else if (key === 'e') {
-          this.openEditModal(firstItem);
+          this.openEditModal(targetItem);
         }
+      }
+    });
+  },
+
+  updateTriageFocusVisuals(shouldScroll = false) {
+    const cards = document.querySelectorAll('.triage-card');
+    cards.forEach((card) => {
+      const idx = Number(card.dataset.index);
+      const isFocused = idx === this.selectedTriageIndex;
+      card.classList.toggle('focused', isFocused);
+      if (isFocused && shouldScroll) {
+        card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       }
     });
   },
@@ -231,7 +263,6 @@ window.SteeringView = {
 
   async loadQuarantine() {
     const container = document.getElementById('triage-deck-container');
-    const tabBadge = document.getElementById('tab-badge-triage');
     const kpiQuar = document.getElementById('kpi-quarantine-count');
     const kpiQuarSub = document.getElementById('kpi-quarantine-sub');
     const statusPill = document.getElementById('triage-status-pill');
@@ -241,10 +272,6 @@ window.SteeringView = {
       this.quarantineItems = items || [];
       const count = this.quarantineItems.length;
 
-      if (tabBadge) {
-        tabBadge.innerText = count;
-        tabBadge.className = count > 0 ? 'triage-tab-badge alert' : 'triage-tab-badge neutral';
-      }
       if (kpiQuar) {
         kpiQuar.innerText = count;
         kpiQuar.style.color = count > 0 ? 'var(--accent-amber)' : 'var(--accent-green)';
@@ -267,6 +294,7 @@ window.SteeringView = {
       if (!container) return;
 
       if (count === 0) {
+        this.selectedTriageIndex = -1;
         container.innerHTML = `
           <div class="trust-clear-state">
             <span class="trust-clear-icon">✓</span>
@@ -276,8 +304,11 @@ window.SteeringView = {
         return;
       }
 
+      this.selectedTriageIndex = Math.min(Math.max(0, this.selectedTriageIndex), count - 1);
+
       container.innerHTML = this.quarantineItems
         .map((item, idx) => {
+          const isFocused = idx === this.selectedTriageIndex;
           const currentValStr = item.current_value !== null && item.current_value !== undefined
             ? (typeof item.current_value === 'object' ? JSON.stringify(item.current_value, null, 2) : String(item.current_value))
             : null;
@@ -294,7 +325,7 @@ window.SteeringView = {
           const priorContributions = Number(item.agent_stats?.claim_count || 0);
 
           return `
-            <div class="triage-card" data-key="${this.escapeHtml(item.fact_key)}" data-agent="${this.escapeHtml(item.agent_id)}">
+            <div class="triage-card ${isFocused ? 'focused' : ''}" data-index="${idx}" data-key="${this.escapeHtml(item.fact_key)}" data-agent="${this.escapeHtml(item.agent_id)}">
               <div class="triage-card-header">
                 <div>
                   <div class="triage-card-title">
@@ -302,6 +333,7 @@ window.SteeringView = {
                     <span class="triage-conflict-badge ${badgeClass}">
                       ${this.escapeHtml(item.conflict_badge || 'Quarantined')}
                     </span>
+                    <span class="triage-focused-indicator" style="font-size: 10px; font-weight: 700; color: var(--accent-cyan); background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 4px; padding: 1px 6px; ${isFocused ? 'display: inline-block;' : 'display: none;'}">FOCUSED</span>
                   </div>
                   <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
                     <span class="triage-agent-pill">
@@ -359,6 +391,17 @@ window.SteeringView = {
         })
         .join('');
 
+      container.querySelectorAll('.triage-card').forEach((card) => {
+        card.addEventListener('click', (e) => {
+          if (e.target.closest('button')) return;
+          const idx = Number(card.dataset.index);
+          if (!isNaN(idx)) {
+            this.selectedTriageIndex = idx;
+            this.updateTriageFocusVisuals(false);
+          }
+        });
+      });
+
       container.querySelectorAll('.btn-triage-act').forEach((btn) => {
         btn.addEventListener('click', (e) => {
           const key = e.currentTarget.dataset.key;
@@ -387,7 +430,7 @@ window.SteeringView = {
         fact_key: key,
         agent_id: agent,
         action: action,
-        reviewer: 'human-ui',
+        reviewer: 'mihir',
       };
       if (editedValue !== null) {
         payload.edited_value = editedValue;
@@ -843,12 +886,141 @@ window.SteeringView = {
     });
     deck.querySelectorAll('.btn-harvest-contest').forEach((btn) => {
       btn.addEventListener('click', async (event) => {
-        const rationale = prompt('Why is this system decision wrong? The prior value will be restored.');
-        if (!rationale || rationale.trim().length < 10) return;
-        const result = await window.gms.contestHarvestCandidate(event.currentTarget.dataset.id, { rationale, apply: true });
-        if (result.status === 'error') alert(result.error || 'Contest failed');
+        const candidateId = event.currentTarget.dataset.id;
+        const rationale = await this.promptRationale({
+          title: 'Contest System Decision',
+          subtitle: 'Why is this system decision wrong? The prior value will be restored in canonical memory.',
+          placeholder: 'Provide detailed context explaining why the decision should be contested...',
+          minChars: 10,
+          confirmText: 'Contest & Restore',
+          confirmClass: 'btn-danger',
+        });
+        if (!rationale) return;
+
+        try {
+          const result = await window.gms.contestHarvestCandidate(candidateId, { rationale, apply: true });
+          if (result && result.status === 'error') {
+            window.App.showToast(result.error || 'Contest failed', 'error');
+          } else {
+            window.App.showToast('Decision successfully contested and prior value restored', 'success');
+          }
+        } catch (err) {
+          window.App.showToast(`Contest failed: ${err.message}`, 'error');
+        }
         await this.loadHarvestQueue();
       });
+    });
+  },
+
+  promptRationale({
+    title = 'Provide Decision Rationale',
+    subtitle = 'Please describe the rationale for this action.',
+    defaultValue = '',
+    placeholder = 'Enter rationale here...',
+    minChars = 10,
+    confirmText = 'Submit',
+    confirmClass = 'btn-primary',
+  }) {
+    return new Promise((resolve) => {
+      const host = document.getElementById('triage-edit-modal-host');
+      if (!host) {
+        resolve(null);
+        return;
+      }
+
+      const initialTrimmed = (defaultValue || '').trim();
+      const initialValid = minChars === 0 || initialTrimmed.length >= minChars;
+
+      host.innerHTML = `
+        <div class="triage-edit-modal-backdrop rationale-modal-backdrop" style="position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 10000; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px);">
+          <div class="modal-card" style="background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 10px; width: 560px; max-width: 90vw; padding: 22px; box-shadow: 0 16px 40px rgba(0,0,0,0.6);">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
+              <div>
+                <h3 style="margin: 0 0 4px 0; font-size: 16px; font-weight: 700; color: var(--text-primary);">${this.escapeHtml(title)}</h3>
+                <p style="margin: 0; font-size: 12.5px; color: var(--text-secondary); line-height: 1.4;">${this.escapeHtml(subtitle)}</p>
+              </div>
+              <button id="btn-rationale-close" style="background: transparent; border: none; font-size: 18px; color: var(--text-muted); cursor: pointer; padding: 2px 6px;">✕</button>
+            </div>
+
+            <div style="margin-bottom: 14px;">
+              <label style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text-muted); display: block; margin-bottom: 6px;">
+                Rationale & Provenance Note (min ${minChars} chars)
+              </label>
+              <textarea id="modal-rationale-textarea" rows="4" style="width: 100%; box-sizing: border-box; background: #090d13; border: 1px solid var(--border-subtle); border-radius: 6px; padding: 10px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; line-height: 1.5; color: var(--text-primary); resize: vertical;" placeholder="${this.escapeHtml(placeholder)}">${this.escapeHtml(defaultValue)}</textarea>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;">
+                <span id="modal-rationale-counter" style="font-size: 11.5px; font-weight: 600; font-family: 'SF Mono', monospace; color: ${initialValid ? 'var(--accent-green)' : 'var(--accent-red)'};">
+                  ${initialValid ? `✓ ${initialTrimmed.length} characters` : `${initialTrimmed.length} / ${minChars} characters minimum`}
+                </span>
+                <span style="font-size: 11px; color: var(--text-muted);">Press ⌘+Enter to submit • Esc to cancel</span>
+              </div>
+            </div>
+
+            <div style="display: flex; justify-content: flex-end; gap: 10px;">
+              <button class="btn-secondary" id="btn-rationale-cancel">Cancel</button>
+              <button class="${confirmClass}" id="btn-rationale-submit" ${initialValid ? '' : 'disabled'} style="${initialValid ? '' : 'opacity: 0.5; cursor: not-allowed;'}">${this.escapeHtml(confirmText)}</button>
+            </div>
+          </div>
+        </div>
+      `;
+
+      const textarea = host.querySelector('#modal-rationale-textarea');
+      const counter = host.querySelector('#modal-rationale-counter');
+      const submitBtn = host.querySelector('#btn-rationale-submit');
+      const cancelBtn = host.querySelector('#btn-rationale-cancel');
+      const closeBtn = host.querySelector('#btn-rationale-close');
+
+      const cleanup = () => {
+        host.innerHTML = '';
+      };
+
+      const doCancel = () => {
+        cleanup();
+        resolve(null);
+      };
+
+      const doSubmit = () => {
+        const val = textarea.value.trim();
+        if (minChars > 0 && val.length < minChars) return;
+        cleanup();
+        resolve(val);
+      };
+
+      textarea.addEventListener('input', () => {
+        const val = textarea.value.trim();
+        const len = val.length;
+        if (minChars === 0 || len >= minChars) {
+          counter.style.color = 'var(--accent-green)';
+          counter.innerText = `✓ ${len} characters`;
+          submitBtn.disabled = false;
+          submitBtn.style.opacity = '1';
+          submitBtn.style.cursor = 'pointer';
+        } else {
+          counter.style.color = 'var(--accent-red)';
+          counter.innerText = `${len} / ${minChars} characters minimum`;
+          submitBtn.disabled = true;
+          submitBtn.style.opacity = '0.5';
+          submitBtn.style.cursor = 'not-allowed';
+        }
+      });
+
+      textarea.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+          e.preventDefault();
+          doSubmit();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          doCancel();
+        }
+      });
+
+      cancelBtn.addEventListener('click', doCancel);
+      closeBtn.addEventListener('click', doCancel);
+      submitBtn.addEventListener('click', doSubmit);
+
+      setTimeout(() => {
+        textarea.focus();
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      }, 50);
     });
   },
 
@@ -866,28 +1038,48 @@ window.SteeringView = {
 
     let rationale = '';
     if (action === 'reject') {
-      rationale = prompt('Enter rationale for rejecting this candidate (>=10 characters):');
+      rationale = await this.promptRationale({
+        title: 'Reject Candidate Fact',
+        subtitle: `Specify why "${candidate.canonical_key}" is being rejected from memory ledger.`,
+        placeholder: 'Enter rejection rationale (>=10 characters)...',
+        minChars: 10,
+        confirmText: 'Reject Candidate',
+        confirmClass: 'btn-danger',
+      });
       if (!rationale) return;
-      if (rationale.trim().length < 10) {
-        alert('Review rationale must be at least 10 characters.');
-        return;
-      }
     } else if (action === 'merge') {
-      rationale = prompt('Enter rationale for merging with existing record (>=10 characters):', 'Merged with existing active claim');
+      rationale = await this.promptRationale({
+        title: 'Merge with Existing Record',
+        subtitle: `Merge "${candidate.canonical_key}" with existing active claim.`,
+        defaultValue: 'Merged with existing active claim',
+        placeholder: 'Enter merge rationale (>=10 characters)...',
+        minChars: 10,
+        confirmText: 'Merge & Accept',
+        confirmClass: 'btn-primary',
+      });
       if (!rationale) return;
-      if (rationale.trim().length < 10) {
-        alert('Review rationale must be at least 10 characters.');
-        return;
-      }
     } else if (action === 'defer') {
-      rationale = prompt('Optional deferral rationale:', 'Deferred for future review') || 'Deferred for future review';
-    } else if (action === 'accept') {
-      rationale = prompt('Enter acceptance rationale (>=10 characters):', 'Accepted architectural decision for production.');
+      rationale = await this.promptRationale({
+        title: 'Defer Candidate Review',
+        subtitle: `Defer review of "${candidate.canonical_key}" for future inspection.`,
+        defaultValue: 'Deferred for future review',
+        placeholder: 'Optional deferral note...',
+        minChars: 0,
+        confirmText: 'Defer Candidate',
+        confirmClass: 'btn-secondary',
+      });
       if (!rationale) return;
-      if (rationale.trim().length < 10) {
-        alert('Review rationale must be at least 10 characters.');
-        return;
-      }
+    } else if (action === 'accept') {
+      rationale = await this.promptRationale({
+        title: 'Accept Architectural Decision',
+        subtitle: `Accept "${candidate.canonical_key}" into canonical memory ledger.`,
+        defaultValue: 'Accepted architectural decision for production.',
+        placeholder: 'Enter acceptance rationale (>=10 characters)...',
+        minChars: 10,
+        confirmText: 'Approve & Ledger',
+        confirmClass: 'btn-primary',
+      });
+      if (!rationale) return;
     }
 
     try {
@@ -898,12 +1090,13 @@ window.SteeringView = {
         expected_content_hash: candidate.content_hash,
       });
       if (res && res.error) {
-        alert('Review error: ' + res.error);
+        window.App.showToast('Review error: ' + res.error, 'error');
         return;
       }
+      window.App.showToast(`Candidate ${action}ed successfully`, 'success');
       await this.loadHarvestQueue();
     } catch (err) {
-      alert('Error updating candidate: ' + err.message);
+      window.App.showToast('Error updating candidate: ' + err.message, 'error');
     }
   },
 
@@ -936,25 +1129,64 @@ window.SteeringView = {
             </div>
           </div>
           <label style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text-muted); display: block; margin-bottom: 4px;">Payload (JSON)</label>
-          <textarea id="harvest-edit-json" style="width: 100%; box-sizing: border-box; height: 240px; background: #0e141c; border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 10px; font-family: monospace; font-size: 11.5px; color: var(--text-primary); margin-bottom: 10px;">${this.escapeHtml(payloadStr)}</textarea>
+          <textarea id="harvest-edit-json" style="width: 100%; box-sizing: border-box; height: 200px; background: #0e141c; border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 10px; font-family: monospace; font-size: 11.5px; color: var(--text-primary); margin-bottom: 10px;">${this.escapeHtml(payloadStr)}</textarea>
+
           <label style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text-muted); display: block; margin-bottom: 4px;">Reviewer Rationale (>=10 characters required)</label>
-          <input type="text" id="harvest-edit-rationale" placeholder="Why were these edits made?" style="width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); border-radius: 6px; padding: 6px 10px; font-size: 12px; margin-bottom: 14px; color: var(--text-primary);">
+          <textarea id="harvest-edit-rationale" rows="3" placeholder="Why were these edits made?" style="width: 100%; box-sizing: border-box; background: #090d13; border: 1px solid var(--border-subtle); border-radius: 6px; padding: 8px 10px; font-size: 12.5px; color: var(--text-primary); line-height: 1.4; resize: vertical;"></textarea>
+
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; margin-bottom: 12px;">
+            <span id="harvest-edit-char-counter" style="font-size: 11.5px; font-weight: 600; font-family: 'SF Mono', monospace; color: var(--accent-red);">
+              0 / 10 characters required
+            </span>
+          </div>
+
+          <div id="harvest-edit-error-box" style="display: none; padding: 8px 12px; margin-bottom: 12px; border-radius: 6px; font-size: 12px; background: rgba(248, 81, 73, 0.12); border: 1px solid rgba(248, 81, 73, 0.3); color: var(--accent-red);"></div>
+
           <div style="display: flex; justify-content: flex-end; gap: 8px;">
             <button class="btn-secondary" id="btn-harvest-edit-cancel">Cancel</button>
-            <button class="btn-primary" id="btn-harvest-edit-save">Save & Accept</button>
+            <button class="btn-primary" id="btn-harvest-edit-save" disabled style="opacity: 0.5; cursor: not-allowed;">Save & Accept</button>
           </div>
         </div>
       </div>
     `;
 
+    const rationaleInput = host.querySelector('#harvest-edit-rationale');
+    const charCounter = host.querySelector('#harvest-edit-char-counter');
+    const saveBtn = host.querySelector('#btn-harvest-edit-save');
+    const errorBox = host.querySelector('#harvest-edit-error-box');
+
+    const updateCounter = () => {
+      const val = rationaleInput.value.trim();
+      const len = val.length;
+      if (len >= 10) {
+        charCounter.style.color = 'var(--accent-green)';
+        charCounter.innerText = `✓ ${len} characters`;
+        saveBtn.disabled = false;
+        saveBtn.style.opacity = '1';
+        saveBtn.style.cursor = 'pointer';
+      } else {
+        charCounter.style.color = 'var(--accent-red)';
+        charCounter.innerText = `${len} / 10 characters required`;
+        saveBtn.disabled = true;
+        saveBtn.style.opacity = '0.5';
+        saveBtn.style.cursor = 'not-allowed';
+      }
+    };
+
+    rationaleInput.addEventListener('input', () => {
+      errorBox.style.display = 'none';
+      updateCounter();
+    });
+
     host.querySelector('#btn-harvest-edit-cancel').addEventListener('click', () => { host.innerHTML = ''; });
-    host.querySelector('#btn-harvest-edit-save').addEventListener('click', async () => {
+    saveBtn.addEventListener('click', async () => {
       const jsonText = host.querySelector('#harvest-edit-json').value;
-      const rationale = host.querySelector('#harvest-edit-rationale').value.trim();
+      const rationale = rationaleInput.value.trim();
       const reviewer = host.querySelector('#harvest-modal-reviewer').value;
 
       if (rationale.length < 10) {
-        alert('Review rationale must be at least 10 non-whitespace characters.');
+        errorBox.style.display = 'block';
+        errorBox.innerText = 'Review rationale must be at least 10 non-whitespace characters.';
         return;
       }
 
@@ -962,10 +1194,14 @@ window.SteeringView = {
       try {
         editedObj = JSON.parse(jsonText);
       } catch (err) {
-        alert('Invalid JSON: ' + err.message);
+        errorBox.style.display = 'block';
+        errorBox.innerText = 'Invalid JSON in payload: ' + err.message;
         return;
       }
+
       try {
+        saveBtn.disabled = true;
+        saveBtn.innerText = 'Saving...';
         const res = await window.gms.reviewHarvestCandidate(candidate.candidate_id, {
           action: 'edit',
           reviewer: reviewer,
@@ -974,13 +1210,20 @@ window.SteeringView = {
           expected_content_hash: candidate.content_hash,
         });
         if (res && res.error) {
-          alert('Review error: ' + res.error);
+          saveBtn.disabled = false;
+          saveBtn.innerText = 'Save & Accept';
+          errorBox.style.display = 'block';
+          errorBox.innerText = 'Review error: ' + res.error;
           return;
         }
         host.innerHTML = '';
+        window.App.showToast('Candidate successfully edited and accepted into memory', 'success');
         await this.loadHarvestQueue();
       } catch (err) {
-        alert('Error saving candidate: ' + err.message);
+        saveBtn.disabled = false;
+        saveBtn.innerText = 'Save & Accept';
+        errorBox.style.display = 'block';
+        errorBox.innerText = 'Error saving candidate: ' + err.message;
       }
     });
   },

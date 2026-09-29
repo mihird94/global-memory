@@ -400,17 +400,44 @@ window.ActionInboxView = {
           </div>
 
           <div class="preview-warning" style="background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.25); border-radius: 8px; padding: 10px 14px; font-size: 11px; margin-bottom: 14px; color: #fbbf24;">
-            ⚠️ Invariant Enforced: Memory state remains read-only. To apply this change permanently, dispatch via standard reviewer workflow with verified hash.
+            ⚠️ Review the deterministic preview above before applying. This action will permanently modify memory state.
           </div>
 
           <div style="display: flex; justify-content: flex-end; gap: 8px;">
             <button class="btn-secondary" id="btn-close-preview-inner">Close Preview</button>
+            <button class="btn-primary" id="btn-apply-action" style="background: linear-gradient(135deg, #238636, #1f6feb);">Apply Action</button>
           </div>
         </div>
       `;
 
       body.querySelector('#btn-close-preview-inner').onclick = () => {
         modal.style.display = 'none';
+      };
+      body.querySelector('#btn-apply-action').onclick = async () => {
+        if (!confirm('Are you sure you want to apply this action? This will permanently modify memory state.')) return;
+        try {
+          const applyBtn = body.querySelector('#btn-apply-action');
+          applyBtn.disabled = true;
+          applyBtn.innerText = 'Applying…';
+          await window.gms.applyInboxAction({
+            inbox_id: prev.inbox_id || item.inbox_id || item.id,
+            action: prev.action,
+            reviewer: prev.reviewer || 'mihir',
+            expected_hash: prev.expected_hash || '',
+          });
+          modal.style.display = 'none';
+          window.App.showToast('Action applied successfully.', 'success');
+          window.App.refreshSnapshot();
+          await this.loadInbox(container);
+        } catch (applyErr) {
+          if (window.App && window.App.showToast) {
+            window.App.showToast(`Apply failed: ${applyErr.message}`, 'error');
+          } else {
+            console.error('Apply failed:', applyErr);
+          }
+          const applyBtn = body.querySelector('#btn-apply-action');
+          if (applyBtn) { applyBtn.disabled = false; applyBtn.innerText = 'Apply Action'; }
+        }
       };
     } catch (err) {
       body.innerHTML = `<div class="empty-state" style="color: #f87171;">Preview error: ${this.esc(err.message)}</div>`;
@@ -586,7 +613,11 @@ window.ActionInboxView = {
         container.querySelector('#modal-memory-repair').style.display = 'none';
         this.loadData(container);
       } catch (err) {
-        alert(`Failed to stage candidate: ${err.message}`);
+        if (window.App && window.App.showToast) {
+          window.App.showToast(`Failed to stage candidate: ${err.message}`, 'error');
+        } else {
+          console.error(`Failed to stage candidate: ${err.message}`);
+        }
       }
     };
   }

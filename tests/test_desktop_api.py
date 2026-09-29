@@ -124,12 +124,12 @@ class TestGMSDesktopAPI(unittest.TestCase):
         val_report2 = self.api.validate_memory_payload("trading.nvda", valid_payload)
         self.assertTrue(val_report2["valid"])
 
-        save_res2 = self.api.save_fact("trading.nvda", valid_payload)
+        save_res2 = self.api.save_fact("trading.nvda", valid_payload, agent="mihir")
         self.assertIn(save_res2["status"], ("success", "warning"))
         self.assertEqual(save_res2["key"], "trading.nvda")
 
     def test_delete_fact(self):
-        res = self.api.delete_fact("infra.node1")
+        res = self.api.delete_fact("infra.node1", agent="mihir")
         self.assertEqual(res["status"], "success")
 
         # Verify it is gone from semantic facts
@@ -205,7 +205,7 @@ class TestGMSDesktopAPI(unittest.TestCase):
         memory_mcp_server.quarantine_fact("infra.node2", json.dumps(prop_val), "worker_alpha", "main")
 
         # Promote it
-        res_accept = self.api.resolve_quarantine("infra.node2", "worker_alpha", "accept", reviewer="human-ui")
+        res_accept = self.api.resolve_quarantine("infra.node2", "worker_alpha", "accept", reviewer="mihir")
         self.assertEqual(res_accept["status"], "success")
 
         # Verify it is active in memory
@@ -216,7 +216,7 @@ class TestGMSDesktopAPI(unittest.TestCase):
         # Quarantine another item and discard it
         prop_discard = {"host": "bad_node", "ip": "0.0.0.0", "port": 0, "status": "offline"}
         memory_mcp_server.quarantine_fact("infra.bad", json.dumps(prop_discard), "bad_agent", "main")
-        res_reject = self.api.resolve_quarantine("infra.bad", "bad_agent", "reject", reviewer="human-ui")
+        res_reject = self.api.resolve_quarantine("infra.bad", "bad_agent", "reject", reviewer="mihir")
         self.assertEqual(res_reject["status"], "success")
 
         # Verify quarantine is clean
@@ -231,7 +231,7 @@ class TestGMSDesktopAPI(unittest.TestCase):
         # Attempt to accept with invalid edited value -> fails schema check
         res_fail = self.api.resolve_quarantine(
             "trading.aapl", "novice_agent", "accept",
-            edited_value={"ticker": "AAPL", "action": "still_wrong", "price": 200.0}
+            edited_value={"ticker": "AAPL", "action": "still_wrong", "price": 200.0}, reviewer="mihir"
         )
         self.assertEqual(res_fail["status"], "error")
         self.assertIn("Schema validation failed", res_fail["message"])
@@ -247,7 +247,7 @@ class TestGMSDesktopAPI(unittest.TestCase):
             "thesis": "Earnings breakout",
             "status": "open"
         }
-        res_ok = self.api.resolve_quarantine("trading.aapl", "novice_agent", "accept", edited_value=valid_val)
+        res_ok = self.api.resolve_quarantine("trading.aapl", "novice_agent", "accept", edited_value=valid_val, reviewer="mihir")
         self.assertEqual(res_ok["status"], "success")
 
         # Verify trading.aapl is in memory with the edited value

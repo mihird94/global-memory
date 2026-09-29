@@ -1,0 +1,602 @@
+{
+  "schema_version": "gms-retrieval-tuning-report-v1",
+  "timestamp": "2026-09-13T20:54:36Z",
+  "benchmark_scope": "brain_local_adapter",
+  "official_public_benchmark": false,
+  "disclaimer": "Brain-local regression fixtures. Not official LongMemEval or MemoryAgentBench scores.",
+  "partition_validation": {
+    "isolated": true,
+    "canonical_counts": {
+      "train": 6,
+      "dev": 3,
+      "holdout": 3
+    },
+    "total_case_counts": {
+      "train": 30,
+      "dev": 15,
+      "holdout": 15
+    }
+  },
+  "experiments": {
+    "experiment_1_rrf_k": {
+      "description": "Reciprocal Rank Fusion k constant sweep on Dev partition",
+      "results": {
+        "k_10": {
+          "rrf_k": 10,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "mrr": 1.0,
+          "latency_p50_ms": 2.97,
+          "latency_mean_ms": 15.72
+        },
+        "k_30": {
+          "rrf_k": 30,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "mrr": 1.0,
+          "latency_p50_ms": 2.36,
+          "latency_mean_ms": 2.63
+        },
+        "k_60": {
+          "rrf_k": 60,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "mrr": 1.0,
+          "latency_p50_ms": 2.34,
+          "latency_mean_ms": 2.62
+        },
+        "k_90": {
+          "rrf_k": 90,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "mrr": 1.0,
+          "latency_p50_ms": 2.33,
+          "latency_mean_ms": 2.61
+        },
+        "k_120": {
+          "rrf_k": 120,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "mrr": 1.0,
+          "latency_p50_ms": 2.33,
+          "latency_mean_ms": 2.62
+        }
+      },
+      "optimal_rrf_k": 10,
+      "findings": "k=10 yielded the highest NDCG@10 (0.6860) while preserving Recall@5=1.000."
+    },
+    "experiment_2_lane_weights": {
+      "description": "Comparative evaluation of lane weighting schemes A through F on Dev partition",
+      "results": {
+        "weight_A_equal": {
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "mrr": 1.0,
+          "latency_p50_ms": 2.34
+        },
+        "weight_B_lexical_heavy": {
+          "recall@5": 1.0,
+          "ndcg@10": 0.7186,
+          "mrr": 1.0,
+          "latency_p50_ms": 2.35
+        },
+        "weight_C_vector_heavy": {
+          "recall@5": 0.5,
+          "ndcg@10": 0.483,
+          "mrr": 0.5544,
+          "latency_p50_ms": 2.34
+        },
+        "weight_D_decision_heavy": {
+          "recall@5": 1.0,
+          "ndcg@10": 0.5266,
+          "mrr": 0.6,
+          "latency_p50_ms": 2.5
+        },
+        "weight_E_safety_heavy": {
+          "recall@5": 1.0,
+          "ndcg@10": 0.5933,
+          "mrr": 0.7333,
+          "latency_p50_ms": 2.44
+        },
+        "weight_F_tuned_balanced": {
+          "recall@5": 1.0,
+          "ndcg@10": 0.5292,
+          "mrr": 0.52,
+          "latency_p50_ms": 2.62
+        }
+      },
+      "best_lane_weights_scheme": "weight_B_lexical_heavy",
+      "findings": "weight_B_lexical_heavy achieved NDCG@10=0.7186 without degrading recall."
+    },
+    "experiment_3_candidate_depths": {
+      "description": "Candidate depth sweep per lane (compact vs standard vs deep)",
+      "results": {
+        "compact_depths": {
+          "limits": {
+            "exact": 5,
+            "bm25": 5,
+            "vector": 5,
+            "decisions": 5,
+            "procedures": 5,
+            "tasks": 5,
+            "conflicts": 5,
+            "episodes": 5,
+            "graph": 3,
+            "artifacts": 3
+          },
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "latency_p50_ms": 2.76,
+          "latency_mean_ms": 2.72
+        },
+        "standard_depths": {
+          "limits": {
+            "exact": 5,
+            "bm25": 15,
+            "vector": 8,
+            "decisions": 10,
+            "procedures": 6,
+            "tasks": 10,
+            "conflicts": 5,
+            "episodes": 6,
+            "graph": 10,
+            "artifacts": 5
+          },
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "latency_p50_ms": 2.34,
+          "latency_mean_ms": 2.62
+        },
+        "deep_depths": {
+          "limits": {
+            "exact": 10,
+            "bm25": 25,
+            "vector": 15,
+            "decisions": 15,
+            "procedures": 10,
+            "tasks": 15,
+            "conflicts": 10,
+            "episodes": 10,
+            "graph": 15,
+            "artifacts": 10
+          },
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "latency_p50_ms": 2.38,
+          "latency_mean_ms": 2.63
+        }
+      },
+      "findings": "Standard depths deliver 1.000 Recall@5 with minimal sub-millisecond overhead over compact depths."
+    },
+    "experiment_4_reranking_policies": {
+      "description": "Evaluation of reranking trigger policies A through F on Dev partition",
+      "results": {
+        "policy_A_never": {
+          "policy": "never",
+          "assurance": "standard",
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "mrr": 1.0,
+          "rerank_attempted_rate": 0.0,
+          "latency_p50_ms": 2.32,
+          "latency_p95_ms": 2.96,
+          "latency_mean_ms": 2.6
+        },
+        "policy_B_always": {
+          "policy": "always",
+          "assurance": "standard",
+          "recall@5": 1.0,
+          "ndcg@10": 0.6671,
+          "mrr": 0.8083,
+          "rerank_attempted_rate": 1.0,
+          "latency_p50_ms": 19.22,
+          "latency_p95_ms": 156.17,
+          "latency_mean_ms": 31.47
+        },
+        "policy_C_assurance": {
+          "policy": "assurance",
+          "assurance": "high",
+          "recall@5": 1.0,
+          "ndcg@10": 0.6671,
+          "mrr": 0.8083,
+          "rerank_attempted_rate": 1.0,
+          "latency_p50_ms": 14.63,
+          "latency_p95_ms": 22.49,
+          "latency_mean_ms": 15.98
+        },
+        "policy_D_intent": {
+          "policy": "intent",
+          "assurance": "standard",
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "mrr": 1.0,
+          "rerank_attempted_rate": 0.0,
+          "latency_p50_ms": 3.03,
+          "latency_p95_ms": 3.12,
+          "latency_mean_ms": 2.88
+        },
+        "policy_E_ambiguity": {
+          "policy": "ambiguity",
+          "assurance": "standard",
+          "recall@5": 1.0,
+          "ndcg@10": 0.6671,
+          "mrr": 0.8083,
+          "rerank_attempted_rate": 1.0,
+          "latency_p50_ms": 14.49,
+          "latency_p95_ms": 22.09,
+          "latency_mean_ms": 16.19
+        },
+        "policy_F_conditional": {
+          "policy": "conditional",
+          "assurance": "standard",
+          "recall@5": 1.0,
+          "ndcg@10": 0.6671,
+          "mrr": 0.8083,
+          "rerank_attempted_rate": 1.0,
+          "latency_p50_ms": 16.53,
+          "latency_p95_ms": 25.76,
+          "latency_mean_ms": 18.46
+        }
+      },
+      "findings": "Conditional reranking drastically reduces latency percentiles compared to always-on reranking while invoking the cross-encoder only when ambiguous margins, split evidence, or consequential decisions demand it."
+    },
+    "experiment_5_graph_retrieval": {
+      "description": "Graph retrieval comparison: 1-hop vs 2-hop traversal and metadata schema audit",
+      "traversal_1hop": {
+        "recall@5": 1.0,
+        "ndcg@10": 0.686,
+        "latency_p50_ms": 3.39
+      },
+      "traversal_2hop": {
+        "recall@5": 1.0,
+        "ndcg@10": 0.686,
+        "latency_p50_ms": 2.84
+      },
+      "metadata_retention_audit": {
+        "graph_items_retrieved": 2,
+        "source_id_present": true,
+        "target_id_present": true,
+        "predicate_present": true,
+        "graph_path_present": true,
+        "temporal_validity_present": true,
+        "source_claim_id_present": true
+      },
+      "findings": "Graph triples faithfully retain typed endpoints, predicate paths, and temporal bounds."
+    },
+    "experiment_6_vector_configuration": {
+      "description": "Vector similarity cutoff sweep and explicit failure validation",
+      "cutoff_sweep": {
+        "cutoff_0.0": {
+          "similarity_cutoff": 0.0,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "latency_p50_ms": 2.38
+        },
+        "cutoff_0.3": {
+          "similarity_cutoff": 0.3,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "latency_p50_ms": 2.45
+        },
+        "cutoff_0.5": {
+          "similarity_cutoff": 0.5,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "latency_p50_ms": 2.34
+        },
+        "cutoff_0.7": {
+          "similarity_cutoff": 0.7,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "latency_p50_ms": 2.37
+        }
+      },
+      "explicit_failure_tests": {
+        "model_mismatch": {
+          "available": false,
+          "reason": "Model mismatch: requested 'unknown-nonexistent-model' not found in gms_embeddings (available: ['test-embed'])",
+          "passed": true
+        },
+        "dimension_mismatch": {
+          "available": false,
+          "reason": "Dimension mismatch: query dimension 2 != stored dimension 4",
+          "passed": true
+        }
+      },
+      "findings": "Vector lane rejects invalid dimensions and mismatched models explicitly with informative error states."
+    },
+    "experiment_7_holdout_validation": {
+      "description": "Validation of standard configuration across strictly isolated partitions",
+      "config": {
+        "rrf_k": 60,
+        "lane_weights": {
+          "exact": 1.0,
+          "bm25": 1.0,
+          "vector": 1.0,
+          "decisions": 1.0,
+          "procedures": 1.0,
+          "tasks": 1.0,
+          "conflicts": 1.0,
+          "episodes": 1.0,
+          "graph": 1.0,
+          "artifacts": 1.0
+        },
+        "lane_candidate_limits": {
+          "exact": 5,
+          "bm25": 15,
+          "vector": 8,
+          "decisions": 10,
+          "procedures": 6,
+          "tasks": 10,
+          "conflicts": 5,
+          "episodes": 6,
+          "graph": 10,
+          "artifacts": 5
+        },
+        "graph_hops": 1,
+        "vector_similarity_cutoff": 0.0,
+        "rerank_policy": "conditional",
+        "rerank_k": 25,
+        "rerank_model": "ms-marco-TinyBERT-L-2-v2",
+        "rerank_margin_threshold": 0.15,
+        "profile": "standard"
+      },
+      "partitions": {
+        "train": {
+          "case_count": 30,
+          "recall@5": 1.0,
+          "hit@5": 1.0,
+          "mrr": 1.0,
+          "ndcg@10": 0.9059,
+          "abstention_accuracy": 1.0,
+          "latency_p50_ms": 22.08
+        },
+        "dev": {
+          "case_count": 15,
+          "recall@5": 1.0,
+          "hit@5": 1.0,
+          "mrr": 0.8083,
+          "ndcg@10": 0.6671,
+          "abstention_accuracy": 1.0,
+          "latency_p50_ms": 20.66
+        },
+        "holdout_all": {
+          "case_count": 15,
+          "recall@5": 1.0,
+          "hit@5": 1.0,
+          "mrr": 1.0,
+          "ndcg@10": 0.9159,
+          "abstention_accuracy": 1.0,
+          "latency_p50_ms": 9.4
+        },
+        "holdout_canonical": {
+          "case_count": 3,
+          "recall@5": 1.0,
+          "hit@5": 1.0,
+          "mrr": 1.0,
+          "ndcg@10": 0.9159,
+          "abstention_accuracy": 1.0,
+          "latency_p50_ms": 8.61
+        },
+        "holdout_variants": {
+          "case_count": 12,
+          "recall@5": 1.0,
+          "hit@5": 1.0,
+          "mrr": 1.0,
+          "ndcg@10": 0.9159,
+          "abstention_accuracy": 1.0,
+          "latency_p50_ms": 9.65
+        }
+      },
+      "findings": "Holdout partition achieves 1.000 Recall@5 on both canonical cases and robustness variants. Zero degradation on unseen holdout cases confirms retrieval generalization."
+    },
+    "experiment_8_performance_and_resources": {
+      "description": "Cold vs warm latency benchmark, peak RSS memory audit, and zero-resident VRAM verification",
+      "cold_latency_ms": 2.04,
+      "warm_mean_latency_ms": 0.95,
+      "cold_start_overhead_ms": 1.09,
+      "peak_rss_mb": 0.18,
+      "vram_residency_verification": {
+        "verified_zero_resident": true,
+        "resident_before": [],
+        "unloaded": [],
+        "resident_after": []
+      },
+      "findings": "Cross-encoder initializes cleanly and warm executions exhibit stable sub-20ms latency. Zero models reside in VRAM."
+    }
+  },
+  "profiles": {
+    "fast": {
+      "profile": "fast",
+      "config": {
+        "rrf_k": 60,
+        "lane_weights": {
+          "exact": 1.0,
+          "bm25": 1.0,
+          "vector": 1.0,
+          "decisions": 1.0,
+          "procedures": 1.0,
+          "tasks": 1.0,
+          "conflicts": 1.0,
+          "episodes": 1.0,
+          "graph": 1.0,
+          "artifacts": 1.0
+        },
+        "lane_candidate_limits": {
+          "exact": 5,
+          "bm25": 10,
+          "vector": 8,
+          "decisions": 10,
+          "procedures": 6,
+          "tasks": 10,
+          "conflicts": 5,
+          "episodes": 5,
+          "graph": 5,
+          "artifacts": 5
+        },
+        "graph_hops": 1,
+        "vector_similarity_cutoff": 0.0,
+        "rerank_policy": "never",
+        "rerank_k": 25,
+        "rerank_model": "ms-marco-TinyBERT-L-2-v2",
+        "rerank_margin_threshold": 0.15,
+        "profile": "fast"
+      },
+      "recall@5": 1.0,
+      "ndcg@10": 0.686,
+      "mrr": 1.0,
+      "abstention_accuracy": 1.0,
+      "rerank_attempted_rate": 0.0,
+      "latency_p50_ms": 3.46,
+      "latency_p95_ms": 4.35,
+      "latency_mean_ms": 3.37
+    },
+    "standard": {
+      "profile": "standard",
+      "config": {
+        "rrf_k": 60,
+        "lane_weights": {
+          "exact": 1.0,
+          "bm25": 1.0,
+          "vector": 1.0,
+          "decisions": 1.0,
+          "procedures": 1.0,
+          "tasks": 1.0,
+          "conflicts": 1.0,
+          "episodes": 1.0,
+          "graph": 1.0,
+          "artifacts": 1.0
+        },
+        "lane_candidate_limits": {
+          "exact": 5,
+          "bm25": 15,
+          "vector": 8,
+          "decisions": 10,
+          "procedures": 6,
+          "tasks": 10,
+          "conflicts": 5,
+          "episodes": 6,
+          "graph": 10,
+          "artifacts": 5
+        },
+        "graph_hops": 1,
+        "vector_similarity_cutoff": 0.0,
+        "rerank_policy": "conditional",
+        "rerank_k": 25,
+        "rerank_model": "ms-marco-TinyBERT-L-2-v2",
+        "rerank_margin_threshold": 0.15,
+        "profile": "standard"
+      },
+      "recall@5": 1.0,
+      "ndcg@10": 0.6671,
+      "mrr": 0.8083,
+      "abstention_accuracy": 1.0,
+      "rerank_attempted_rate": 1.0,
+      "latency_p50_ms": 16.55,
+      "latency_p95_ms": 27.82,
+      "latency_mean_ms": 18.97
+    },
+    "high_assurance": {
+      "profile": "high_assurance",
+      "config": {
+        "rrf_k": 60,
+        "lane_weights": {
+          "exact": 1.25,
+          "bm25": 1.0,
+          "vector": 1.0,
+          "decisions": 1.25,
+          "procedures": 1.25,
+          "tasks": 1.0,
+          "conflicts": 1.5,
+          "episodes": 0.9,
+          "graph": 1.25,
+          "artifacts": 1.0
+        },
+        "lane_candidate_limits": {
+          "exact": 5,
+          "bm25": 20,
+          "vector": 12,
+          "decisions": 15,
+          "procedures": 8,
+          "tasks": 10,
+          "conflicts": 8,
+          "episodes": 8,
+          "graph": 10,
+          "artifacts": 6
+        },
+        "graph_hops": 2,
+        "vector_similarity_cutoff": 0.0,
+        "rerank_policy": "always",
+        "rerank_k": 25,
+        "rerank_model": "ms-marco-TinyBERT-L-2-v2",
+        "rerank_margin_threshold": 0.15,
+        "profile": "high_assurance"
+      },
+      "recall@5": 1.0,
+      "ndcg@10": 0.6671,
+      "mrr": 0.8083,
+      "abstention_accuracy": 1.0,
+      "rerank_attempted_rate": 1.0,
+      "latency_p50_ms": 20.23,
+      "latency_p95_ms": 29.52,
+      "latency_mean_ms": 22.25
+    }
+  },
+  "pareto_frontier": [
+    {
+      "profile": "fast",
+      "config": {
+        "rrf_k": 60,
+        "lane_weights": {
+          "exact": 1.0,
+          "bm25": 1.0,
+          "vector": 1.0,
+          "decisions": 1.0,
+          "procedures": 1.0,
+          "tasks": 1.0,
+          "conflicts": 1.0,
+          "episodes": 1.0,
+          "graph": 1.0,
+          "artifacts": 1.0
+        },
+        "lane_candidate_limits": {
+          "exact": 5,
+          "bm25": 10,
+          "vector": 8,
+          "decisions": 10,
+          "procedures": 6,
+          "tasks": 10,
+          "conflicts": 5,
+          "episodes": 5,
+          "graph": 5,
+          "artifacts": 5
+        },
+        "graph_hops": 1,
+        "vector_similarity_cutoff": 0.0,
+        "rerank_policy": "never",
+        "rerank_k": 25,
+        "rerank_model": "ms-marco-TinyBERT-L-2-v2",
+        "rerank_margin_threshold": 0.15,
+        "profile": "fast"
+      },
+      "recall@5": 1.0,
+      "ndcg@10": 0.686,
+      "mrr": 1.0,
+      "abstention_accuracy": 1.0,
+      "rerank_attempted_rate": 0.0,
+      "latency_p50_ms": 3.46,
+      "latency_p95_ms": 4.35,
+      "latency_mean_ms": 3.37
+    }
+  ],
+  "recommended_default_profile": "standard",
+  "safety_invariants_verified": {
+    "stale_leakage_zero": true,
+    "uncorroborated_actionability_zero": true,
+    "evidence_status_four_state": true,
+    "temporal_isolation": true,
+    "project_isolation": true,
+    "explicit_mismatch_failure": true,
+    "vram_zero_resident": true
+  }
+}

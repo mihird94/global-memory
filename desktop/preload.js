@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('gms', {
   validateFact: (payload) => ipcRenderer.invoke('gms:validateFact', payload),
   getQuarantine: () => ipcRenderer.invoke('gms:getQuarantine'),
   resolveQuarantine: (payload) => ipcRenderer.invoke('gms:resolveQuarantine', payload),
+  stageInQuarantine: (payload) => ipcRenderer.invoke('gms:stageInQuarantine', payload),
   getTriageHistory: (limit) => ipcRenderer.invoke('gms:getTriageHistory', limit),
   getGraph: (params) => ipcRenderer.invoke('gms:getGraph', params),
   getConcepts: () => ipcRenderer.invoke('gms:getConcepts'),

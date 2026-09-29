@@ -24,7 +24,7 @@ class TestGMSEvalHarness(unittest.TestCase):
         self.assertEqual(
             categories,
             {
-                "knowledge_update",
+                "conflict_governance",
                 "quarantine",
                 "poisoning_resistance",
                 "episodic_recall",

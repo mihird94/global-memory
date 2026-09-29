@@ -9,7 +9,7 @@ them into semantic/facts.json before rebuilding the FAISS vector index.
 LLM Cascade (tried in order, first success wins):
   Tier 1: Antigravity CLI  (agy --print)       — frontier model, best quality
   Tier 2: Gemini CLI       (gemini -p)          — frontier fallback
-  Tier 3: Local Ollama     (qwen3:0.6b)         — always-available, zero cost
+  Tier 3: Local Ollama     (qwen3:8b)           — local, bounded fallback
 
 Run via cron at 3am daily:
     0 3 * * * <repo>/.venv/bin/python \\
@@ -99,7 +99,10 @@ GEMINI_BIN = _resolve_binary_path(
     Path.home() / ".local" / "bin" / "gemini",
     Path.home() / ".nvm" / "versions" / "node" / "current" / "bin" / "gemini",
 )
-OLLAMA_LLM = os.environ.get("DREAM_LLM_MODEL", "qwen3:0.6b")
+# qwen3:8b is the installed, policy-approved local reasoning baseline. Do not
+# silently fall back to a smaller/missing model: a failed preflight is more
+# useful than a run that looks successful but never harvested anything.
+OLLAMA_LLM = os.environ.get("DREAM_LLM_MODEL", "qwen3:8b")
 
 # Model selection — low-credit, high-value defaults
 # Antigravity: Gemini 3.5 Flash (Medium) — low-credit option
@@ -528,6 +531,76 @@ def rebuild_faiss_index() -> bool:
         return False
 
 
+def sync_json_and_sqlite_claims(mem_root: Path | None = None) -> dict[str, Any]:
+    """Ensure bidirectional synchronization between facts.json and gms_claims."""
+    root = mem_root or MEM_ROOT
+    db_path = root / "gms_trust.sqlite"
+    facts_path = root / "semantic" / "facts.json"
+    if not db_path.exists():
+        return {"status": "skipped", "reason": "database not found"}
+
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+
+        # 1. Load active claims from SQLite
+        c.execute("SELECT claim_id, memory_key, value, agent_id, confidence FROM gms_claims WHERE memory_kind='semantic' AND status='active'")
+        active_claims = {r["memory_key"]: (r["claim_id"], r["value"], r["agent_id"], r["confidence"]) for r in c.fetchall()}
+
+        # 2. Load facts.json
+        facts = json.loads(facts_path.read_text(encoding="utf-8")) if facts_path.exists() else {}
+
+        divergences = []
+        updated_in_json = 0
+        added_to_claims = 0
+
+        # Check for claims missing or differing in facts.json
+        for key, (cid, claim_val, agent, conf) in active_claims.items():
+            if key not in facts:
+                # Add to facts.json
+                facts[key] = claim_val
+                updated_in_json += 1
+                divergences.append({"key": key, "action": "added_to_json", "val": str(claim_val)[:60]})
+            else:
+                json_val = str(facts[key]).strip()
+                c_val = str(claim_val).strip()
+                if json_val != c_val:
+                    # Reconciliation: update facts.json with authoritative active claim
+                    facts[key] = claim_val
+                    updated_in_json += 1
+                    divergences.append({"key": key, "action": "reconciled_json_to_claim", "from": json_val[:60], "to": c_val[:60]})
+
+        # Check for keys in facts.json missing from active claims
+        for key, val in facts.items():
+            if key not in active_claims:
+                val_str = json.dumps(val, sort_keys=True) if isinstance(val, (dict, list)) else str(val)
+                c.execute("""
+                    INSERT INTO gms_claims (memory_kind, memory_key, value, agent_id, branch, status, confidence, contradiction_type, created_at)
+                    VALUES ('semantic', ?, ?, 'system-sync', 'main', 'active', 0.95, 'bootstrap_sync', CURRENT_TIMESTAMP)
+                """, (key, val_str))
+                added_to_claims += 1
+                divergences.append({"key": key, "action": "added_to_claims", "val": val_str[:60]})
+
+        conn.commit()
+        conn.close()
+
+        # Write updated facts.json atomically if any changes occurred
+        if updated_in_json > 0 and facts_path.parent.exists():
+            facts_path.write_text(json.dumps(facts, indent=2, sort_keys=True), encoding="utf-8")
+
+        return {
+            "status": "synchronized",
+            "updated_in_json": updated_in_json,
+            "added_to_claims": added_to_claims,
+            "divergences_resolved": len(divergences),
+            "divergences": divergences
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 def git_commit_memories() -> None:
     """Commit the memories directory to git if it's a repo."""
     try:
@@ -558,26 +631,6 @@ def git_commit_memories() -> None:
     except Exception as e:
         log(f"git commit error: {e}")
 
-
-def append_dream_cycle_log(new_facts_count: int, provider: str = "unknown") -> None:
-    """Write a brief record to episodic journal so agents know the cycle ran."""
-    today = datetime.now().strftime("%Y-%m-%d")
-    now = datetime.now().strftime("%H:%M")
-    target = MEM_ROOT / "episodic" / "history" / f"{today}.md"
-    target.parent.mkdir(parents=True, exist_ok=True)
-
-    entry = (
-        f"\n### {today} [{now}] - DreamCycle - Nightly Consolidation\n"
-        f"- Provider used: {provider}\n"
-        f"- Extracted {new_facts_count} new semantic fact(s) (routed via trust gateway).\n"
-        f"- FAISS index rebuilt.\n"
-    )
-    if DRY_RUN:
-        log(f"DRY RUN — would append to {target}:\n{entry}")
-        return
-    with open(target, "a") as f:
-        f.write(entry)
-    log(f"journal updated: {target}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1123,6 +1176,12 @@ def append_dream_cycle_log(new_facts_count: int = 0, provider: str = "unknown", 
     today = datetime.now().strftime("%Y-%m-%d")
     now = datetime.now().strftime("%H:%M")
     target = MEM_ROOT / "episodic" / "history" / f"{today}.md"
+
+    # Avoid creating 169-byte empty phantom files if there was no activity and no provider
+    if not target.exists() and new_facts_count == 0 and candidates_staged == 0 and provider in ("none", "unknown"):
+        log("No consolidation activity and no provider used; skipping phantom history creation.")
+        return
+
     target.parent.mkdir(parents=True, exist_ok=True)
 
     if candidates_staged > 0:
@@ -1235,6 +1294,21 @@ def main() -> int:
         rejections: list[dict] = []
         would_stage_candidates: list[str] = []
 
+        # Pass 0: Automated Production Pollution Audit
+        pollution_summary = {"pollutants_found": 0, "status": "clean"}
+        if not is_dry_run:
+            try:
+                from pollution_audit import run_pollution_audit
+                p_audit = run_pollution_audit(db_path=MEM_ROOT / "gms_trust.sqlite", mem_root=MEM_ROOT)
+                total_p = p_audit.get("total_pollutants", 0)
+                pollution_summary = {"pollutants_found": total_p, "status": "pollutants_detected" if total_p > 0 else "clean"}
+                if total_p > 0:
+                    log(f"Pass 0 Pollution Audit: detected {total_p} test pollutants; isolated.")
+                else:
+                    log("Pass 0 Pollution Audit: clean (0 test pollutants).")
+            except Exception as e:
+                log(f"Pass 0 Pollution Audit error: {e}")
+
         # 2.5 Concept enrichment queue drain (nightly bounded batch)
         if not is_dry_run and os.environ.get("CONCEPT_ENRICHMENT_ENABLED", "1") == "1":
             try:
@@ -1247,6 +1321,8 @@ def main() -> int:
             except Exception as e:
                 log(f"Concept enrichment error: {e}")
 
+        extraction_status = "not_needed"
+        extraction_error = None
         if not journal_text:
             log("No episodic entries found for today — skipping LLM extraction")
         else:
@@ -1263,6 +1339,9 @@ def main() -> int:
             source_hash = hashlib.sha256(journal_text.encode("utf-8")).hexdigest()
 
             harvested, provider_used = extract_facts_with_cascade(journal_text, existing_facts)
+            extraction_status = "harvested" if provider_used != "none" else "no_provider_succeeded"
+            if provider_used == "none":
+                extraction_error = "All configured extractors failed or returned no schema-valid candidates."
 
             if isinstance(harvested, list):
                 candidates_to_process = harvested
@@ -1367,6 +1446,20 @@ def main() -> int:
         else:
             log("DRY RUN — skipping autonomous curation writes")
 
+        # 5.7 Split-Brain Store Reconciliation (JSON <-> SQLite)
+        sync_result = {"status": "skipped"}
+        if not is_dry_run:
+            try:
+                sync_result = sync_json_and_sqlite_claims(MEM_ROOT)
+                log(
+                    f"Pass 5.7 Store Reconciliation: {sync_result.get('status')} "
+                    f"(updated_in_json={sync_result.get('updated_in_json', 0)}, "
+                    f"added_to_claims={sync_result.get('added_to_claims', 0)}, "
+                    f"divergences_resolved={sync_result.get('divergences_resolved', 0)})"
+                )
+            except Exception as e:
+                log(f"Pass 5.7 Store Reconciliation error: {e}")
+
         # 6. Rebuild FAISS index
         if not is_dry_run:
             rebuild_faiss_index()
@@ -1413,9 +1506,10 @@ def main() -> int:
         duration = round(time.time() - start_time, 2)
         log(f"Dream Cycle complete in {duration}s. Provider used: {provider_used}")
 
+        final_status = "degraded" if extraction_status == "no_provider_succeeded" else "completed"
         if is_dry_run:
             status.update({
-                "status": "completed",
+                "status": final_status,
                 "dry_run": True,
                 "durable_writes": 0,
                 "provider": provider_used,
@@ -1432,10 +1526,12 @@ def main() -> int:
                 "model_unload": {"ollama": "unloaded" if provider_used == "ollama" else "not_needed"},
                 "duration_seconds": duration,
                 "exit_code": 0,
+                "extraction_status": extraction_status,
+                "degraded_reason": extraction_error,
             })
         else:
             status.update({
-                "status": "completed",
+                "status": final_status,
                 "dry_run": False,
                 "durable_writes": staged_count + promoted_count,
                 "provider": provider_used,
@@ -1450,11 +1546,16 @@ def main() -> int:
                 "model_unload": {"ollama": "unloaded" if provider_used == "ollama" else "not_needed"},
                 "duration_seconds": duration,
                 "exit_code": 0,
+                "extraction_status": extraction_status,
+                "degraded_reason": extraction_error,
             })
 
         global LAST_RUN_STATUS
         LAST_RUN_STATUS = status
-        write_dream_cycle_status(status)
+        # A dry run is an observability-only check. It must not overwrite the
+        # status of the last real curation run.
+        if not is_dry_run:
+            write_dream_cycle_status(status)
         return 0
     except Exception as e:
         duration = round(time.time() - start_time, 2)

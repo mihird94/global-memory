@@ -67,7 +67,9 @@ window.App = {
       dreamInd.addEventListener('click', async () => {
         if (window.gms.getDreamCycleStatus) {
           const st = await window.gms.getDreamCycleStatus();
-          const info = `Last Run: ${st.timestamp || 'Never'}\nStatus: ${st.status || 'idle'}\nProvider: ${st.provider || 'none'}\nFacts Promoted: ${st.facts_promoted || 0}\nDuration: ${st.duration_seconds || 0}s\n\nTrigger a new consolidation now?`;
+          const noExtractor = st.status === 'degraded' || (st.status === 'completed' && (!st.provider || st.provider === 'none'));
+          const health = noExtractor ? `\nReason: ${st.degraded_reason || 'No extractor succeeded.'}` : '';
+          const info = `Last Run: ${st.timestamp || 'Never'}\nStatus: ${st.status || 'idle'}\nProvider: ${st.provider || 'none'}\nExtraction: ${st.extraction_status || 'unknown'}\nFacts Promoted: ${st.facts_promoted || 0}\nDuration: ${st.duration_seconds || 0}s${health}\n\nTrigger a new consolidation now?`;
           if (confirm(info)) {
             if (window.gms.triggerDreamCycle) {
               await window.gms.triggerDreamCycle();
@@ -170,9 +172,12 @@ window.App = {
         window.gms.getDreamCycleStatus().then((st) => {
           const el = document.getElementById('dream-cycle-status-text');
           if (el && st) {
-            if (st.status === 'completed') {
+            if (st.status === 'completed' && st.provider && st.provider !== 'none') {
               el.innerText = `Consolidated (${st.provider || 'auto'})`;
               el.parentElement.title = `Last Run: ${st.timestamp}\nProvider: ${st.provider}\nFacts: ${st.facts_promoted}\nDuration: ${st.duration_seconds}s\nClick to inspect or run now`;
+            } else if (st.status === 'degraded' || (st.status === 'completed' && (!st.provider || st.provider === 'none'))) {
+              el.innerText = 'Curation: Degraded';
+              el.parentElement.title = `Last Run: ${st.timestamp}\n${st.degraded_reason || 'No extractor succeeded.'}\nClick to inspect or run now`;
             } else if (st.status === 'running') {
               el.innerText = `Consolidating...`;
             } else {
@@ -306,7 +311,9 @@ window.App = {
       const val = document.getElementById('edit-fact-val').value.trim();
 
       try {
-        const res = await window.gms.saveFact({ key, value: val, agent: 'human-ui' });
+        const agent = prompt('Record this change as which registered identity? (mihir, codex, antigravity, gemini, system, cli)', 'mihir');
+        if (!agent) return;
+        const res = await window.gms.saveFact({ key, value: val, agent });
         if (res.status === 'error') {
           this.showToast(`Error: ${res.message}`, 'error');
         } else {
@@ -326,7 +333,10 @@ window.App = {
       if (!confirm(`Are you sure you want to delete / retract fact '${key}'?`)) return;
 
       try {
-        await window.gms.deleteFact({ key, agent: 'human-ui' });
+        const agent = prompt('Retract this fact as which registered identity? (mihir, codex, antigravity, gemini, system, cli)', 'mihir');
+        if (!agent) return;
+        const result = await window.gms.deleteFact({ key, agent });
+        if (result.status === 'error') throw new Error(result.message);
         this.showToast(`Deleted fact '${key}'`, 'warning');
         editModal.classList.remove('active');
         this.refreshSnapshot();
@@ -350,10 +360,17 @@ window.App = {
   openEditFactModal(memory) {
     const modal = document.getElementById('modal-edit-fact');
     if (!modal) return;
-    document.getElementById('edit-fact-key').value = memory.key;
-    const valStr = typeof memory.value === 'object' ? JSON.stringify(memory.value, null, 2) : String(memory.value);
+    document.getElementById('edit-fact-key').value = memory.key || '';
+    const valStr = typeof memory.value === 'object' ? JSON.stringify(memory.value, null, 2) : String(memory.value || '');
     document.getElementById('edit-fact-val').value = valStr;
-    document.getElementById('edit-validation-feedback').innerHTML = '';
+    const feedback = document.getElementById('edit-validation-feedback');
+    if (feedback) {
+      if (memory.error) {
+        feedback.innerHTML = `<span style="color: var(--accent-red);">✕ Schema Violation: ${memory.error}</span>`;
+      } else {
+        feedback.innerHTML = '';
+      }
+    }
     modal.classList.add('active');
   },
 

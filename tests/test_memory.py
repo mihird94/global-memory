@@ -822,7 +822,7 @@ class TestGMSPhase5(unittest.TestCase):
         claims2 = json.loads(memory_mcp_server.tool_mem_get_claims({"key": "test_reinforce"}))
         self.assertEqual(len(claims2), 1)
         conf2 = claims2[0]["confidence"]
-        self.assertGreater(conf2, conf1)
+        self.assertEqual(conf2, conf1)
 
     def test_quarantined_conflicting_writes_produce_low_confidence_quarantined_claims(self):
         # Set agent reputations

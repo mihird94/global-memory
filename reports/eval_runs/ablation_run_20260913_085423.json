@@ -1,0 +1,995 @@
+{
+  "schema_version": "gms-retrieval-ablation-report-v1",
+  "timestamp": "2026-09-13T15:54:23Z",
+  "benchmark_scope": "brain_local_adapter",
+  "official_public_benchmark": false,
+  "strategies": {
+    "lexical_bm25": {
+      "strategy": "lexical_bm25",
+      "lanes_used": [
+        "bm25"
+      ],
+      "reranking_enabled": false,
+      "available": true,
+      "reason": null,
+      "executed_lane_sets": [
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ],
+        [
+          "bm25"
+        ]
+      ],
+      "queries_evaluated": 45,
+      "mean_recall@5": 0.993,
+      "mean_hit@5": 1.0,
+      "mean_mrr": 0.881,
+      "mean_ndcg@10": 0.662,
+      "latency": {
+        "p50": 0.63,
+        "p90": 0.77,
+        "p95": 0.89,
+        "p99": 1.31,
+        "mean": 0.57,
+        "count": 45
+      }
+    },
+    "dense_vector": {
+      "strategy": "dense_vector",
+      "lanes_used": [
+        "vector"
+      ],
+      "reranking_enabled": false,
+      "available": false,
+      "reason": "Requested lane produced no usable candidates in model-free evaluation.",
+      "executed_lane_sets": [
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ],
+        [
+          "vector"
+        ]
+      ],
+      "queries_evaluated": 45,
+      "mean_recall@5": 0.0,
+      "mean_hit@5": 0.0,
+      "mean_mrr": 0.0,
+      "mean_ndcg@10": 0.0,
+      "latency": {
+        "p50": 0.02,
+        "p90": 0.03,
+        "p95": 0.03,
+        "p99": 0.04,
+        "mean": 0.02,
+        "count": 45
+      }
+    },
+    "relational_graph": {
+      "strategy": "relational_graph",
+      "lanes_used": [
+        "graph"
+      ],
+      "reranking_enabled": false,
+      "available": false,
+      "reason": "Requested lane produced no usable candidates in model-free evaluation.",
+      "executed_lane_sets": [
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ],
+        [
+          "graph"
+        ]
+      ],
+      "queries_evaluated": 45,
+      "mean_recall@5": 0.0,
+      "mean_hit@5": 0.0,
+      "mean_mrr": 0.0,
+      "mean_ndcg@10": 0.0,
+      "latency": {
+        "p50": 0.23,
+        "p90": 0.28,
+        "p95": 0.3,
+        "p99": 0.68,
+        "mean": 0.25,
+        "count": 45
+      }
+    },
+    "hybrid_rrf": {
+      "strategy": "hybrid_rrf",
+      "lanes_used": [
+        "exact",
+        "bm25",
+        "vector",
+        "graph",
+        "decisions",
+        "procedures",
+        "tasks",
+        "conflicts"
+      ],
+      "reranking_enabled": false,
+      "available": true,
+      "reason": null,
+      "executed_lane_sets": [
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ],
+        [
+          "bm25",
+          "conflicts",
+          "decisions",
+          "exact",
+          "graph",
+          "procedures",
+          "tasks",
+          "vector"
+        ]
+      ],
+      "queries_evaluated": 45,
+      "mean_recall@5": 0.852,
+      "mean_hit@5": 0.889,
+      "mean_mrr": 0.829,
+      "mean_ndcg@10": 0.556,
+      "latency": {
+        "p50": 2.22,
+        "p90": 2.44,
+        "p95": 2.48,
+        "p99": 2.94,
+        "mean": 2.14,
+        "count": 45
+      }
+    },
+    "hybrid_reranked": {
+      "strategy": "hybrid_reranked",
+      "lanes_used": [
+        "exact",
+        "bm25",
+        "vector",
+        "graph",
+        "decisions",
+        "procedures",
+        "tasks",
+        "conflicts"
+      ],
+      "available": false,
+      "reason": "The context retrieval planner does not expose a cross-encoder reranking stage.",
+      "reranking_enabled": false,
+      "queries_evaluated": 0,
+      "mean_recall@5": null,
+      "mean_hit@5": null,
+      "mean_mrr": null,
+      "mean_ndcg@10": null,
+      "latency": {
+        "p50": 0.0,
+        "p90": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "mean": 0.0,
+        "count": 0
+      }
+    }
+  }
+}

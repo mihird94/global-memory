@@ -55,29 +55,55 @@ window.DailyNotesView = {
     const harvestBtn = container.querySelector('#btn-harvest-note');
     const closeHarvestBtn = container.querySelector('#btn-close-harvest-card');
 
+    // Helper: parse YYYY-MM-DD as local date (not UTC) to avoid timezone shift bugs
+    const parseLocalDate = (dateStr) => {
+      const [y, m, d] = dateStr.split('-').map(Number);
+      return new Date(y, m - 1, d);
+    };
+    const formatDate = (d) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+
+    // Dirty-check: warn if editor has unsaved changes
+    const confirmIfDirty = () => {
+      const editor = document.getElementById('daily-note-editor');
+      if (editor && this._savedContent !== undefined && editor.value !== this._savedContent) {
+        return confirm('You have unsaved changes. Discard and navigate away?');
+      }
+      return true;
+    };
+
     dateInput.addEventListener('change', (e) => {
+      if (!confirmIfDirty()) { dateInput.value = this.currentDate; return; }
       this.currentDate = e.target.value;
       this.loadNote();
     });
 
     prevBtn.addEventListener('click', () => {
-      const d = new Date(this.currentDate);
+      if (!confirmIfDirty()) return;
+      const d = parseLocalDate(this.currentDate);
       d.setDate(d.getDate() - 1);
-      this.currentDate = d.toISOString().split('T')[0];
+      this.currentDate = formatDate(d);
       dateInput.value = this.currentDate;
       this.loadNote();
     });
 
     nextBtn.addEventListener('click', () => {
-      const d = new Date(this.currentDate);
+      if (!confirmIfDirty()) return;
+      const d = parseLocalDate(this.currentDate);
       d.setDate(d.getDate() + 1);
-      this.currentDate = d.toISOString().split('T')[0];
+      this.currentDate = formatDate(d);
       dateInput.value = this.currentDate;
       this.loadNote();
     });
 
     todayBtn.addEventListener('click', () => {
-      this.currentDate = new Date().toISOString().split('T')[0];
+      if (!confirmIfDirty()) return;
+      const now = new Date();
+      this.currentDate = formatDate(now);
       dateInput.value = this.currentDate;
       this.loadNote();
     });
@@ -92,6 +118,107 @@ window.DailyNotesView = {
     }
   },
 
+  pendingSnippet: null,
+
+  async openHistoricalNote(date, snippet = '') {
+    if (date) {
+      this.currentDate = date;
+    }
+    this.pendingSnippet = snippet || null;
+
+    if (window.App) {
+      if (window.App.activeView !== 'daily_notes') {
+        window.App.switchView('daily_notes');
+      } else {
+        const dateInput = document.getElementById('daily-note-date');
+        if (dateInput) dateInput.value = this.currentDate;
+        await this.loadNote();
+      }
+    }
+  },
+
+  highlightSnippet(snippet) {
+    if (!snippet) return;
+    const editor = document.getElementById('daily-note-editor');
+    if (!editor) return;
+
+    const fullText = editor.value || '';
+    if (!fullText) return;
+
+    // Clean snippet: remove markdown headers like "### YYYY-MM-DD [HH:MM] - Codex - " or score prefixes
+    const cleanSnippet = snippet
+      .replace(/^###\s+\d{4}-\d{2}-\d{2}\s+\[\d{2}:\d{2}\]\s*-\s*[^-]+-\s*/i, '')
+      .replace(/^\d+\.\s+score=[\d.]+\s+/i, '')
+      .trim();
+
+    let startIndex = -1;
+    let matchLen = 0;
+
+    // 1. Try exact cleaned snippet match
+    if (cleanSnippet.length >= 5) {
+      startIndex = fullText.toLowerCase().indexOf(cleanSnippet.toLowerCase());
+      if (startIndex !== -1) {
+        matchLen = cleanSnippet.length;
+      }
+    }
+
+    // 2. Try raw snippet match
+    if (startIndex === -1 && snippet.trim().length >= 5) {
+      const raw = snippet.trim();
+      startIndex = fullText.toLowerCase().indexOf(raw.toLowerCase());
+      if (startIndex !== -1) {
+        matchLen = raw.length;
+      }
+    }
+
+    // 3. Try clause/sentence segments (split by punctuation or newlines)
+    if (startIndex === -1) {
+      const phrases = cleanSnippet
+        .split(/[.\n—–;]/)
+        .map((s) => s.trim())
+        .filter((s) => s.length >= 15);
+      for (const phrase of phrases) {
+        startIndex = fullText.toLowerCase().indexOf(phrase.toLowerCase());
+        if (startIndex !== -1) {
+          matchLen = phrase.length;
+          break;
+        }
+      }
+    }
+
+    // 4. Try first 5-7 words
+    if (startIndex === -1) {
+      const words = cleanSnippet.split(/\s+/).slice(0, 6).join(' ');
+      if (words.length >= 10) {
+        startIndex = fullText.toLowerCase().indexOf(words.toLowerCase());
+        if (startIndex !== -1) {
+          matchLen = words.length;
+        }
+      }
+    }
+
+    if (startIndex !== -1) {
+      const endIndex = startIndex + matchLen;
+      editor.focus();
+      editor.setSelectionRange(startIndex, endIndex);
+
+      // Scroll so the match is vertically centered or near the top
+      const linesBefore = fullText.substring(0, startIndex).split('\n').length;
+      const totalLines = fullText.split('\n').length;
+      const lineHeight = editor.scrollHeight / (totalLines || 1);
+      editor.scrollTop = Math.max(0, (linesBefore - 3) * lineHeight);
+
+      // Flash visual highlight indicator on editor border
+      editor.style.transition = 'box-shadow 0.3s ease, border-color 0.3s ease';
+      editor.style.boxShadow = '0 0 0 3px rgba(56, 189, 248, 0.45)';
+      editor.style.borderColor = 'var(--accent-cyan)';
+      setTimeout(() => {
+        editor.style.boxShadow = '';
+        editor.style.borderColor = '';
+      }, 2200);
+    }
+  },
+
   async loadNote() {
     const editor = document.getElementById('daily-note-editor');
     const pathLabel = document.getElementById('note-filepath-label');
@@ -100,7 +227,16 @@ window.DailyNotesView = {
     try {
       const res = await window.gms.getDailyNote(this.currentDate);
       editor.value = res.content || '';
+      this._savedContent = editor.value;
       if (pathLabel) pathLabel.innerText = res.path;
+
+      if (this.pendingSnippet) {
+        const targetSnippet = this.pendingSnippet;
+        this.pendingSnippet = null;
+        setTimeout(() => {
+          this.highlightSnippet(targetSnippet);
+        }, 80);
+      }
     } catch (err) {
       window.App.showToast(`Error loading note: ${err.message}`, 'error');
     }
@@ -115,6 +251,7 @@ window.DailyNotesView = {
         date: this.currentDate,
         content: editor.value,
       });
+      this._savedContent = editor.value;
       window.App.showToast(`Note saved for ${this.currentDate}`, 'success');
     } catch (err) {
       window.App.showToast(`Failed to save: ${err.message}`, 'error');
@@ -154,23 +291,106 @@ window.DailyNotesView = {
         </div>
 
         ${savedCount > 0 ? `
-          <div style="margin-bottom: 10px;">
-            <div style="font-size: 12px; font-weight: 600; color: var(--accent-green); margin-bottom: 4px;">✓ Facts Accepted & Ledgered:</div>
-            <ul style="padding-left: 20px; font-size: 12.5px; font-family: 'SF Mono', monospace;">
-              ${report.facts_saved.map((f) => `<li><strong>${f.key}</strong>: ${JSON.stringify(f.value)}</li>`).join('')}
+          <div style="margin-bottom: 12px;">
+            <div style="font-size: 12px; font-weight: 600; color: var(--accent-green); margin-bottom: 6px;">✓ Facts Accepted & Ledgered:</div>
+            <ul style="padding-left: 20px; font-size: 12.5px; font-family: 'SF Mono', monospace; margin: 0;">
+              ${report.facts_saved.map((f) => `<li><strong>${this.escapeHtml(f.key)}</strong>: ${this.escapeHtml(JSON.stringify(f.value))}</li>`).join('')}
             </ul>
           </div>
         ` : ''}
 
         ${rejectedCount > 0 ? `
           <div style="margin-bottom: 10px;">
-            <div style="font-size: 12px; font-weight: 600; color: var(--accent-red); margin-bottom: 4px;">✕ Schema Violations (Rejected):</div>
-            <ul style="padding-left: 20px; font-size: 12.5px; font-family: 'SF Mono', monospace; color: var(--accent-red);">
-              ${report.facts_rejected.map((f) => `<li><strong>${f.key}</strong>: ${f.error}</li>`).join('')}
-            </ul>
+            <div style="font-size: 12px; font-weight: 600; color: var(--accent-red); margin-bottom: 8px;">✕ Schema Violations (Action Required):</div>
+            <div class="rejected-facts-list" style="display: flex; flex-direction: column; gap: 8px;">
+              ${report.facts_rejected.map((f, idx) => {
+                const valPreview = f.value !== undefined
+                  ? (typeof f.value === 'object' ? JSON.stringify(f.value) : String(f.value))
+                  : '';
+                return `
+                  <div class="rejected-fact-card" data-idx="${idx}" style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 10px 14px; background: rgba(248, 81, 73, 0.08); border: 1px solid rgba(248, 81, 73, 0.25); border-radius: 6px;">
+                    <div style="flex: 1; min-width: 0;">
+                      <div style="display: flex; align-items: baseline; gap: 8px;">
+                        <strong style="color: var(--accent-red); font-family: 'SF Mono', monospace; font-size: 13px;">${this.escapeHtml(f.key)}</strong>
+                        ${valPreview ? `<span style="font-size: 11px; font-family: 'SF Mono', monospace; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px;">${this.escapeHtml(valPreview)}</span>` : ''}
+                      </div>
+                      <div style="font-size: 12px; color: #f87171; margin-top: 4px;">
+                        ${this.escapeHtml(f.error)}
+                      </div>
+                    </div>
+                    <div style="display: flex; gap: 8px; flex-shrink: 0; align-items: center;">
+                      <button class="btn-secondary btn-sm btn-stage-quarantine" data-idx="${idx}" style="font-size: 11.5px; padding: 4px 10px;" title="Stage into Quarantine for Steering triage">
+                        <span>⚠️ Stage in Quarantine</span>
+                      </button>
+                      <button class="btn-primary btn-sm btn-fix-fact" data-idx="${idx}" style="font-size: 11.5px; padding: 4px 10px;" title="Open editor to correct schema errors and ledger fact">
+                        <span>✏️ Fix Fact</span>
+                      </button>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
           </div>
         ` : ''}
       `;
+
+      // Bind remediation buttons for rejected facts
+      harvestContent.querySelectorAll('.btn-stage-quarantine').forEach((btn) => {
+        btn.addEventListener('click', async (e) => {
+          const idx = Number(e.currentTarget.dataset.idx);
+          const item = report.facts_rejected[idx];
+          if (!item) return;
+
+          const button = e.currentTarget;
+          try {
+            button.disabled = true;
+            button.innerText = 'Staging...';
+            const res = await window.gms.stageInQuarantine({
+              fact_key: item.key,
+              value: item.value !== undefined ? item.value : (item.raw_value || ''),
+              agent_id: 'daily-note',
+              branch: 'main',
+            });
+            if (res && res.status === 'success') {
+              button.innerHTML = '<span>✓ Staged</span>';
+              button.style.borderColor = 'var(--accent-green)';
+              button.style.color = 'var(--accent-green)';
+              window.App.showToast(`Staged "${item.key}" into Quarantine for Steering triage`, 'success');
+              if (window.App && window.App.refreshSnapshot) {
+                window.App.refreshSnapshot();
+              }
+            } else {
+              button.disabled = false;
+              button.innerText = '⚠️ Stage in Quarantine';
+              window.App.showToast(`Failed to stage: ${res?.message || 'unknown error'}`, 'error');
+            }
+          } catch (err) {
+            button.disabled = false;
+            button.innerText = '⚠️ Stage in Quarantine';
+            window.App.showToast(`Failed to stage: ${err.message}`, 'error');
+          }
+        });
+      });
+
+      harvestContent.querySelectorAll('.btn-fix-fact').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          const idx = Number(e.currentTarget.dataset.idx);
+          const item = report.facts_rejected[idx];
+          if (!item) return;
+
+          // Attempt to highlight the corresponding line in daily-note-editor if present
+          this.highlightSnippet(item.key);
+
+          // Open the global edit fact modal with pre-populated key, value, and schema error
+          if (window.App && window.App.openEditFactModal) {
+            window.App.openEditFactModal({
+              key: item.key,
+              value: item.value !== undefined ? item.value : '',
+              error: item.error,
+            });
+          }
+        });
+      });
 
       window.App.showToast(`Consolidation complete: ${savedCount} facts, ${triplesCount} triples, ${vectorsCount} vectors.`, 'success');
       window.App.refreshSnapshot();
@@ -180,5 +400,9 @@ window.DailyNotesView = {
       harvestBtn.disabled = false;
       harvestBtn.innerHTML = `<span>⚡</span><span>Process into Memory</span>`;
     }
+  },
+
+  escapeHtml(str) {
+    return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   },
 };

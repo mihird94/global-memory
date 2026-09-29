@@ -128,7 +128,7 @@ def harvest_session(
             else:
                 saved_facts.append({"key": key, "value": norm_val, "status": res})
         else:
-            rejected_facts.append({"key": key, "error": err_msg})
+            rejected_facts.append({"key": key, "value": val, "error": err_msg})
 
     # 3. Extract knowledge graph triples with temporal validity
     triples = memory_mcp_server.extract_graph_triples(combined_text)

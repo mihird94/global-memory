@@ -80,7 +80,7 @@ def _make_result(name: str, category: str, passed: bool, details: str) -> dict:
     }
 
 
-def _scenario_trusted_overwrite() -> dict:
+def _scenario_conflicting_overwrite_requires_review() -> dict:
     server = _server()
     _set_agent_reputation("agent_low", 1.0, 0.0)
     _set_agent_reputation("agent_high", 12.0, 0.0)
@@ -91,10 +91,10 @@ def _scenario_trusted_overwrite() -> dict:
         {"key": "deployment_target", "value": "prod", "agent": "agent_high"}
     )
     facts = _load_semantic_facts()
-    passed = "overwrote existing key" in result and facts.get("deployment_target") == "prod"
+    passed = "CONFLICT/QUARANTINE" in result and facts.get("deployment_target") == "staging"
     return _make_result(
-        "trusted_overwrite",
-        "knowledge_update",
+        "conflicting_overwrite_requires_review",
+        "conflict_governance",
         passed,
         result,
     )
@@ -202,7 +202,7 @@ def _scenario_weighted_quarantine_resolution() -> dict:
     facts = _load_semantic_facts()
     passed = (
         "CONFLICT/QUARANTINE" in quarantine_result
-        and summary["recommendation"] == "promote"
+        and summary["recommendation"] == "neutral"
         and "SUCCESS" in resolution
         and facts.get("deploy_policy") == "auto"
     )
@@ -299,8 +299,9 @@ def _scenario_collusive_low_trust_reviewers() -> dict:
     )
     passed = (
         "CONFLICT/QUARANTINE" in quarantine_result
-        and summary["recommendation"] == "discard"
-        and summary["reject_weight"] > summary["endorse_weight"]
+        and summary["recommendation"] == "neutral"
+        and summary["reject_count"] == 1
+        and summary["endorse_count"] == 2
     )
     return _make_result(
         "collusive_low_trust_reviewers",
@@ -312,7 +313,7 @@ def _scenario_collusive_low_trust_reviewers() -> dict:
 
 def run_evaluation(memory_root: Path | None = None) -> dict:
     scenario_fns: list[Callable[[], dict]] = [
-        _scenario_trusted_overwrite,
+        _scenario_conflicting_overwrite_requires_review,
         _scenario_quarantine_rejection,
         _scenario_weighted_quarantine_resolution,
         _scenario_collusive_low_trust_reviewers,

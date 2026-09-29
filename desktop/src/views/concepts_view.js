@@ -28,6 +28,7 @@ window.ConceptsView = {
           <p>Explore canonical entities, audit evidence chains, and resolve knowledge quality issues.</p>
         </div>
         <div style="display:flex; align-items:center; gap:10px;">
+          <input type="text" id="concept-search-input" class="form-control" placeholder="Filter entities…" style="width:180px; font-size:12px; padding:5px 10px;" value="${this.escapeHtml(this.searchQuery)}">
           <div class="segmented-control" id="entity-tab-toggle">
             <button class="segment ${this.activeTab === 'catalog' ? 'active' : ''}" data-tab="catalog">Catalog</button>
             <button class="segment ${this.activeTab === 'review' ? 'active' : ''}" data-tab="review">Review Queue</button>
@@ -82,6 +83,19 @@ window.ConceptsView = {
     });
 
     container.querySelector('#btn-run-extraction').addEventListener('click', () => this.runScratchpadExtraction());
+
+    // Entity search input
+    const searchInput = container.querySelector('#concept-search-input');
+    if (searchInput) {
+      let debounce = null;
+      searchInput.addEventListener('input', () => {
+        clearTimeout(debounce);
+        debounce = setTimeout(() => {
+          this.searchQuery = searchInput.value;
+          this.renderEntitiesGrid();
+        }, 200);
+      });
+    }
 
     // Catalog vs Review Queue tabs
     container.querySelectorAll('#entity-tab-toggle .segment').forEach((btn) => {
@@ -406,12 +420,17 @@ window.ConceptsView = {
             if (confirm(`Are you sure you want to merge "${srcName}" into "${tgtName}"? All relationships will be preserved and reassigned.`)) {
               try {
                 if (window.gms.mergeEntities) {
-                  await window.gms.mergeEntities({ source_id: srcId, target_id: tgtId });
-                  alert(`Successfully merged "${srcName}" into "${tgtName}".`);
-                  this.renderReviewList(cat, countLabel, container);
+                  if (window.App && window.App.showToast) {
+                    window.App.showToast(`Successfully merged "${srcName}" into "${tgtName}".`, 'success');
+                  }
+                  this.loadReviewCategoryItems();
                 }
               } catch (err) {
-                alert(`Merge failed: ${err.message}`);
+                if (window.App && window.App.showToast) {
+                  window.App.showToast(`Merge failed: ${err.message}`, 'error');
+                } else {
+                  console.error('Merge failed:', err);
+                }
               }
             }
           });
@@ -504,6 +523,9 @@ window.ConceptsView = {
       const facts = res.candidate_facts || [];
       const triples = res.extracted_triples || [];
       const entities = res.entity_candidates || [];
+      const removedFactIndices = new Set();
+      const removedEntityIndices = new Set();
+      const removedTripleIndices = new Set();
 
       results.innerHTML = `
         <div class="extraction-summary">
@@ -521,7 +543,7 @@ window.ConceptsView = {
                 <code>${this.escapeHtml(e.name)}</code>
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                   <span>${this.escapeHtml(e.type)} · ${e.mentions || 1} mention${e.mentions === 1 ? '' : 's'}</span>
-                  <button class="btn-close" style="font-size:14px;" onclick="document.getElementById('extracted-entity-${idx}').remove()">×</button>
+                  <button class="btn-close btn-remove-entity" data-idx="${idx}" style="font-size:14px;">×</button>
                 </div>
               </div>
             `).join('')}
@@ -540,7 +562,7 @@ window.ConceptsView = {
                 <code>${this.escapeHtml(f.key)}</code>
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                   <span>${this.escapeHtml(JSON.stringify(f.value))}</span>
-                  <button class="btn-close" style="font-size:14px;" onclick="document.getElementById('extracted-fact-${idx}').remove()">×</button>
+                  <button class="btn-close btn-remove-fact" data-idx="${idx}" style="font-size:14px;">×</button>
                 </div>
               </div>
             `).join('')}
@@ -556,7 +578,7 @@ window.ConceptsView = {
                 <span>${this.escapeHtml(t.predicate)}</span>
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                   <strong>${this.escapeHtml(t.object)}</strong>
-                  <button class="btn-close" style="font-size:14px;" onclick="document.getElementById('extracted-triple-${idx}').remove()">×</button>
+                  <button class="btn-close btn-remove-triple" data-idx="${idx}" style="font-size:14px;">×</button>
                 </div>
               </div>
             `).join('')}
@@ -566,12 +588,37 @@ window.ConceptsView = {
         ${!facts.length && !triples.length ? '<div class="empty-list"><strong>No structured knowledge detected</strong><span>Explicit keys or relationship patterns produce higher accuracy.</span></div>' : ''}
       `;
 
+      // Bind remove buttons to track removals in the Set (not just DOM)
+      results.querySelectorAll('.btn-remove-fact').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          removedFactIndices.add(parseInt(btn.dataset.idx, 10));
+          const row = document.getElementById(`extracted-fact-${btn.dataset.idx}`);
+          if (row) row.remove();
+        });
+      });
+      results.querySelectorAll('.btn-remove-entity').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          removedEntityIndices.add(parseInt(btn.dataset.idx, 10));
+          const row = document.getElementById(`extracted-entity-${btn.dataset.idx}`);
+          if (row) row.remove();
+        });
+      });
+      results.querySelectorAll('.btn-remove-triple').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          removedTripleIndices.add(parseInt(btn.dataset.idx, 10));
+          const row = document.getElementById(`extracted-triple-${btn.dataset.idx}`);
+          if (row) row.remove();
+        });
+      });
+
       const ingestBtn = results.querySelector('#btn-ingest-facts');
       if (ingestBtn) {
         ingestBtn.addEventListener('click', async () => {
-          const validFacts = facts.filter((f) => f.valid);
+          const validFacts = facts.filter((f, idx) => f.valid && !removedFactIndices.has(idx));
           if (!validFacts.length) {
-            alert('No valid facts to ingest.');
+            if (window.App && window.App.showToast) {
+              window.App.showToast('No valid facts to ingest.', 'warning');
+            }
             return;
           }
           let savedCount = 0;
@@ -583,7 +630,9 @@ window.ConceptsView = {
               console.error('Failed to save fact:', f.key, err);
             }
           }
-          alert(`Successfully ingested ${savedCount} fact(s) to GMS.`);
+          if (window.App && window.App.showToast) {
+            window.App.showToast(`Successfully ingested ${savedCount} fact(s) to GMS.`, 'success');
+          }
           ingestBtn.disabled = true;
           ingestBtn.innerText = 'Ingested ✓';
           if (window.App && window.App.refreshSnapshot) window.App.refreshSnapshot();

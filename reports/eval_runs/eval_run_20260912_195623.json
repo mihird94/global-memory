@@ -1,0 +1,313 @@
+{
+  "schema_version": "gms-eval-lab-report-v1",
+  "timestamp": "2026-09-13T02:56:23Z",
+  "suite_requested": "all",
+  "isolated_sandbox": true,
+  "results": {
+    "longmemeval": {
+      "suite": "LongMemEval",
+      "total_cases": 12,
+      "passed_cases": 10,
+      "pass_rate": 0.833,
+      "latency": {
+        "p50": 2.04,
+        "p90": 2.5,
+        "p95": 3.15,
+        "p99": 3.15,
+        "mean": 2.08,
+        "count": 12
+      },
+      "per_ability": {
+        "factual_extraction": {
+          "count": 3,
+          "pass_rate": 1.0,
+          "mean_recall": 1.0,
+          "mean_hit": 1.0,
+          "mean_abstention": 1.0
+        },
+        "multi_session_reasoning": {
+          "count": 2,
+          "pass_rate": 1.0,
+          "mean_recall": 0.875,
+          "mean_hit": 1.0,
+          "mean_abstention": 1.0
+        },
+        "temporal_reasoning": {
+          "count": 2,
+          "pass_rate": 0.5,
+          "mean_recall": 1.0,
+          "mean_hit": 1.0,
+          "mean_abstention": 1.0
+        },
+        "knowledge_update": {
+          "count": 2,
+          "pass_rate": 1.0,
+          "mean_recall": 1.0,
+          "mean_hit": 1.0,
+          "mean_abstention": 1.0
+        },
+        "abstention": {
+          "count": 3,
+          "pass_rate": 0.667,
+          "mean_recall": 0.333,
+          "mean_hit": 1.0,
+          "mean_abstention": 0.667
+        }
+      },
+      "cases": [
+        {
+          "case_id": "lme_fact_1_sqlite_concurrency",
+          "ability": "factual_extraction",
+          "query": "What SQLite settings govern database concurrency in GMS?",
+          "passed": true,
+          "latency_ms": 3.15,
+          "hit@5": 1.0,
+          "recall@5": 1.0,
+          "stale_leak_rate": 0.0,
+          "abstention_acc": 1.0,
+          "items_count": 9
+        },
+        {
+          "case_id": "lme_fact_2_dream_cycle_schedule",
+          "ability": "factual_extraction",
+          "query": "What is the scheduled launchd time for nightly Dream Cycle?",
+          "passed": true,
+          "latency_ms": 2.5,
+          "hit@5": 1.0,
+          "recall@5": 1.0,
+          "stale_leak_rate": 0.0,
+          "abstention_acc": 1.0,
+          "items_count": 8
+        },
+        {
+          "case_id": "lme_fact_3_tailscale_ip",
+          "ability": "factual_extraction",
+          "query": "What is the MiniPC Tailscale IP address?",
+          "passed": true,
+          "latency_ms": 1.57,
+          "hit@5": 1.0,
+          "recall@5": 1.0,
+          "stale_leak_rate": 0.0,
+          "abstention_acc": 1.0,
+          "items_count": 2
+        },
+        {
+          "case_id": "lme_multi_1_agent_trust_retirement",
+          "ability": "multi_session_reasoning",
+          "query": "Why was global agent trust retired in Mbrain and what replaced it?",
+          "passed": true,
+          "latency_ms": 2.18,
+          "hit@5": 1.0,
+          "recall@5": 0.75,
+          "stale_leak_rate": 0.0,
+          "abstention_acc": 1.0,
+          "items_count": 7
+        },
+        {
+          "case_id": "lme_multi_2_alphaos_sizing",
+          "ability": "multi_session_reasoning",
+          "query": "How does AlphaOS distinguish capital-at-risk heat from marked profit giveback?",
+          "passed": true,
+          "latency_ms": 1.81,
+          "hit@5": 1.0,
+          "recall@5": 1.0,
+          "stale_leak_rate": 0.0,
+          "abstention_acc": 1.0,
+          "items_count": 5
+        },
+        {
+          "case_id": "lme_temp_1_historical_context",
+          "ability": "temporal_reasoning",
+          "query": "What was the active context on 2026-09-08?",
+          "passed": true,
+          "latency_ms": 2.12,
+          "hit@5": 1.0,
+          "recall@5": 1.0,
+          "stale_leak_rate": 0.0,
+          "abstention_acc": 1.0,
+          "items_count": 9
+        },
+        {
+          "case_id": "lme_temp_2_pass3_milestone",
+          "ability": "temporal_reasoning",
+          "query": "What was implemented in Mbrain UX Pass 3?",
+          "passed": false,
+          "latency_ms": 2.1,
+          "hit@5": 1.0,
+          "recall@5": 1.0,
+          "stale_leak_rate": 0.5,
+          "abstention_acc": 1.0,
+          "items_count": 6
+        },
+        {
+          "case_id": "lme_update_1_alphaos_plugin_version",
+          "ability": "knowledge_update",
+          "query": "What is the active canonical plugin version for AlphaOS?",
+          "passed": true,
+          "latency_ms": 1.73,
+          "hit@5": 1.0,
+          "recall@5": 1.0,
+          "stale_leak_rate": 0.0,
+          "abstention_acc": 1.0,
+          "items_count": 8
+        },
+        {
+          "case_id": "lme_update_2_dream_cycle_schedule_update",
+          "ability": "knowledge_update",
+          "query": "Scheduled time for nightly memory consolidation",
+          "passed": true,
+          "latency_ms": 2.13,
+          "hit@5": 1.0,
+          "recall@5": 1.0,
+          "stale_leak_rate": 0.0,
+          "abstention_acc": 1.0,
+          "items_count": 13
+        },
+        {
+          "case_id": "lme_abstain_1_unknown_cryptocurrency",
+          "ability": "abstention",
+          "query": "What is the configured Ethereum staking validator private key?",
+          "passed": true,
+          "latency_ms": 1.99,
+          "hit@5": 1.0,
+          "recall@5": 0.0,
+          "stale_leak_rate": 0.0,
+          "abstention_acc": 1.0,
+          "items_count": 1
+        },
+        {
+          "case_id": "lme_abstain_2_unrecorded_flight_number",
+          "ability": "abstention",
+          "query": "What was the flight number for Mihir's trip to Tokyo in 2024?",
+          "passed": true,
+          "latency_ms": 1.65,
+          "hit@5": 1.0,
+          "recall@5": 0.0,
+          "stale_leak_rate": 0.0,
+          "abstention_acc": 1.0,
+          "items_count": 1
+        },
+        {
+          "case_id": "lme_abstain_3_opaque_status_actionability",
+          "ability": "abstention",
+          "query": "Execute car stickers status next action",
+          "passed": false,
+          "latency_ms": 2.04,
+          "hit@5": 1.0,
+          "recall@5": 1.0,
+          "stale_leak_rate": 0.0,
+          "abstention_acc": 0.0,
+          "items_count": 2
+        }
+      ]
+    },
+    "memoryagentbench": {
+      "suite": "MemoryAgentBench",
+      "total_cases": 5,
+      "passed_cases": 3,
+      "pass_rate": 0.6,
+      "latency": {
+        "p50": 1.99,
+        "p90": 2.04,
+        "p95": 2.04,
+        "p99": 2.04,
+        "mean": 1.95,
+        "count": 5
+      },
+      "cases": [
+        {
+          "case_id": "mab_forget_1_car_stickers_archival",
+          "category": "selective_forgetting",
+          "query": "car stickers status and actionability",
+          "passed": true,
+          "latency_ms": 1.99,
+          "valid_hits": [
+            "archived",
+            "status"
+          ],
+          "prohibited_leaks": []
+        },
+        {
+          "case_id": "mab_forget_2_fixture_claims_archival",
+          "category": "selective_forgetting",
+          "query": "test fixture agent claims and evaluations",
+          "passed": false,
+          "latency_ms": 2.04,
+          "valid_hits": [],
+          "prohibited_leaks": []
+        },
+        {
+          "case_id": "mab_ooo_1_late_plugin_version",
+          "category": "out_of_order_ingestion",
+          "query": "AlphaOS plugin version configuration",
+          "passed": true,
+          "latency_ms": 1.72,
+          "valid_hits": [
+            "0.2.0+codex.20260723182357"
+          ],
+          "prohibited_leaks": []
+        },
+        {
+          "case_id": "mab_ooo_2_schedule_conflict",
+          "category": "out_of_order_ingestion",
+          "query": "nightly consolidation schedule launchd",
+          "passed": true,
+          "latency_ms": 1.97,
+          "valid_hits": [
+            "03:10"
+          ],
+          "prohibited_leaks": []
+        },
+        {
+          "case_id": "mab_poison_1_untrusted_deploy_target",
+          "category": "contradiction_resistance",
+          "query": "production deployment target credentials",
+          "passed": false,
+          "latency_ms": 2.02,
+          "valid_hits": [],
+          "prohibited_leaks": []
+        }
+      ]
+    },
+    "continuation": {
+      "suite": "Continuation",
+      "total_cases": 2,
+      "passed_cases": 2,
+      "pass_rate": 1.0,
+      "latency": {
+        "p50": 3.07,
+        "p90": 3.56,
+        "p95": 3.56,
+        "p99": 3.56,
+        "mean": 3.31,
+        "count": 2
+      },
+      "cases": [
+        {
+          "case_id": "cont_global_memory_resume",
+          "project": "global-memory",
+          "passed": true,
+          "latency_ms": 3.56,
+          "goal_ok": true,
+          "constraints_ok": true,
+          "next_action_ok": true,
+          "leak_free": true,
+          "compression_ratio": 0.63,
+          "prohibited_leaks": []
+        },
+        {
+          "case_id": "cont_learning_os_resume",
+          "project": "learning-os",
+          "passed": true,
+          "latency_ms": 3.07,
+          "goal_ok": true,
+          "constraints_ok": true,
+          "next_action_ok": true,
+          "leak_free": true,
+          "compression_ratio": 0.19,
+          "prohibited_leaks": []
+        }
+      ]
+    }
+  }
+}

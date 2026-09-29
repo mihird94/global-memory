@@ -354,8 +354,30 @@ window.SearchPalette = {
         window.App.openInGraph('', subject);
       }
     } else if (item.type === 'vector') {
-      if (window.App && window.App.switchView) {
-        window.App.switchView('daily_notes');
+      const data = item.data || item;
+      let targetDate = data.date || item.date;
+      const targetFile = data.file || item.file || '';
+      const snippet = data.snippet || item.snippet || '';
+      const header = data.header || item.header || '';
+
+      if (!targetDate) {
+        const textToSearch = `${header} ${snippet} ${targetFile}`;
+        const match = textToSearch.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+        if (match) {
+          targetDate = match[1];
+        }
+      }
+
+      if (window.DailyNotesView && window.DailyNotesView.openHistoricalNote && targetDate) {
+        window.DailyNotesView.openHistoricalNote(targetDate, snippet);
+      } else {
+        if (window.DailyNotesView && targetDate) {
+          window.DailyNotesView.currentDate = targetDate;
+          window.DailyNotesView.pendingSnippet = snippet;
+        }
+        if (window.App && window.App.switchView) {
+          window.App.switchView('daily_notes');
+        }
       }
     }
   },

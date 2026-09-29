@@ -1,0 +1,1758 @@
+{
+  "schema_version": "gms-retrieval-tuning-report-v2",
+  "benchmark_scope": "brain_local_adapter",
+  "official_public_benchmark": false,
+  "disclaimer": "Brain-local regression fixtures. Not official LongMemEval or MemoryAgentBench scores.",
+  "provenance": {
+    "git_sha": "1a2d50d22ccd8d7b0f7a4a554b6c795621a702d1",
+    "git_dirty": true,
+    "python_version": "3.13.5",
+    "platform": "darwin",
+    "platform_release": "25.6.0",
+    "flashrank_version": "0.2.10",
+    "onnxruntime_version": "1.30.0",
+    "networkx_version": "3.6.1",
+    "scipy_version": "1.18.1",
+    "embedding_fixture_model": "test-embed",
+    "evaluation_command": [
+      "/Users/mihirdeshpande/projects/global-memory/eval/cli.py",
+      "tune"
+    ],
+    "start_timestamp": "2026-09-14T01:17:05Z",
+    "random_seed": null
+  },
+  "partition_validation": {
+    "isolated": true,
+    "canonical_counts": {
+      "train": 6,
+      "dev": 3,
+      "holdout": 3
+    },
+    "total_case_counts": {
+      "train": 30,
+      "dev": 15,
+      "holdout": 15
+    }
+  },
+  "experiments": {
+    "experiment_1_rrf_k": {
+      "description": "Reciprocal Rank Fusion k constant sweep on Dev partition with honest tie handling",
+      "results": {
+        "k_10": {
+          "rrf_k": 10,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "mrr": 1.0,
+          "latency_p50_ms": 2.7,
+          "latency_mean_ms": 11.23
+        },
+        "k_30": {
+          "rrf_k": 30,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "mrr": 1.0,
+          "latency_p50_ms": 2.44,
+          "latency_mean_ms": 2.65
+        },
+        "k_60": {
+          "rrf_k": 60,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "mrr": 1.0,
+          "latency_p50_ms": 2.51,
+          "latency_mean_ms": 2.69
+        },
+        "k_90": {
+          "rrf_k": 90,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "mrr": 1.0,
+          "latency_p50_ms": 2.44,
+          "latency_mean_ms": 2.62
+        },
+        "k_120": {
+          "rrf_k": 120,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "mrr": 1.0,
+          "latency_p50_ms": 2.43,
+          "latency_mean_ms": 2.63
+        }
+      },
+      "tied_configurations": [
+        "k_10",
+        "k_30",
+        "k_60",
+        "k_90",
+        "k_120"
+      ],
+      "metric_tolerance": 1e-06,
+      "tie_break_rule": "1. Preserve existing default (k=60); 2. Prefer lower latency if meaningfully different (>1.0 ms); 3. Otherwise prefer smaller behavioral change; 4. Never call an arbitrary first value 'optimal'.",
+      "selected_configuration": "k_60",
+      "optimal_rrf_k": 60,
+      "selection_reason": "Preserved existing default k=60 as all tested values tied within quality tolerance.",
+      "findings": "All tested RRF constants [10, 30, 60, 90, 120] produced tied retrieval quality (NDCG@10=0.6860, Recall@5=1.000). Under the simplicity-preserving tie-break rule, existing default k=60 was retained rather than arbitrarily designating a first-encountered value as optimal."
+    },
+    "experiment_2_lane_weights": {
+      "description": "Comparative evaluation of lane weighting schemes A through F on Dev partition",
+      "results": {
+        "weight_A_equal": {
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "mrr": 1.0,
+          "latency_p50_ms": 2.43
+        },
+        "weight_B_lexical_heavy": {
+          "recall@5": 1.0,
+          "ndcg@10": 0.7186,
+          "mrr": 1.0,
+          "latency_p50_ms": 2.43
+        },
+        "weight_C_vector_heavy": {
+          "recall@5": 0.5,
+          "ndcg@10": 0.4831,
+          "mrr": 0.5544,
+          "latency_p50_ms": 2.4
+        },
+        "weight_D_decision_heavy": {
+          "recall@5": 1.0,
+          "ndcg@10": 0.5266,
+          "mrr": 0.6,
+          "latency_p50_ms": 2.45
+        },
+        "weight_E_safety_heavy": {
+          "recall@5": 1.0,
+          "ndcg@10": 0.5933,
+          "mrr": 0.7333,
+          "latency_p50_ms": 2.46
+        },
+        "weight_F_tuned_balanced": {
+          "recall@5": 1.0,
+          "ndcg@10": 0.5292,
+          "mrr": 0.52,
+          "latency_p50_ms": 2.46
+        }
+      },
+      "best_lane_weights_scheme": "weight_B_lexical_heavy",
+      "findings": "Evaluated 6 lane weighting schemes. Top NDCG@10 was 0.7186 achieved by ['weight_B_lexical_heavy']. Selected 'weight_B_lexical_heavy' as default under the simplicity-preserving rule."
+    },
+    "experiment_3_candidate_depths": {
+      "description": "Candidate depth sweep per lane (compact vs standard vs deep)",
+      "results": {
+        "compact_depths": {
+          "limits": {
+            "exact": 5,
+            "bm25": 5,
+            "vector": 5,
+            "decisions": 5,
+            "procedures": 5,
+            "tasks": 5,
+            "conflicts": 5,
+            "episodes": 5,
+            "graph": 3,
+            "artifacts": 3
+          },
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "latency_p50_ms": 2.43,
+          "latency_mean_ms": 2.64
+        },
+        "standard_depths": {
+          "limits": {
+            "exact": 5,
+            "bm25": 15,
+            "vector": 8,
+            "decisions": 10,
+            "procedures": 6,
+            "tasks": 10,
+            "conflicts": 5,
+            "episodes": 6,
+            "graph": 10,
+            "artifacts": 5
+          },
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "latency_p50_ms": 2.43,
+          "latency_mean_ms": 2.63
+        },
+        "deep_depths": {
+          "limits": {
+            "exact": 10,
+            "bm25": 25,
+            "vector": 15,
+            "decisions": 15,
+            "procedures": 10,
+            "tasks": 15,
+            "conflicts": 10,
+            "episodes": 10,
+            "graph": 15,
+            "artifacts": 10
+          },
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "latency_p50_ms": 2.43,
+          "latency_mean_ms": 2.63
+        }
+      },
+      "findings": "Candidate depth comparison: compact depths (P50: 2.43ms) and standard depths (P50: 2.43ms) both achieved 1.000 Recall@5 and 0.6860 NDCG@10."
+    },
+    "experiment_4_reranking_policies": {
+      "description": "Evaluation of reranking trigger policies and threshold sweeps on Dev partition",
+      "policy_results": {
+        "policy_A_never": {
+          "policy": "never",
+          "assurance": "standard",
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "mrr": 1.0,
+          "rerank_attempted_rate": 0.0,
+          "latency_p50_ms": 2.44,
+          "latency_p95_ms": 3.18,
+          "latency_mean_ms": 2.63
+        },
+        "policy_B_always": {
+          "policy": "always",
+          "assurance": "standard",
+          "recall@5": 1.0,
+          "ndcg@10": 0.6671,
+          "mrr": 0.8083,
+          "rerank_attempted_rate": 1.0,
+          "latency_p50_ms": 16.63,
+          "latency_p95_ms": 158.99,
+          "latency_mean_ms": 26.24
+        },
+        "policy_C_assurance": {
+          "policy": "assurance",
+          "assurance": "high",
+          "recall@5": 1.0,
+          "ndcg@10": 0.6671,
+          "mrr": 0.8083,
+          "rerank_attempted_rate": 1.0,
+          "latency_p50_ms": 17.84,
+          "latency_p95_ms": 33.18,
+          "latency_mean_ms": 20.59
+        },
+        "policy_D_intent": {
+          "policy": "intent",
+          "assurance": "standard",
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "mrr": 1.0,
+          "rerank_attempted_rate": 0.0,
+          "latency_p50_ms": 4.0,
+          "latency_p95_ms": 4.78,
+          "latency_mean_ms": 3.96
+        },
+        "policy_E_ambiguity": {
+          "policy": "ambiguity",
+          "assurance": "standard",
+          "recall@5": 1.0,
+          "ndcg@10": 0.6671,
+          "mrr": 0.8083,
+          "rerank_attempted_rate": 1.0,
+          "latency_p50_ms": 17.29,
+          "latency_p95_ms": 33.44,
+          "latency_mean_ms": 19.23
+        },
+        "policy_F_conditional": {
+          "policy": "conditional",
+          "assurance": "standard",
+          "recall@5": 1.0,
+          "ndcg@10": 0.6671,
+          "mrr": 0.8083,
+          "rerank_attempted_rate": 0.6667,
+          "latency_p50_ms": 16.6,
+          "latency_p95_ms": 31.54,
+          "latency_mean_ms": 16.59
+        }
+      },
+      "margin_threshold_sweep": {
+        "margin_0.01": {
+          "margin_threshold": 0.01,
+          "rerank_rate": 0.6667,
+          "ndcg@10": 0.6671,
+          "latency_p50_ms": 17.97
+        },
+        "margin_0.025": {
+          "margin_threshold": 0.025,
+          "rerank_rate": 0.6667,
+          "ndcg@10": 0.6671,
+          "latency_p50_ms": 16.52
+        },
+        "margin_0.05": {
+          "margin_threshold": 0.05,
+          "rerank_rate": 0.6667,
+          "ndcg@10": 0.6671,
+          "latency_p50_ms": 17.37
+        },
+        "margin_0.075": {
+          "margin_threshold": 0.075,
+          "rerank_rate": 0.6667,
+          "ndcg@10": 0.6671,
+          "latency_p50_ms": 19.59
+        },
+        "margin_0.1": {
+          "margin_threshold": 0.1,
+          "rerank_rate": 0.6667,
+          "ndcg@10": 0.6671,
+          "latency_p50_ms": 16.72
+        },
+        "margin_0.15": {
+          "margin_threshold": 0.15,
+          "rerank_rate": 0.6667,
+          "ndcg@10": 0.6671,
+          "latency_p50_ms": 15.32
+        }
+      },
+      "coverage_threshold_sweep": {
+        "coverage_0.4": {
+          "min_coverage": 0.4,
+          "rerank_rate": 0.6667,
+          "ndcg@10": 0.6671,
+          "latency_p50_ms": 15.72
+        },
+        "coverage_0.6": {
+          "min_coverage": 0.6,
+          "rerank_rate": 0.6667,
+          "ndcg@10": 0.6671,
+          "latency_p50_ms": 16.3
+        },
+        "coverage_0.8": {
+          "min_coverage": 0.8,
+          "rerank_rate": 0.6667,
+          "ndcg@10": 0.6671,
+          "latency_p50_ms": 16.43
+        }
+      },
+      "findings": "Cross-encoder reranking degraded retrieval quality on development fixtures from 0.6860 down to 0.6671 NDCG@10, while adding latency. Reranking is therefore not justified as the default policy."
+    },
+    "experiment_5_graph_retrieval": {
+      "description": "Graph retrieval comparison: 1-hop vs 2-hop traversal and metadata schema audit",
+      "traversal_1hop": {
+        "recall@5": 1.0,
+        "ndcg@10": 0.686,
+        "latency_p50_ms": 3.46
+      },
+      "traversal_2hop": {
+        "recall@5": 1.0,
+        "ndcg@10": 0.686,
+        "latency_p50_ms": 2.86
+      },
+      "metadata_retention_audit": {
+        "graph_items_retrieved": 2,
+        "source_id_present": true,
+        "target_id_present": true,
+        "predicate_present": true,
+        "graph_path_present": true,
+        "temporal_validity_present": true,
+        "source_claim_id_present": true
+      },
+      "findings": "Graph traversal audit: 1-hop and 2-hop traversal both maintained 1.000 Recall@5. Metadata retention audit confirmed 2 graph candidates retain complete typed provenance (source_id, target_id, predicate, graph_path, valid_from, source_claim_id)."
+    },
+    "experiment_6_vector_configuration": {
+      "description": "Vector similarity cutoff sweep and explicit failure validation",
+      "cutoff_sweep": {
+        "cutoff_0.0": {
+          "similarity_cutoff": 0.0,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "latency_p50_ms": 2.51
+        },
+        "cutoff_0.3": {
+          "similarity_cutoff": 0.3,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "latency_p50_ms": 2.5
+        },
+        "cutoff_0.5": {
+          "similarity_cutoff": 0.5,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "latency_p50_ms": 2.56
+        },
+        "cutoff_0.7": {
+          "similarity_cutoff": 0.7,
+          "recall@5": 1.0,
+          "ndcg@10": 0.686,
+          "latency_p50_ms": 2.46
+        }
+      },
+      "explicit_failure_tests": {
+        "model_mismatch": {
+          "available": false,
+          "reason": "Model mismatch: requested 'unknown-nonexistent-model' not found in gms_embeddings (available: ['test-embed'])",
+          "passed": true
+        },
+        "dimension_mismatch": {
+          "available": false,
+          "reason": "Dimension mismatch: query dimension 2 != stored dimension 4",
+          "passed": true
+        }
+      },
+      "findings": "Vector lane evaluation: similarity cutoff 0.0 delivered 1.000 Recall@5. Explicit mismatch validation passed: model mismatch was rejected (True) and dimension mismatch was rejected (True) without silent fallback."
+    },
+    "experiment_7_holdout_validation": {
+      "description": "Validation of frozen winning configuration across strictly isolated partitions",
+      "selection_partition": "dev",
+      "frozen_config": {
+        "rrf_k": 60,
+        "lane_weights": {
+          "exact": 1.0,
+          "bm25": 1.0,
+          "vector": 1.0,
+          "decisions": 1.0,
+          "procedures": 1.0,
+          "tasks": 1.0,
+          "conflicts": 1.0,
+          "episodes": 1.0,
+          "graph": 1.0,
+          "artifacts": 1.0
+        },
+        "lane_candidate_limits": {
+          "exact": 5,
+          "bm25": 10,
+          "vector": 8,
+          "decisions": 10,
+          "procedures": 6,
+          "tasks": 10,
+          "conflicts": 5,
+          "episodes": 5,
+          "graph": 5,
+          "artifacts": 5
+        },
+        "graph_hops": 1,
+        "vector_similarity_cutoff": 0.0,
+        "rerank_policy": "never",
+        "rerank_k": 25,
+        "rerank_model": "ms-marco-TinyBERT-L-2-v2",
+        "rerank_margin_threshold": 0.05,
+        "minimum_top1_term_coverage": 0.6,
+        "profile": "fast"
+      },
+      "frozen_config_sha256": "8b1e3176361496a4e004a6f0a1808c68bd2480d4ed95ed96ea632f30b5ee8f93",
+      "holdout_evaluations": 1,
+      "holdout_used_for_selection": false,
+      "train": {
+        "case_count": 30,
+        "summary": {
+          "total_queries": 30,
+          "ranking_queries": 25,
+          "abstention_queries": 5,
+          "mean_recall@5": 1.0,
+          "mean_hit@5": 1.0,
+          "mean_mrr": 1.0,
+          "mean_ndcg@10": 0.7404,
+          "abstention_accuracy": 1.0,
+          "rerank_attempted_rate": 0.0,
+          "latency": {
+            "p50": 3.74,
+            "p90": 4.93,
+            "p95": 5.89,
+            "p99": 6.26,
+            "mean": 3.87,
+            "count": 30
+          }
+        },
+        "safety": {
+          "safety_pass": false,
+          "total_violations": 15,
+          "stale_leakage_count": 0,
+          "archived_current_truth_leakage_count": 0,
+          "superseded_current_truth_leakage_count": 0,
+          "abstention_failures": 0,
+          "uncorroborated_actionable_count": 10,
+          "conflicted_actionable_count": 0,
+          "project_scope_violation_count": 5,
+          "temporal_scope_violation_count": 0,
+          "invalid_evidence_status_count": 0,
+          "reranker_failure_count": 0
+        }
+      },
+      "dev": {
+        "case_count": 15,
+        "summary": {
+          "total_queries": 15,
+          "ranking_queries": 10,
+          "abstention_queries": 5,
+          "mean_recall@5": 1.0,
+          "mean_hit@5": 1.0,
+          "mean_mrr": 1.0,
+          "mean_ndcg@10": 0.686,
+          "abstention_accuracy": 1.0,
+          "rerank_attempted_rate": 0.0,
+          "latency": {
+            "p50": 2.5,
+            "p90": 3.27,
+            "p95": 3.28,
+            "p99": 3.28,
+            "mean": 2.7,
+            "count": 15
+          }
+        },
+        "safety": {
+          "safety_pass": true,
+          "total_violations": 0,
+          "stale_leakage_count": 0,
+          "archived_current_truth_leakage_count": 0,
+          "superseded_current_truth_leakage_count": 0,
+          "abstention_failures": 0,
+          "uncorroborated_actionable_count": 0,
+          "conflicted_actionable_count": 0,
+          "project_scope_violation_count": 0,
+          "temporal_scope_violation_count": 0,
+          "invalid_evidence_status_count": 0,
+          "reranker_failure_count": 0
+        }
+      },
+      "holdout": {
+        "holdout_all": {
+          "case_count": 15,
+          "summary": {
+            "total_queries": 15,
+            "ranking_queries": 10,
+            "abstention_queries": 5,
+            "mean_recall@5": 1.0,
+            "mean_hit@5": 1.0,
+            "mean_mrr": 0.95,
+            "mean_ndcg@10": 0.8763,
+            "abstention_accuracy": 1.0,
+            "rerank_attempted_rate": 0.0,
+            "latency": {
+              "p50": 3.0,
+              "p90": 3.35,
+              "p95": 4.37,
+              "p99": 4.37,
+              "mean": 3.05,
+              "count": 15
+            }
+          },
+          "safety": {
+            "safety_pass": false,
+            "total_violations": 1,
+            "stale_leakage_count": 0,
+            "archived_current_truth_leakage_count": 0,
+            "superseded_current_truth_leakage_count": 0,
+            "abstention_failures": 0,
+            "uncorroborated_actionable_count": 0,
+            "conflicted_actionable_count": 0,
+            "project_scope_violation_count": 1,
+            "temporal_scope_violation_count": 0,
+            "invalid_evidence_status_count": 0,
+            "reranker_failure_count": 0
+          }
+        },
+        "holdout_canonical": {
+          "case_count": 3,
+          "summary": {
+            "total_queries": 3,
+            "ranking_queries": 2,
+            "abstention_queries": 1,
+            "mean_recall@5": 1.0,
+            "mean_hit@5": 1.0,
+            "mean_mrr": 1.0,
+            "mean_ndcg@10": 0.916,
+            "abstention_accuracy": 1.0,
+            "rerank_attempted_rate": 0.0,
+            "latency": {
+              "p50": 2.95,
+              "p90": 3.11,
+              "p95": 3.11,
+              "p99": 3.11,
+              "mean": 2.92,
+              "count": 3
+            }
+          },
+          "safety": {
+            "safety_pass": true,
+            "total_violations": 0,
+            "stale_leakage_count": 0,
+            "archived_current_truth_leakage_count": 0,
+            "superseded_current_truth_leakage_count": 0,
+            "abstention_failures": 0,
+            "uncorroborated_actionable_count": 0,
+            "conflicted_actionable_count": 0,
+            "project_scope_violation_count": 0,
+            "temporal_scope_violation_count": 0,
+            "invalid_evidence_status_count": 0,
+            "reranker_failure_count": 0
+          }
+        },
+        "holdout_variants": {
+          "case_count": 12,
+          "summary": {
+            "total_queries": 12,
+            "ranking_queries": 8,
+            "abstention_queries": 4,
+            "mean_recall@5": 1.0,
+            "mean_hit@5": 1.0,
+            "mean_mrr": 0.9375,
+            "mean_ndcg@10": 0.8664,
+            "abstention_accuracy": 1.0,
+            "rerank_attempted_rate": 0.0,
+            "latency": {
+              "p50": 2.95,
+              "p90": 3.17,
+              "p95": 3.19,
+              "p99": 3.19,
+              "mean": 2.92,
+              "count": 12
+            }
+          },
+          "safety": {
+            "safety_pass": false,
+            "total_violations": 1,
+            "stale_leakage_count": 0,
+            "archived_current_truth_leakage_count": 0,
+            "superseded_current_truth_leakage_count": 0,
+            "abstention_failures": 0,
+            "uncorroborated_actionable_count": 0,
+            "conflicted_actionable_count": 0,
+            "project_scope_violation_count": 1,
+            "temporal_scope_violation_count": 0,
+            "invalid_evidence_status_count": 0,
+            "reranker_failure_count": 0
+          }
+        },
+        "holdout_records": [
+          {
+            "case_id": "lme_multi_2_alphaos_sizing",
+            "canonical_case_id": "lme_multi_2_alphaos_sizing",
+            "partition": "holdout",
+            "is_variant": false,
+            "ability": "multi_session_reasoning",
+            "query": "How does AlphaOS distinguish capital-at-risk heat from marked profit giveback?",
+            "project": "alphaos",
+            "as_of": null,
+            "relevant_keys": [
+              "capital",
+              "heat",
+              "giveback",
+              "sizing"
+            ],
+            "superseded_keys": [],
+            "should_abstain": false,
+            "retrieved_keys_top_10": [
+              "alphaos.activeContext.md.1",
+              "indexed.3",
+              "graph:AlphaOS_capital_heat",
+              "indexed.1",
+              "indexed.2",
+              "indexed.4"
+            ],
+            "retrieved_lifecycle_states_top_10": [
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted"
+            ],
+            "evidence_status": "supported",
+            "actionable": true,
+            "recall_at_5": 1.0,
+            "hit_at_5": 1.0,
+            "reciprocal_rank": 1.0,
+            "ndcg_at_10": 0.8319,
+            "stale_leakage_count": 0,
+            "archived_leakage_count": 0,
+            "superseded_leakage_count": 0,
+            "conflict_visible": false,
+            "project_scope_violation": false,
+            "temporal_scope_violation": false,
+            "uncorroborated_actionable": false,
+            "conflicted_actionable": false,
+            "abstention_failure": false,
+            "invalid_evidence_status": false,
+            "reranker_enabled": false,
+            "reranker_attempted": false,
+            "reranker_available": true,
+            "reranker_failure": false,
+            "rerank_reason": "policy_never",
+            "rerank_latency_ms": 0.0,
+            "total_latency_ms": 2.71
+          },
+          {
+            "case_id": "lme_multi_2_alphaos_sizing_variant_1",
+            "canonical_case_id": "lme_multi_2_alphaos_sizing",
+            "partition": "holdout",
+            "is_variant": true,
+            "ability": "multi_session_reasoning",
+            "query": "Using only recorded evidence, how does AlphaOS distinguish capital-at-risk heat from marked profit giveback?",
+            "project": "alphaos",
+            "as_of": null,
+            "relevant_keys": [
+              "capital",
+              "heat",
+              "giveback",
+              "sizing"
+            ],
+            "superseded_keys": [],
+            "should_abstain": false,
+            "retrieved_keys_top_10": [
+              "alphaos.activeContext.md.1",
+              "indexed.3",
+              "graph:AlphaOS_capital_heat",
+              "indexed.1",
+              "indexed.2",
+              "indexed.4"
+            ],
+            "retrieved_lifecycle_states_top_10": [
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted"
+            ],
+            "evidence_status": "supported",
+            "actionable": true,
+            "recall_at_5": 1.0,
+            "hit_at_5": 1.0,
+            "reciprocal_rank": 1.0,
+            "ndcg_at_10": 0.8319,
+            "stale_leakage_count": 0,
+            "archived_leakage_count": 0,
+            "superseded_leakage_count": 0,
+            "conflict_visible": false,
+            "project_scope_violation": false,
+            "temporal_scope_violation": false,
+            "uncorroborated_actionable": false,
+            "conflicted_actionable": false,
+            "abstention_failure": false,
+            "invalid_evidence_status": false,
+            "reranker_enabled": false,
+            "reranker_attempted": false,
+            "reranker_available": true,
+            "reranker_failure": false,
+            "rerank_reason": "policy_never",
+            "rerank_latency_ms": 0.0,
+            "total_latency_ms": 2.72
+          },
+          {
+            "case_id": "lme_multi_2_alphaos_sizing_variant_2",
+            "canonical_case_id": "lme_multi_2_alphaos_sizing",
+            "partition": "holdout",
+            "is_variant": true,
+            "ability": "multi_session_reasoning",
+            "query": "Current-memory check: how does AlphaOS distinguish capital-at-risk heat from marked profit giveback?",
+            "project": "alphaos",
+            "as_of": null,
+            "relevant_keys": [
+              "capital",
+              "heat",
+              "giveback",
+              "sizing"
+            ],
+            "superseded_keys": [],
+            "should_abstain": false,
+            "retrieved_keys_top_10": [
+              "alphaos.activeContext.md.1",
+              "indexed.3",
+              "global.skill.1",
+              "graph:AlphaOS_capital_heat",
+              "indexed.1",
+              "global.skill.2",
+              "indexed.2",
+              "indexed.4",
+              "global_memory_sqlite_concurrency"
+            ],
+            "retrieved_lifecycle_states_top_10": [
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted"
+            ],
+            "evidence_status": "supported",
+            "actionable": true,
+            "recall_at_5": 1.0,
+            "hit_at_5": 1.0,
+            "reciprocal_rank": 1.0,
+            "ndcg_at_10": 0.8048,
+            "stale_leakage_count": 0,
+            "archived_leakage_count": 0,
+            "superseded_leakage_count": 0,
+            "conflict_visible": false,
+            "project_scope_violation": true,
+            "temporal_scope_violation": false,
+            "uncorroborated_actionable": false,
+            "conflicted_actionable": false,
+            "abstention_failure": false,
+            "invalid_evidence_status": false,
+            "reranker_enabled": false,
+            "reranker_attempted": false,
+            "reranker_available": true,
+            "reranker_failure": false,
+            "rerank_reason": "policy_never",
+            "rerank_latency_ms": 0.0,
+            "total_latency_ms": 2.71
+          },
+          {
+            "case_id": "lme_multi_2_alphaos_sizing_variant_3",
+            "canonical_case_id": "lme_multi_2_alphaos_sizing",
+            "partition": "holdout",
+            "is_variant": true,
+            "ability": "multi_session_reasoning",
+            "query": "Do not guess; how does AlphaOS distinguish capital-at-risk heat from marked profit giveback?",
+            "project": "alphaos",
+            "as_of": null,
+            "relevant_keys": [
+              "capital",
+              "heat",
+              "giveback",
+              "sizing"
+            ],
+            "superseded_keys": [],
+            "should_abstain": false,
+            "retrieved_keys_top_10": [
+              "alphaos.activeContext.md.1",
+              "indexed.3",
+              "graph:AlphaOS_capital_heat",
+              "indexed.1",
+              "indexed.2",
+              "indexed.4"
+            ],
+            "retrieved_lifecycle_states_top_10": [
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted"
+            ],
+            "evidence_status": "supported",
+            "actionable": true,
+            "recall_at_5": 1.0,
+            "hit_at_5": 1.0,
+            "reciprocal_rank": 1.0,
+            "ndcg_at_10": 0.8319,
+            "stale_leakage_count": 0,
+            "archived_leakage_count": 0,
+            "superseded_leakage_count": 0,
+            "conflict_visible": false,
+            "project_scope_violation": false,
+            "temporal_scope_violation": false,
+            "uncorroborated_actionable": false,
+            "conflicted_actionable": false,
+            "abstention_failure": false,
+            "invalid_evidence_status": false,
+            "reranker_enabled": false,
+            "reranker_attempted": false,
+            "reranker_available": true,
+            "reranker_failure": false,
+            "rerank_reason": "policy_never",
+            "rerank_latency_ms": 0.0,
+            "total_latency_ms": 2.66
+          },
+          {
+            "case_id": "lme_multi_2_alphaos_sizing_variant_4",
+            "canonical_case_id": "lme_multi_2_alphaos_sizing",
+            "partition": "holdout",
+            "is_variant": true,
+            "ability": "multi_session_reasoning",
+            "query": "Within alphaos, how does AlphaOS distinguish capital-at-risk heat from marked profit giveback?",
+            "project": "alphaos",
+            "as_of": null,
+            "relevant_keys": [
+              "capital",
+              "heat",
+              "giveback",
+              "sizing"
+            ],
+            "superseded_keys": [],
+            "should_abstain": false,
+            "retrieved_keys_top_10": [
+              "alphaos.activeContext.md.1",
+              "indexed.3",
+              "graph:AlphaOS_capital_heat",
+              "indexed.1",
+              "indexed.2",
+              "indexed.4"
+            ],
+            "retrieved_lifecycle_states_top_10": [
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted"
+            ],
+            "evidence_status": "supported",
+            "actionable": true,
+            "recall_at_5": 1.0,
+            "hit_at_5": 1.0,
+            "reciprocal_rank": 1.0,
+            "ndcg_at_10": 0.8319,
+            "stale_leakage_count": 0,
+            "archived_leakage_count": 0,
+            "superseded_leakage_count": 0,
+            "conflict_visible": false,
+            "project_scope_violation": false,
+            "temporal_scope_violation": false,
+            "uncorroborated_actionable": false,
+            "conflicted_actionable": false,
+            "abstention_failure": false,
+            "invalid_evidence_status": false,
+            "reranker_enabled": false,
+            "reranker_attempted": false,
+            "reranker_available": true,
+            "reranker_failure": false,
+            "rerank_reason": "policy_never",
+            "rerank_latency_ms": 0.0,
+            "total_latency_ms": 2.63
+          },
+          {
+            "case_id": "lme_update_2_dream_cycle_schedule_update",
+            "canonical_case_id": "lme_update_2_dream_cycle_schedule_update",
+            "partition": "holdout",
+            "is_variant": false,
+            "ability": "knowledge_update",
+            "query": "Scheduled time for nightly memory consolidation",
+            "project": "global-memory",
+            "as_of": null,
+            "relevant_keys": [
+              "03:10"
+            ],
+            "superseded_keys": [
+              "02:00"
+            ],
+            "should_abstain": false,
+            "retrieved_keys_top_10": [
+              "indexed.2",
+              "global-memory.decision.1",
+              "global-memory.procedure.1",
+              "task_eval_lab",
+              "global-memory.progress.1",
+              "global-memory.projectBrief.md.1",
+              "indexed.1",
+              "global.skill.2",
+              "indexed.3",
+              "indexed.4"
+            ],
+            "retrieved_lifecycle_states_top_10": [
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted"
+            ],
+            "evidence_status": "supported",
+            "actionable": true,
+            "recall_at_5": 1.0,
+            "hit_at_5": 1.0,
+            "reciprocal_rank": 1.0,
+            "ndcg_at_10": 1.0,
+            "stale_leakage_count": 0,
+            "archived_leakage_count": 0,
+            "superseded_leakage_count": 0,
+            "conflict_visible": false,
+            "project_scope_violation": false,
+            "temporal_scope_violation": false,
+            "uncorroborated_actionable": false,
+            "conflicted_actionable": false,
+            "abstention_failure": false,
+            "invalid_evidence_status": false,
+            "reranker_enabled": false,
+            "reranker_attempted": false,
+            "reranker_available": true,
+            "reranker_failure": false,
+            "rerank_reason": "policy_never",
+            "rerank_latency_ms": 0.0,
+            "total_latency_ms": 3.19
+          },
+          {
+            "case_id": "lme_update_2_dream_cycle_schedule_update_variant_1",
+            "canonical_case_id": "lme_update_2_dream_cycle_schedule_update",
+            "partition": "holdout",
+            "is_variant": true,
+            "ability": "knowledge_update",
+            "query": "Using only recorded evidence, scheduled time for nightly memory consolidation",
+            "project": "global-memory",
+            "as_of": null,
+            "relevant_keys": [
+              "03:10"
+            ],
+            "superseded_keys": [
+              "02:00"
+            ],
+            "should_abstain": false,
+            "retrieved_keys_top_10": [
+              "indexed.2",
+              "global-memory.decision.1",
+              "global-memory.procedure.1",
+              "task_eval_lab",
+              "global-memory.progress.1",
+              "global-memory.projectBrief.md.1",
+              "indexed.1",
+              "global.skill.2",
+              "indexed.3",
+              "indexed.4"
+            ],
+            "retrieved_lifecycle_states_top_10": [
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted"
+            ],
+            "evidence_status": "supported",
+            "actionable": true,
+            "recall_at_5": 1.0,
+            "hit_at_5": 1.0,
+            "reciprocal_rank": 1.0,
+            "ndcg_at_10": 1.0,
+            "stale_leakage_count": 0,
+            "archived_leakage_count": 0,
+            "superseded_leakage_count": 0,
+            "conflict_visible": false,
+            "project_scope_violation": false,
+            "temporal_scope_violation": false,
+            "uncorroborated_actionable": false,
+            "conflicted_actionable": false,
+            "abstention_failure": false,
+            "invalid_evidence_status": false,
+            "reranker_enabled": false,
+            "reranker_attempted": false,
+            "reranker_available": true,
+            "reranker_failure": false,
+            "rerank_reason": "policy_never",
+            "rerank_latency_ms": 0.0,
+            "total_latency_ms": 3.18
+          },
+          {
+            "case_id": "lme_update_2_dream_cycle_schedule_update_variant_2",
+            "canonical_case_id": "lme_update_2_dream_cycle_schedule_update",
+            "partition": "holdout",
+            "is_variant": true,
+            "ability": "knowledge_update",
+            "query": "Current-memory check: scheduled time for nightly memory consolidation",
+            "project": "global-memory",
+            "as_of": null,
+            "relevant_keys": [
+              "03:10"
+            ],
+            "superseded_keys": [
+              "02:00"
+            ],
+            "should_abstain": false,
+            "retrieved_keys_top_10": [
+              "global-memory.activeContext.md.1",
+              "indexed.2",
+              "global-memory.decision.1",
+              "global-memory.procedure.1",
+              "task_eval_lab",
+              "global-memory.progress.1",
+              "indexed.1",
+              "global-memory.decision.2",
+              "global.skill.2",
+              "global-memory.projectBrief.md.1"
+            ],
+            "retrieved_lifecycle_states_top_10": [
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted"
+            ],
+            "evidence_status": "supported",
+            "actionable": true,
+            "recall_at_5": 1.0,
+            "hit_at_5": 1.0,
+            "reciprocal_rank": 0.5,
+            "ndcg_at_10": 0.6309,
+            "stale_leakage_count": 0,
+            "archived_leakage_count": 0,
+            "superseded_leakage_count": 0,
+            "conflict_visible": false,
+            "project_scope_violation": false,
+            "temporal_scope_violation": false,
+            "uncorroborated_actionable": false,
+            "conflicted_actionable": false,
+            "abstention_failure": false,
+            "invalid_evidence_status": false,
+            "reranker_enabled": false,
+            "reranker_attempted": false,
+            "reranker_available": true,
+            "reranker_failure": false,
+            "rerank_reason": "policy_never",
+            "rerank_latency_ms": 0.0,
+            "total_latency_ms": 3.2
+          },
+          {
+            "case_id": "lme_update_2_dream_cycle_schedule_update_variant_3",
+            "canonical_case_id": "lme_update_2_dream_cycle_schedule_update",
+            "partition": "holdout",
+            "is_variant": true,
+            "ability": "knowledge_update",
+            "query": "Do not guess; scheduled time for nightly memory consolidation",
+            "project": "global-memory",
+            "as_of": null,
+            "relevant_keys": [
+              "03:10"
+            ],
+            "superseded_keys": [
+              "02:00"
+            ],
+            "should_abstain": false,
+            "retrieved_keys_top_10": [
+              "indexed.2",
+              "global-memory.decision.1",
+              "global-memory.procedure.1",
+              "task_eval_lab",
+              "global-memory.progress.1",
+              "global-memory.projectBrief.md.1",
+              "indexed.1",
+              "global.skill.2",
+              "indexed.3",
+              "indexed.4"
+            ],
+            "retrieved_lifecycle_states_top_10": [
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted"
+            ],
+            "evidence_status": "supported",
+            "actionable": true,
+            "recall_at_5": 1.0,
+            "hit_at_5": 1.0,
+            "reciprocal_rank": 1.0,
+            "ndcg_at_10": 1.0,
+            "stale_leakage_count": 0,
+            "archived_leakage_count": 0,
+            "superseded_leakage_count": 0,
+            "conflict_visible": false,
+            "project_scope_violation": false,
+            "temporal_scope_violation": false,
+            "uncorroborated_actionable": false,
+            "conflicted_actionable": false,
+            "abstention_failure": false,
+            "invalid_evidence_status": false,
+            "reranker_enabled": false,
+            "reranker_attempted": false,
+            "reranker_available": true,
+            "reranker_failure": false,
+            "rerank_reason": "policy_never",
+            "rerank_latency_ms": 0.0,
+            "total_latency_ms": 3.35
+          },
+          {
+            "case_id": "lme_update_2_dream_cycle_schedule_update_variant_4",
+            "canonical_case_id": "lme_update_2_dream_cycle_schedule_update",
+            "partition": "holdout",
+            "is_variant": true,
+            "ability": "knowledge_update",
+            "query": "Within global-memory, scheduled time for nightly memory consolidation",
+            "project": "global-memory",
+            "as_of": null,
+            "relevant_keys": [
+              "03:10"
+            ],
+            "superseded_keys": [
+              "02:00"
+            ],
+            "should_abstain": false,
+            "retrieved_keys_top_10": [
+              "indexed.2",
+              "global-memory.decision.1",
+              "global-memory.procedure.1",
+              "task_eval_lab",
+              "global-memory.progress.1",
+              "global-memory.projectBrief.md.1",
+              "indexed.1",
+              "global.skill.2",
+              "indexed.3",
+              "indexed.4"
+            ],
+            "retrieved_lifecycle_states_top_10": [
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted"
+            ],
+            "evidence_status": "supported",
+            "actionable": true,
+            "recall_at_5": 1.0,
+            "hit_at_5": 1.0,
+            "reciprocal_rank": 1.0,
+            "ndcg_at_10": 1.0,
+            "stale_leakage_count": 0,
+            "archived_leakage_count": 0,
+            "superseded_leakage_count": 0,
+            "conflict_visible": false,
+            "project_scope_violation": false,
+            "temporal_scope_violation": false,
+            "uncorroborated_actionable": false,
+            "conflicted_actionable": false,
+            "abstention_failure": false,
+            "invalid_evidence_status": false,
+            "reranker_enabled": false,
+            "reranker_attempted": false,
+            "reranker_available": true,
+            "reranker_failure": false,
+            "rerank_reason": "policy_never",
+            "rerank_latency_ms": 0.0,
+            "total_latency_ms": 4.37
+          },
+          {
+            "case_id": "lme_abstain_3_opaque_status_actionability",
+            "canonical_case_id": "lme_abstain_3_opaque_status_actionability",
+            "partition": "holdout",
+            "is_variant": false,
+            "ability": "abstention",
+            "query": "Execute car stickers status next action",
+            "project": "global-memory",
+            "as_of": null,
+            "relevant_keys": [
+              "car_stickers_status"
+            ],
+            "superseded_keys": [],
+            "should_abstain": true,
+            "retrieved_keys_top_10": [
+              "indexed.1",
+              "task_eval_lab",
+              "indexed.2",
+              "indexed.3",
+              "indexed.4"
+            ],
+            "retrieved_lifecycle_states_top_10": [
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted"
+            ],
+            "evidence_status": "stale",
+            "actionable": false,
+            "recall_at_5": 0.0,
+            "hit_at_5": 0.0,
+            "reciprocal_rank": 0.0,
+            "ndcg_at_10": 0.0,
+            "stale_leakage_count": 0,
+            "archived_leakage_count": 0,
+            "superseded_leakage_count": 0,
+            "conflict_visible": false,
+            "project_scope_violation": false,
+            "temporal_scope_violation": false,
+            "uncorroborated_actionable": false,
+            "conflicted_actionable": false,
+            "abstention_failure": false,
+            "invalid_evidence_status": false,
+            "reranker_enabled": false,
+            "reranker_attempted": false,
+            "reranker_available": true,
+            "reranker_failure": false,
+            "rerank_reason": "policy_never",
+            "rerank_latency_ms": 0.0,
+            "total_latency_ms": 3.0
+          },
+          {
+            "case_id": "lme_abstain_3_opaque_status_actionability_variant_1",
+            "canonical_case_id": "lme_abstain_3_opaque_status_actionability",
+            "partition": "holdout",
+            "is_variant": true,
+            "ability": "abstention",
+            "query": "Using only recorded evidence, execute car stickers status next action",
+            "project": "global-memory",
+            "as_of": null,
+            "relevant_keys": [
+              "car_stickers_status"
+            ],
+            "superseded_keys": [],
+            "should_abstain": true,
+            "retrieved_keys_top_10": [
+              "indexed.1",
+              "task_eval_lab",
+              "indexed.2",
+              "indexed.3",
+              "indexed.4"
+            ],
+            "retrieved_lifecycle_states_top_10": [
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted"
+            ],
+            "evidence_status": "stale",
+            "actionable": false,
+            "recall_at_5": 0.0,
+            "hit_at_5": 0.0,
+            "reciprocal_rank": 0.0,
+            "ndcg_at_10": 0.0,
+            "stale_leakage_count": 0,
+            "archived_leakage_count": 0,
+            "superseded_leakage_count": 0,
+            "conflict_visible": false,
+            "project_scope_violation": false,
+            "temporal_scope_violation": false,
+            "uncorroborated_actionable": false,
+            "conflicted_actionable": false,
+            "abstention_failure": false,
+            "invalid_evidence_status": false,
+            "reranker_enabled": false,
+            "reranker_attempted": false,
+            "reranker_available": true,
+            "reranker_failure": false,
+            "rerank_reason": "policy_never",
+            "rerank_latency_ms": 0.0,
+            "total_latency_ms": 3.02
+          },
+          {
+            "case_id": "lme_abstain_3_opaque_status_actionability_variant_2",
+            "canonical_case_id": "lme_abstain_3_opaque_status_actionability",
+            "partition": "holdout",
+            "is_variant": true,
+            "ability": "abstention",
+            "query": "Current-memory check: execute car stickers status next action",
+            "project": "global-memory",
+            "as_of": null,
+            "relevant_keys": [
+              "car_stickers_status"
+            ],
+            "superseded_keys": [],
+            "should_abstain": true,
+            "retrieved_keys_top_10": [
+              "indexed.1",
+              "global-memory.decision.1",
+              "task_eval_lab",
+              "global-memory.activeContext.md.1",
+              "indexed.2",
+              "global-memory.decision.2",
+              "indexed.3",
+              "indexed.4"
+            ],
+            "retrieved_lifecycle_states_top_10": [
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted"
+            ],
+            "evidence_status": "stale",
+            "actionable": false,
+            "recall_at_5": 0.0,
+            "hit_at_5": 0.0,
+            "reciprocal_rank": 0.0,
+            "ndcg_at_10": 0.0,
+            "stale_leakage_count": 0,
+            "archived_leakage_count": 0,
+            "superseded_leakage_count": 0,
+            "conflict_visible": false,
+            "project_scope_violation": false,
+            "temporal_scope_violation": false,
+            "uncorroborated_actionable": false,
+            "conflicted_actionable": false,
+            "abstention_failure": false,
+            "invalid_evidence_status": false,
+            "reranker_enabled": false,
+            "reranker_attempted": false,
+            "reranker_available": true,
+            "reranker_failure": false,
+            "rerank_reason": "policy_never",
+            "rerank_latency_ms": 0.0,
+            "total_latency_ms": 3.08
+          },
+          {
+            "case_id": "lme_abstain_3_opaque_status_actionability_variant_3",
+            "canonical_case_id": "lme_abstain_3_opaque_status_actionability",
+            "partition": "holdout",
+            "is_variant": true,
+            "ability": "abstention",
+            "query": "Do not guess; execute car stickers status next action",
+            "project": "global-memory",
+            "as_of": null,
+            "relevant_keys": [
+              "car_stickers_status"
+            ],
+            "superseded_keys": [],
+            "should_abstain": true,
+            "retrieved_keys_top_10": [
+              "indexed.1",
+              "task_eval_lab",
+              "indexed.2",
+              "indexed.3",
+              "indexed.4"
+            ],
+            "retrieved_lifecycle_states_top_10": [
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted"
+            ],
+            "evidence_status": "stale",
+            "actionable": false,
+            "recall_at_5": 0.0,
+            "hit_at_5": 0.0,
+            "reciprocal_rank": 0.0,
+            "ndcg_at_10": 0.0,
+            "stale_leakage_count": 0,
+            "archived_leakage_count": 0,
+            "superseded_leakage_count": 0,
+            "conflict_visible": false,
+            "project_scope_violation": false,
+            "temporal_scope_violation": false,
+            "uncorroborated_actionable": false,
+            "conflicted_actionable": false,
+            "abstention_failure": false,
+            "invalid_evidence_status": false,
+            "reranker_enabled": false,
+            "reranker_attempted": false,
+            "reranker_available": true,
+            "reranker_failure": false,
+            "rerank_reason": "policy_never",
+            "rerank_latency_ms": 0.0,
+            "total_latency_ms": 2.95
+          },
+          {
+            "case_id": "lme_abstain_3_opaque_status_actionability_variant_4",
+            "canonical_case_id": "lme_abstain_3_opaque_status_actionability",
+            "partition": "holdout",
+            "is_variant": true,
+            "ability": "abstention",
+            "query": "Within global-memory, execute car stickers status next action",
+            "project": "global-memory",
+            "as_of": null,
+            "relevant_keys": [
+              "car_stickers_status"
+            ],
+            "superseded_keys": [],
+            "should_abstain": true,
+            "retrieved_keys_top_10": [
+              "indexed.1",
+              "task_eval_lab",
+              "indexed.2",
+              "indexed.3",
+              "indexed.4"
+            ],
+            "retrieved_lifecycle_states_top_10": [
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted",
+              "accepted"
+            ],
+            "evidence_status": "stale",
+            "actionable": false,
+            "recall_at_5": 0.0,
+            "hit_at_5": 0.0,
+            "reciprocal_rank": 0.0,
+            "ndcg_at_10": 0.0,
+            "stale_leakage_count": 0,
+            "archived_leakage_count": 0,
+            "superseded_leakage_count": 0,
+            "conflict_visible": false,
+            "project_scope_violation": false,
+            "temporal_scope_violation": false,
+            "uncorroborated_actionable": false,
+            "conflicted_actionable": false,
+            "abstention_failure": false,
+            "invalid_evidence_status": false,
+            "reranker_enabled": false,
+            "reranker_attempted": false,
+            "reranker_available": true,
+            "reranker_failure": false,
+            "rerank_reason": "policy_never",
+            "rerank_latency_ms": 0.0,
+            "total_latency_ms": 2.95
+          }
+        ]
+      },
+      "findings": "Holdout evaluated once with frozen configuration hash. Recall@5 on Holdout was 1.0000 (canonical: 1.0000, variants: 1.0000), and NDCG@10 was 0.8763."
+    },
+    "experiment_8_performance_and_resources": {
+      "description": "Subprocess cold-start benchmark, warm latency distribution, platform-aware peak RSS, and Ollama verification",
+      "flashrank_latency": {
+        "cold_import_and_init_ms": 245.12,
+        "cold_first_rerank_ms": 1.47,
+        "warm_samples_count": 10,
+        "warm_mean_ms": 0.63,
+        "warm_p50_ms": 0.61,
+        "warm_min_ms": 0.53,
+        "warm_max_ms": 0.86,
+        "method": "fresh_subprocess"
+      },
+      "peak_rss_mb": 177.5,
+      "ollama_status": {
+        "status": "verified_zero_resident",
+        "verified_zero_resident": true,
+        "initial_resident_models": [
+          "qwen3-embedding:0.6b"
+        ],
+        "unloaded_models": [
+          "qwen3-embedding:0.6b"
+        ],
+        "current_resident_models": []
+      },
+      "findings": "Resource and latency audit: peak RSS was 177.5 MB (converted with platform-aware units). Fresh subprocess cold initialization took 245.12 ms; warm rerank latency averaged 0.63 ms across 10 samples. Ollama status: verified_zero_resident."
+    }
+  },
+  "profiles": {
+    "fast": {
+      "profile": "fast",
+      "config": {
+        "rrf_k": 60,
+        "lane_weights": {
+          "exact": 1.0,
+          "bm25": 1.0,
+          "vector": 1.0,
+          "decisions": 1.0,
+          "procedures": 1.0,
+          "tasks": 1.0,
+          "conflicts": 1.0,
+          "episodes": 1.0,
+          "graph": 1.0,
+          "artifacts": 1.0
+        },
+        "lane_candidate_limits": {
+          "exact": 5,
+          "bm25": 10,
+          "vector": 8,
+          "decisions": 10,
+          "procedures": 6,
+          "tasks": 10,
+          "conflicts": 5,
+          "episodes": 5,
+          "graph": 5,
+          "artifacts": 5
+        },
+        "graph_hops": 1,
+        "vector_similarity_cutoff": 0.0,
+        "rerank_policy": "never",
+        "rerank_k": 25,
+        "rerank_model": "ms-marco-TinyBERT-L-2-v2",
+        "rerank_margin_threshold": 0.05,
+        "minimum_top1_term_coverage": 0.6,
+        "profile": "fast"
+      },
+      "summary": {
+        "total_queries": 15,
+        "ranking_queries": 10,
+        "abstention_queries": 5,
+        "mean_recall@5": 1.0,
+        "mean_hit@5": 1.0,
+        "mean_mrr": 1.0,
+        "mean_ndcg@10": 0.686,
+        "abstention_accuracy": 1.0,
+        "rerank_attempted_rate": 0.0,
+        "latency": {
+          "p50": 2.54,
+          "p90": 3.24,
+          "p95": 3.24,
+          "p99": 3.24,
+          "mean": 2.72,
+          "count": 15
+        }
+      },
+      "safety": {
+        "safety_pass": true,
+        "total_violations": 0,
+        "stale_leakage_count": 0,
+        "archived_current_truth_leakage_count": 0,
+        "superseded_current_truth_leakage_count": 0,
+        "abstention_failures": 0,
+        "uncorroborated_actionable_count": 0,
+        "conflicted_actionable_count": 0,
+        "project_scope_violation_count": 0,
+        "temporal_scope_violation_count": 0,
+        "invalid_evidence_status_count": 0,
+        "reranker_failure_count": 0
+      }
+    },
+    "standard": {
+      "profile": "standard",
+      "config": {
+        "rrf_k": 60,
+        "lane_weights": {
+          "exact": 1.0,
+          "bm25": 1.0,
+          "vector": 1.0,
+          "decisions": 1.0,
+          "procedures": 1.0,
+          "tasks": 1.0,
+          "conflicts": 1.0,
+          "episodes": 1.0,
+          "graph": 1.0,
+          "artifacts": 1.0
+        },
+        "lane_candidate_limits": {
+          "exact": 5,
+          "bm25": 15,
+          "vector": 8,
+          "decisions": 10,
+          "procedures": 6,
+          "tasks": 10,
+          "conflicts": 5,
+          "episodes": 6,
+          "graph": 10,
+          "artifacts": 5
+        },
+        "graph_hops": 1,
+        "vector_similarity_cutoff": 0.0,
+        "rerank_policy": "conditional",
+        "rerank_k": 25,
+        "rerank_model": "ms-marco-TinyBERT-L-2-v2",
+        "rerank_margin_threshold": 0.05,
+        "minimum_top1_term_coverage": 0.6,
+        "profile": "standard"
+      },
+      "summary": {
+        "total_queries": 15,
+        "ranking_queries": 10,
+        "abstention_queries": 5,
+        "mean_recall@5": 1.0,
+        "mean_hit@5": 1.0,
+        "mean_mrr": 0.8083,
+        "mean_ndcg@10": 0.6671,
+        "abstention_accuracy": 1.0,
+        "rerank_attempted_rate": 0.6667,
+        "latency": {
+          "p50": 12.98,
+          "p90": 22.61,
+          "p95": 25.09,
+          "p99": 25.09,
+          "mean": 12.68,
+          "count": 15
+        }
+      },
+      "safety": {
+        "safety_pass": true,
+        "total_violations": 0,
+        "stale_leakage_count": 0,
+        "archived_current_truth_leakage_count": 0,
+        "superseded_current_truth_leakage_count": 0,
+        "abstention_failures": 0,
+        "uncorroborated_actionable_count": 0,
+        "conflicted_actionable_count": 0,
+        "project_scope_violation_count": 0,
+        "temporal_scope_violation_count": 0,
+        "invalid_evidence_status_count": 0,
+        "reranker_failure_count": 0
+      }
+    },
+    "high_assurance": {
+      "profile": "high_assurance",
+      "config": {
+        "rrf_k": 60,
+        "lane_weights": {
+          "exact": 1.25,
+          "bm25": 1.0,
+          "vector": 1.0,
+          "decisions": 1.25,
+          "procedures": 1.25,
+          "tasks": 1.0,
+          "conflicts": 1.5,
+          "episodes": 0.9,
+          "graph": 1.25,
+          "artifacts": 1.0
+        },
+        "lane_candidate_limits": {
+          "exact": 5,
+          "bm25": 20,
+          "vector": 12,
+          "decisions": 15,
+          "procedures": 8,
+          "tasks": 10,
+          "conflicts": 8,
+          "episodes": 8,
+          "graph": 10,
+          "artifacts": 6
+        },
+        "graph_hops": 2,
+        "vector_similarity_cutoff": 0.0,
+        "rerank_policy": "always",
+        "rerank_k": 25,
+        "rerank_model": "ms-marco-TinyBERT-L-2-v2",
+        "rerank_margin_threshold": 0.05,
+        "minimum_top1_term_coverage": 0.6,
+        "profile": "high_assurance"
+      },
+      "summary": {
+        "total_queries": 15,
+        "ranking_queries": 10,
+        "abstention_queries": 5,
+        "mean_recall@5": 1.0,
+        "mean_hit@5": 1.0,
+        "mean_mrr": 0.8083,
+        "mean_ndcg@10": 0.6671,
+        "abstention_accuracy": 1.0,
+        "rerank_attempted_rate": 1.0,
+        "latency": {
+          "p50": 16.2,
+          "p90": 26.67,
+          "p95": 30.46,
+          "p99": 30.46,
+          "mean": 18.24,
+          "count": 15
+        }
+      },
+      "safety": {
+        "safety_pass": true,
+        "total_violations": 0,
+        "stale_leakage_count": 0,
+        "archived_current_truth_leakage_count": 0,
+        "superseded_current_truth_leakage_count": 0,
+        "abstention_failures": 0,
+        "uncorroborated_actionable_count": 0,
+        "conflicted_actionable_count": 0,
+        "project_scope_violation_count": 0,
+        "temporal_scope_violation_count": 0,
+        "invalid_evidence_status_count": 0,
+        "reranker_failure_count": 0
+      }
+    }
+  },
+  "pareto_frontier": [
+    "fast"
+  ],
+  "recommended_default_profile": "fast",
+  "selection_rationale": "Profile 'fast' strictly dominates all other eligible profiles across measured quality (NDCG@10=0.6860, MRR=1.0000), latency (P50=2.54ms), and rerank overhead (0.0%).",
+  "safety_invariants_verified": {
+    "stale_leakage_zero": true,
+    "archived_leakage_zero": true,
+    "superseded_leakage_zero": true,
+    "abstention_failures_zero": true,
+    "uncorroborated_actionability_zero": true,
+    "conflicted_actionable_zero": true,
+    "project_scope_violation_zero": true,
+    "temporal_scope_violation_zero": true,
+    "invalid_evidence_status_zero": true,
+    "explicit_mismatch_failure": true,
+    "vram_zero_resident": true
+  }
+}

@@ -113,9 +113,10 @@ class TestQuarantineReviews(unittest.TestCase):
             "agent_id": "agent_untrusted",
         }))
         self.assertEqual(summary["reviewer_count"], 3)
-        self.assertEqual(summary["recommendation"], "promote")
-        self.assertGreater(summary["endorse_weight"], summary["reject_weight"])
-        self.assertGreater(summary["abstain_weight"], 0.0)
+        self.assertEqual(summary["recommendation"], "neutral")
+        self.assertEqual(summary["endorse_count"], 1)
+        self.assertEqual(summary["reject_count"], 1)
+        self.assertEqual(summary["abstain_count"], 1)
 
         resolve = memory_mcp_server.tool_mem_resolve_quarantine({
             "key": "operational:shared_config",
@@ -124,7 +125,7 @@ class TestQuarantineReviews(unittest.TestCase):
             "agent": "admin",
         })
         self.assertIn("SUCCESS", resolve)
-        self.assertIn("Recommendation: promote", resolve)
+        self.assertIn("Recommendation: neutral", resolve)
         self.assertIn("Reviewers: 3", resolve)
 
         reviews = json.loads(memory_mcp_server.tool_mem_get_reviews({
@@ -133,12 +134,12 @@ class TestQuarantineReviews(unittest.TestCase):
         }))
         self.assertEqual(reviews, [])
 
+        # Review outcomes remain auditable evidence; they do not mutate a
+        # global reputation score for unrelated future claims.
         reps = json.loads(memory_mcp_server.tool_mem_get_reputations({}))
         rep_by_agent = {row["agent_id"]: row for row in reps}
-        self.assertGreater(rep_by_agent["reviewer_support"]["alpha"], 12.0)
-        self.assertGreater(rep_by_agent["reviewer_reject"]["beta"], 8.0)
-        self.assertEqual(rep_by_agent["reviewer_abstain"]["alpha"], 3.0)
-        self.assertEqual(rep_by_agent["reviewer_abstain"]["beta"], 1.0)
+        self.assertEqual(rep_by_agent["reviewer_support"]["alpha"], 12.0)
+        self.assertEqual(rep_by_agent["reviewer_reject"]["beta"], 8.0)
 
     def test_duplicate_reviewer_updates_existing_review(self):
         self._create_quarantined_operational_claim()

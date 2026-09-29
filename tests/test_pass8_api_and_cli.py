@@ -217,6 +217,7 @@ def test_desktop_api_pass8_endpoints(isolated_pass8_env: Path):
         "car_stickers_status",
         payload={"statement": "active", "rationale": "Applied to fleet"},
         apply=False,
+        actor="mihir",
     )
     assert staged["durable_writes"] == 0
     assert staged["legacy_preserved"] is True
