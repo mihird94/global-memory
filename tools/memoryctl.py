@@ -2306,6 +2306,26 @@ def cmd_programmatic_guard(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_staleness_verify(args: argparse.Namespace) -> int:
+    import memory_mcp_server
+    print(memory_mcp_server.tool_mem_staleness_verify({
+        "file_path": getattr(args, "file_path", "") or "",
+        "stored_hash": getattr(args, "stored_hash", "") or "",
+        "key": getattr(args, "key", "") or "",
+    }))
+    return 0
+
+
+def cmd_causal_recall(args: argparse.Namespace) -> int:
+    import memory_mcp_server
+    print(memory_mcp_server.tool_mem_causal_recall({
+        "query": getattr(args, "query", "") or "",
+        "outcome_filter": getattr(args, "outcome", "resolved_fix") or "resolved_fix",
+        "limit": getattr(args, "limit", 5),
+    }))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Memory control CLI for global-memory skill.")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -2822,6 +2842,18 @@ def main() -> int:
     p_grd.add_argument("--condition", action="store_true", help="Boolean condition for custom assertion")
     p_grd.add_argument("--reason", default="CLI guard verification", help="Reason or rule description")
     p_grd.set_defaults(fn=cmd_programmatic_guard)
+
+    p_stale = sub.add_parser("staleness", help="Open Research (STALE): Verify whether physical files bound to memory have mutated.")
+    p_stale.add_argument("file_path", nargs="?", default="", help="File path to check")
+    p_stale.add_argument("--stored-hash", default="", help="Recorded hash from memory creation time")
+    p_stale.add_argument("--key", default="", help="Semantic fact key with file metadata")
+    p_stale.set_defaults(fn=cmd_staleness_verify)
+
+    p_cr = sub.add_parser("causal-recall", help="Open Research (Episodic Missing Piece): Retrieve memories with causal outcome polarity gating.")
+    p_cr.add_argument("query", nargs="?", default="", help="Search query")
+    p_cr.add_argument("--outcome", default="resolved_fix", choices=["resolved_fix", "failed_attempt", "observation", "any"], help="Filter by outcome polarity")
+    p_cr.add_argument("--limit", type=int, default=5, help="Result limit")
+    p_cr.set_defaults(fn=cmd_causal_recall)
 
     args = parser.parse_args()
     return args.fn(args)

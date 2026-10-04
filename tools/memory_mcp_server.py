@@ -4895,6 +4895,161 @@ def tool_mem_programmatic_guard(args: dict) -> str:
         return json.dumps({"passed": assertion, "guard": guard_name or "custom", "reason": reason})
 
 
+def tool_mem_staleness_verify(args: dict) -> str:
+    """Open Research Frontier (STALE): Verify whether physical files bound to memory have mutated since recording."""
+    import hashlib
+    file_path = str(args.get("file_path", "")).strip()
+    stored_hash = str(args.get("stored_hash", "")).strip().lower()
+    key = str(args.get("key", "")).strip()
+
+    root = _default_mem_root()
+
+    # If key is provided but not file_path, check semantic facts for file_path metadata
+    if not file_path and key:
+        facts_file = root / "semantic" / "facts.json"
+        if facts_file.exists():
+            try:
+                facts = json.loads(facts_file.read_text(encoding="utf-8"))
+                val = facts.get(key)
+                if isinstance(val, dict):
+                    file_path = val.get("file_path", "") or val.get("path", "")
+                    if not stored_hash:
+                        stored_hash = val.get("hash", "") or val.get("content_hash", "")
+            except Exception:
+                pass
+
+    if not file_path:
+        return "ERROR: 'file_path' or a valid 'key' with file metadata is required"
+
+    target = Path(file_path).expanduser()
+    if not target.exists():
+        return json.dumps({
+            "status": "FILE_MISSING",
+            "file_path": str(target),
+            "staleness_risk": 1.0,
+            "message": "Target file no longer exists in filesystem. Bound memories are likely stale or invalid."
+        }, indent=2)
+
+    try:
+        content = target.read_bytes()
+        current_hash = hashlib.sha256(content).hexdigest()[:16]
+        mtime = datetime.fromtimestamp(target.stat().st_mtime, UTC).isoformat()
+        size_bytes = len(content)
+
+        if stored_hash:
+            is_stale = (current_hash.lower() != stored_hash.lower())
+            return json.dumps({
+                "status": "MUTATED_STALE" if is_stale else "CURRENT",
+                "file_path": str(target),
+                "is_stale": is_stale,
+                "staleness_risk": 0.85 if is_stale else 0.0,
+                "stored_hash": stored_hash,
+                "current_hash": current_hash,
+                "last_modified": mtime,
+                "size_bytes": size_bytes,
+                "message": "File has mutated since memory was recorded." if is_stale else "File hash matches stored memory provenance."
+            }, indent=2)
+
+        return json.dumps({
+            "status": "VERIFIED_PRESENT",
+            "file_path": str(target),
+            "current_hash": current_hash,
+            "last_modified": mtime,
+            "size_bytes": size_bytes,
+            "staleness_risk": 0.0,
+            "message": "File is present and reachable."
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({
+            "status": "READ_ERROR",
+            "file_path": str(target),
+            "staleness_risk": 0.5,
+            "error": str(e)
+        }, indent=2)
+
+
+def tool_mem_causal_recall(args: dict) -> str:
+    """Open Research Frontier (Episodic Missing Piece): Retrieve memories with explicit causal outcome polarity gating."""
+    query = str(args.get("query", "")).strip().lower()
+    outcome_filter = str(args.get("outcome_filter", "resolved_fix")).strip().lower()
+    limit = int(args.get("limit", 5))
+
+    root = _default_mem_root()
+    results = []
+
+    # 1. Scan operational error retrospectives (failures + mitigations)
+    err_file = root / "operational" / "errors.json"
+    if err_file.exists():
+        try:
+            errs = json.loads(err_file.read_text(encoding="utf-8"))
+            for e in errs:
+                trace = e.get("trace", "")
+                mitigation = e.get("mitigation", "")
+                root_cause = e.get("root_cause", "")
+                # Mitigation represents resolved_fix
+                if mitigation:
+                    results.append({
+                        "causal_outcome": "resolved_fix",
+                        "summary": f"Mitigation: {mitigation} (Root cause: {root_cause})",
+                        "source": "operational/errors.json",
+                        "timestamp": e.get("timestamp")
+                    })
+                # Trace represents failed_attempt
+                if trace:
+                    results.append({
+                        "causal_outcome": "failed_attempt",
+                        "summary": f"Failure: {trace} (Root cause: {root_cause})",
+                        "source": "operational/errors.json",
+                        "timestamp": e.get("timestamp")
+                    })
+        except Exception:
+            pass
+
+    # 2. Scan recent episodic logs
+    history_dir = root / "episodic" / "history"
+    if history_dir.exists():
+        for p in sorted(history_dir.glob("*.md"), reverse=True)[:5]:
+            try:
+                for line in p.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("### "):
+                        text = line[4:].strip()
+                        low = text.lower()
+                        outcome = "observation"
+                        if any(w in low for w in ("fix", "passed", "resolved", "mitigated", "success", "verified")):
+                            outcome = "resolved_fix"
+                        elif any(w in low for w in ("failed", "error", "exception", "bug", "traceback")):
+                            outcome = "failed_attempt"
+
+                        results.append({
+                            "causal_outcome": outcome,
+                            "summary": text,
+                            "source": str(p.name),
+                            "timestamp": p.stem
+                        })
+            except Exception:
+                pass
+
+    # 3. Filter by outcome polarity
+    if outcome_filter != "any":
+        results = [r for r in results if r["causal_outcome"] == outcome_filter]
+
+    # 4. Rank by query relevance (token overlap)
+    q_tokens = [t for t in re.split(r"\W+", query) if len(t) > 2] if query else []
+    if q_tokens:
+        def score(r):
+            low = r["summary"].lower()
+            return sum(1 for t in q_tokens if t in low)
+        results = sorted(results, key=score, reverse=True)
+
+    return json.dumps({
+        "status": "ok",
+        "query": query,
+        "outcome_filter": outcome_filter,
+        "total_matched": len(results),
+        "results": results[:limit]
+    }, indent=2)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Tool registry
 # ──────────────────────────────────────────────────────────────────────────────
@@ -5710,6 +5865,32 @@ TOOLS = {
                 "reason":        {"type": "string", "description": "Reason or invariant description"},
             },
             "required": ["guard_name"],
+        },
+    },
+    "mem_staleness_verify": {
+        "fn": tool_mem_staleness_verify,
+        "description": "Open Research Frontier (STALE): Verify whether physical files bound to memory have mutated since recording.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file_path":   {"type": "string", "description": "Target file path to verify"},
+                "stored_hash": {"type": "string", "description": "Optional expected SHA-256 hash recorded when memory was created"},
+                "key":         {"type": "string", "description": "Optional semantic memory key with file metadata"},
+            },
+            "required": [],
+        },
+    },
+    "mem_causal_recall": {
+        "fn": tool_mem_causal_recall,
+        "description": "Open Research Frontier (Episodic Missing Piece): Retrieve memories with explicit causal outcome polarity gating (resolved_fix vs failed_attempt).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query":          {"type": "string", "description": "Search query keywords"},
+                "outcome_filter": {"type": "string", "default": "resolved_fix", "description": "Outcome polarity: 'resolved_fix', 'failed_attempt', 'observation', or 'any'"},
+                "limit":          {"type": "integer", "default": 5, "description": "Max results to return"},
+            },
+            "required": [],
         },
     },
 }

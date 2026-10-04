@@ -181,3 +181,74 @@ def test_programmatic_guard():
         "reason": "Branch must be git worktree isolated"
     }))
     assert custom_guard["passed"] is True
+
+
+def test_staleness_verification(clean_memory_root, tmp_path):
+    sample_file = tmp_path / "config.yaml"
+    sample_file.write_text("port: 8080\n")
+
+    # 1. Verify when present without stored_hash
+    res1 = json.loads(memory_mcp_server.tool_mem_staleness_verify({
+        "file_path": str(sample_file)
+    }))
+    assert res1["status"] == "VERIFIED_PRESENT"
+    orig_hash = res1["current_hash"]
+
+    # 2. Verify with matching hash
+    res2 = json.loads(memory_mcp_server.tool_mem_staleness_verify({
+        "file_path": str(sample_file),
+        "stored_hash": orig_hash
+    }))
+    assert res2["status"] == "CURRENT"
+    assert res2["is_stale"] is False
+    assert res2["staleness_risk"] == 0.0
+
+    # 3. Modify file (simulating environment drift)
+    sample_file.write_text("port: 9090\n")
+    res3 = json.loads(memory_mcp_server.tool_mem_staleness_verify({
+        "file_path": str(sample_file),
+        "stored_hash": orig_hash
+    }))
+    assert res3["status"] == "MUTATED_STALE"
+    assert res3["is_stale"] is True
+    assert res3["staleness_risk"] > 0.8
+
+    # 4. Delete file (simulating deleted artifact)
+    sample_file.unlink()
+    res4 = json.loads(memory_mcp_server.tool_mem_staleness_verify({
+        "file_path": str(sample_file)
+    }))
+    assert res4["status"] == "FILE_MISSING"
+    assert res4["staleness_risk"] == 1.0
+
+
+def test_causal_recall(clean_memory_root):
+    errs_file = clean_memory_root / "operational" / "errors.json"
+    errs_file.write_text(json.dumps([
+        {
+            "timestamp": "2026-10-04T01:00:00Z",
+            "trace": "sqlite3.OperationalError: database locked during multi-process run",
+            "root_cause": "Missing WAL mode",
+            "mitigation": "Set PRAGMA journal_mode=WAL and PRAGMA busy_timeout=5000",
+        }
+    ]))
+
+    # 1. Query for resolved fixes (should NOT return the failure trace)
+    fixes = json.loads(memory_mcp_server.tool_mem_causal_recall({
+        "query": "sqlite locked",
+        "outcome_filter": "resolved_fix"
+    }))
+    assert fixes["status"] == "ok"
+    assert len(fixes["results"]) >= 1
+    assert fixes["results"][0]["causal_outcome"] == "resolved_fix"
+    assert "busy_timeout" in fixes["results"][0]["summary"]
+
+    # 2. Query for failed attempts
+    failures = json.loads(memory_mcp_server.tool_mem_causal_recall({
+        "query": "sqlite locked",
+        "outcome_filter": "failed_attempt"
+    }))
+    assert len(failures["results"]) >= 1
+    assert failures["results"][0]["causal_outcome"] == "failed_attempt"
+    assert "OperationalError" in failures["results"][0]["summary"]
+
