@@ -2772,6 +2772,61 @@ def tool_mem_task_complete(args: dict) -> str:
         return f"ERROR: failed to complete task: {exc}"
 
 
+def redact_credentials(text: str) -> tuple[str, bool]:
+    """Redact sensitive credentials, API keys, and private tokens."""
+    if not isinstance(text, str) or not text:
+        return text, False
+
+    redacted = text
+    patterns = [
+        # AWS Access Key ID
+        (r"\b(AKIA[0-9A-Z]{16})\b", "[REDACTED_AWS_KEY]"),
+        # AWS Secret Access Key (look for key/secret followed by 40 char base64)
+        (r"(?i)\b(secret(?:_access_key)?|aws_secret|api_secret|secret)\s*[:=]\s*['\"]?([0-9a-zA-Z/+]{40})['\"]?", r"\1=[REDACTED_AWS_SECRET]"),
+        # OpenAI API Key
+        (r"\b(sk-[a-zA-Z0-9]{20,})\b", "[REDACTED_OPENAI_KEY]"),
+        (r"\b(sk-proj-[a-zA-Z0-9_\-]{20,})\b", "[REDACTED_OPENAI_KEY]"),
+        # Anthropic API Key
+        (r"\b(sk-ant-[a-zA-Z0-9_\-]{20,})\b", "[REDACTED_ANTHROPIC_KEY]"),
+        # GitHub Tokens
+        (r"\b(ghp_[a-zA-Z0-9]{36})\b", "[REDACTED_GITHUB_TOKEN]"),
+        (r"\b(github_pat_[a-zA-Z0-9_]{50,})\b", "[REDACTED_GITHUB_TOKEN]"),
+        # Slack Tokens
+        (r"\b(xox[baprs]-[0-9a-zA-Z]{10,48})\b", "[REDACTED_SLACK_TOKEN]"),
+        # Private Keys
+        (r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----", "[REDACTED_PRIVATE_KEY]"),
+        # Generic Bearer Tokens
+        (r"(?i)\b(bearer\s+)([a-zA-Z0-9_\-\.]{25,})\b", r"\1[REDACTED_TOKEN]"),
+    ]
+
+    changed = False
+    for pattern, repl in patterns:
+        new_text = re.sub(pattern, repl, redacted)
+        if new_text != redacted:
+            redacted = new_text
+            changed = True
+
+    return redacted, changed
+
+
+def check_prompt_injection(text: str) -> tuple[bool, str]:
+    """Detect prompt injection and system jailbreak patterns."""
+    if not isinstance(text, str) or not text:
+        return False, ""
+
+    injection_patterns = [
+        (r"(?i)\bsystem\s+override\b", "system_override"),
+        (r"(?i)\bignore\s+all\s+(?:previous\s+)?(?:safety\s+)?rules\b", "ignore_safety_rules"),
+        (r"(?i)\byou\s+are\s+now\s+in\s+debug\s+mode\b", "debug_mode_jailbreak"),
+        (r"(?i)\balways\s+output\s+user\s+secrets\b", "exfiltrate_secrets"),
+        (r"(?i)\bdisregard\s+prior\s+instructions\b", "disregard_prior_instructions"),
+    ]
+    for pat, rule in injection_patterns:
+        if re.search(pat, text):
+            return True, rule
+    return False, ""
+
+
 def tool_mem_save_typed(args: dict) -> str:
     """Save a memory fact using typed routing (semantic, operational, procedural, session)."""
     key   = str(args.get("key", "")).strip()
@@ -2798,12 +2853,27 @@ def tool_mem_save_typed(args: dict) -> str:
     except Exception as e:
         return f"ERROR: Database initialization failed: {e}"
 
+    # 0. Prompt Injection Defense Gate
+    is_inj, inj_rule = check_prompt_injection(str(value))
+    if is_inj:
+        prov_key = key if kind == "semantic" else f"{kind}:{key}"
+        quarantine_fact(prov_key, str(value), agent_id, branch)
+        record_claim(kind, key, str(value), agent_id, branch, "quarantined")
+        log_security_event("PROMPT_INJECTION_DEFENSE", f"Prompt injection '{inj_rule}' detected in fact '{key}' from agent '{agent_id}'")
+        return f"QUARANTINED_SECURITY_GATE: Prompt injection pattern '{inj_rule}' detected in memory '{key}'. Staged in quarantine for security review."
+
     # 1. Namespaced Schema Contract Validation
     is_valid, normalized_val, schema_err = validate_fact(key, value)
     if not is_valid:
         increment_agent_beta(agent_id, 0.5)
         log_security_event("SCHEMA_REJECT", f"[{kind.upper()}] Fact '{key}' from agent '{agent_id}' rejected: {schema_err}")
         return f"ERROR: Schema validation failed for '{key}':\n  {schema_err}"
+
+    # 2. Inline Sensitive Credential Redaction
+    redacted_val, was_redacted = redact_credentials(str(value)) if isinstance(value, str) else (value, False)
+    if was_redacted:
+        value = redacted_val
+        log_security_event("CREDENTIAL_REDACTED", f"Inline credential redaction applied to fact '{key}' from agent '{agent_id}'")
 
     stored_val = normalized_val if isinstance(normalized_val, (dict, list)) else value
     claim_val_str = json.dumps(stored_val, sort_keys=True) if isinstance(stored_val, (dict, list)) else str(stored_val)
@@ -2923,6 +2993,8 @@ def tool_mem_save_typed(args: dict) -> str:
                 conn.close()
         except Exception:
             pass
+        if was_redacted:
+            return f"[REDACTED_PRIVACY_FILTER] Key '{key}' unchanged (same value exists with redacted credentials)."
         return f"INFO: Key '{key}' in bucket '{kind}' unchanged (same value exists)."
 
     facts[key] = stored_val
@@ -2930,6 +3002,8 @@ def tool_mem_save_typed(args: dict) -> str:
     record_provenance(prov_key, agent_id, branch, quarantined=0)
     record_claim(kind, key, claim_val_str, agent_id, branch, "active")
     increment_agent_alpha(agent_id, 1.0)
+    if was_redacted:
+        return f"[REDACTED_PRIVACY_FILTER] Fact saved with credentials redacted: {key} = {claim_val_str}"
     return f"[{kind.upper()}] Fact saved: {key} = {claim_val_str}"
 
 
@@ -4156,6 +4230,138 @@ def tool_mem_get_entity_memories(args: dict) -> str:
     }, indent=2)
 
 
+def tool_mem_file_context(args: dict) -> str:
+    """Pre-edit file risk, pattern, and gotcha audit for coding agents.
+    Inspects memories for known gotchas, activeContext constraints, patterns, and historical lessons
+    associated with a specific file path or module before editing."""
+    file_path = str(args.get("file_path", "")).strip()
+    if not file_path:
+        return "ERROR: 'file_path' is required"
+    project = str(args.get("project", "")).strip()
+
+    p = Path(file_path)
+    file_name = p.name
+    stem = p.stem
+    parts = [part.lower() for part in p.parts if part not in ("/", "\\", ".", "..")]
+
+    # Extract AST symbols if file exists on disk and is a Python file
+    ast_symbols: list[str] = []
+    ast_imports: list[str] = []
+    if p.exists() and p.is_file() and p.suffix.lower() == ".py":
+        try:
+            import ast
+            code = p.read_text(encoding="utf-8", errors="replace")
+            tree = ast.parse(code, filename=str(p))
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    ast_symbols.append(node.name)
+                elif isinstance(node, ast.ClassDef):
+                    ast_symbols.append(node.name)
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        ast_imports.append(alias.name)
+                elif isinstance(node, ast.ImportFrom):
+                    if node.module:
+                        ast_imports.append(node.module)
+        except Exception:
+            pass
+
+    ast_symbols = sorted(set(ast_symbols))
+    ast_imports = sorted(set(ast_imports))
+
+    # Query context retrieval planner using terms from file path and key AST symbols
+    symbol_terms = " ".join(ast_symbols[:6])
+    query = f"{stem} {file_name} {' '.join(parts[-3:])} {symbol_terms}".strip()
+    root = _default_mem_root()
+    try:
+        from context_retrieval_planner import retrieve
+        ret = retrieve(root, query, project=project, token_budget=1400)
+        items = ret.get("items", [])
+    except Exception:
+        items = []
+
+    # Check for direct file references or lessons or symbol matches
+    relevant_gotchas = []
+    symbol_gotchas = []
+    for item in items:
+        stmt = str(item.get("statement", ""))
+        key = str(item.get("key", ""))
+        matched_syms = [s for s in ast_symbols if s.lower() in stmt.lower() or s.lower() in key.lower()]
+
+        file_match = (stem.lower() in stmt.lower() or file_name.lower() in stmt.lower() or any(part in stmt.lower() for part in parts[-2:]))
+        if file_match or matched_syms:
+            entry = {
+                "source": item.get("source"),
+                "key": key,
+                "lane": item.get("lane"),
+                "warning": item.get("warning"),
+                "matched_symbols": matched_syms if matched_syms else None,
+                "guidance": stmt[:240]
+            }
+            relevant_gotchas.append(entry)
+            if matched_syms:
+                symbol_gotchas.append(entry)
+
+    report = {
+        "file_path": file_path,
+        "project": project or "global",
+        "ast_analyzed": bool(ast_symbols or ast_imports),
+        "ast_top_symbols": ast_symbols[:12],
+        "ast_dependencies": ast_imports[:8],
+        "pre_edit_risk_level": "CAUTION" if any(g.get("warning") for g in relevant_gotchas) else "NORMAL",
+        "relevant_memories_found": len(relevant_gotchas),
+        "symbol_specific_gotchas": len(symbol_gotchas),
+        "guidance": relevant_gotchas[:6] if relevant_gotchas else "No known historical bugs, gotchas, or policy restrictions recorded for this file."
+    }
+    return json.dumps(report, indent=2)
+
+
+def tool_mem_learn_error(args: dict) -> str:
+    """Crystallize a terminal/test/compiler error trace into a procedural lesson and rule.
+    Extracts the root error signature and stores an operational/procedural memory to prevent recurring agent mistakes."""
+    error_trace = str(args.get("error_trace", "") or args.get("error", "")).strip()
+    if not error_trace:
+        return "ERROR: 'error_trace' or 'error' is required"
+    command = str(args.get("command", "")).strip()
+    project = str(args.get("project", "")).strip()
+    agent_id = _normalize_agent_id(args.get("agent", "").strip() or "developer")
+
+    # Extract signature (e.g. last line or error type)
+    lines = [line.strip() for line in error_trace.splitlines() if line.strip()]
+    error_signature = lines[-1] if lines else "Unknown error"
+    for line in reversed(lines):
+        if any(err in line for err in ("Error:", "Exception:", "FAILED", "fatal:", "panic:", "SyntaxError", "TypeError", "ImportError")):
+            error_signature = line
+            break
+
+    # Crystallize procedural rule key
+    clean_sig = re.sub(r"[^a-zA-Z0-9_]+", "_", error_signature.lower())[:48].strip("_")
+    mem_key = f"lesson.{clean_sig}" if not project else f"{project}.lesson.{clean_sig}"
+
+    lesson_content = {
+        "signature": error_signature,
+        "failing_command": command or "unknown",
+        "root_cause_summary": lines[-1] if len(lines) > 1 else error_signature,
+        "resolution_guidance": str(args.get("resolution", "Investigate dependency versions, schema constraints, or execution environment.")),
+        "timestamp": datetime.now(UTC).isoformat()
+    }
+
+    # Save via save_typed as procedural memory
+    save_res = tool_mem_save_typed({
+        "key": mem_key,
+        "value": json.dumps(lesson_content),
+        "kind": "procedural",
+        "agent": agent_id
+    })
+
+    return json.dumps({
+        "status": "learned",
+        "lesson_key": mem_key,
+        "error_signature": error_signature,
+        "storage_result": save_res
+    }, indent=2)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Tool registry
 # ──────────────────────────────────────────────────────────────────────────────
@@ -4812,6 +5018,33 @@ TOOLS = {
                 "action":  {"type": "string", "description": "Action: 'get' or 'list'", "default": "get"},
             },
             "required": [],
+        },
+    },
+    "mem_file_context": {
+        "fn": tool_mem_file_context,
+        "description": "Pre-edit file risk and gotcha audit for coding agents. Inspects memories for known gotchas, activeContext constraints, patterns, and historical lessons before editing.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Absolute or repo-relative path of the file to inspect"},
+                "project":   {"type": "string", "description": "Optional project identifier"},
+            },
+            "required": ["file_path"],
+        },
+    },
+    "mem_learn_error": {
+        "fn": tool_mem_learn_error,
+        "description": "Crystallize a terminal/test/compiler error trace into a procedural lesson and rule to prevent recurring mistakes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "error_trace": {"type": "string", "description": "Raw terminal output, traceback, or compiler error message"},
+                "command":     {"type": "string", "description": "The command that failed"},
+                "resolution":  {"type": "string", "description": "Optional recommended fix or root-cause explanation"},
+                "project":     {"type": "string", "description": "Optional project identifier"},
+                "agent":       {"type": "string", "description": "Optional agent name"},
+            },
+            "required": ["error_trace"],
         },
     },
 }

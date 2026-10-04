@@ -249,6 +249,35 @@ def _fact_authority(value: Any) -> str:
     return "verified_system_output" if _fact_context(value)["record_shape"] == "structured" else "imported_legacy"
 
 
+def _extract_effective_time(text: str) -> str | None:
+    """Extract an effective date/timestamp from header text or paragraph."""
+    if not text:
+        return None
+    m = re.search(r"\b(20\d{2}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?)\b", text)
+    if m:
+        return m.group(1).replace(" ", "T")
+    m = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _effective_timestamp(eff: Any) -> float:
+    """Convert an effective_at date string into a POSIX timestamp for comparison."""
+    if not eff:
+        return 0.0
+    try:
+        s = str(eff).strip()[:19].replace(" ", "T")
+        if len(s) == 10:
+            s += "T00:00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return 0.0
+
+
 def _tokenize(text: str) -> list[str]:
     # Treat dotted/underscored keys as natural-language terms as well as keys.
     raw = re.findall(r"[A-Za-z0-9]+", text.lower())
@@ -366,13 +395,18 @@ def _make_item(
 
 def _run_lane_exact(root: Path, query: str, terms: set[str], project: str, as_of: str | None) -> list[dict[str, Any]]:
     items = []
-    facts_path = root / "semantic" / "facts.json"
     facts = {}
-    if facts_path.exists():
-        try:
-            facts = json.loads(facts_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    fact_sources = {}
+    for bucket in ("semantic", "operational", "procedural"):
+        b_path = root / bucket / "facts.json"
+        if b_path.exists():
+            try:
+                b_data = json.loads(b_path.read_text(encoding="utf-8"))
+                for k, v in b_data.items():
+                    facts[k] = v
+                    fact_sources[k] = f"{bucket}/facts.json#{k}"
+            except Exception:
+                pass
 
     q_clean = query.strip()
     q_canon = canonicalize(q_clean)
@@ -385,7 +419,8 @@ def _run_lane_exact(root: Path, query: str, terms: set[str], project: str, as_of
         canon_res = canonicalize(resolved_key)
         for k, v in facts.items():
             if canonicalize(k) in (q_canon, canon_res):
-                items.append(_make_item("exact", k, v, _fact_authority(v), f"semantic/facts.json#{k}", rank,
+                src = fact_sources.get(k, f"semantic/facts.json#{k}")
+                items.append(_make_item("exact", k, v, _fact_authority(v), src, rank,
                                         component_score=1.0, exact_match=True,
                                         scope={"project": project} if project else {},
                                         **_fact_context(v),
@@ -394,7 +429,8 @@ def _run_lane_exact(root: Path, query: str, terms: set[str], project: str, as_of
 
     for k, v in facts.items():
         if canonicalize(k) == q_canon or k.lower() in terms:
-            items.append(_make_item("exact", k, v, _fact_authority(v), f"semantic/facts.json#{k}", rank,
+            src = fact_sources.get(k, f"semantic/facts.json#{k}")
+            items.append(_make_item("exact", k, v, _fact_authority(v), src, rank,
                                     component_score=1.0, exact_match=True,
                                     scope={"project": project} if project else {},
                                     **_fact_context(v),
@@ -409,17 +445,21 @@ def _run_lane_bm25(root: Path, query: str, query_tokens: list[str], project: str
     if not query_tokens:
         return []
 
-    # Gather documents: facts + project bank paragraphs
+    # Gather documents: facts + project bank paragraphs across all buckets
     docs: list[tuple[str, str, str, str]] = []  # (doc_id, key, text, source)
-    facts_path = root / "semantic" / "facts.json"
-    if facts_path.exists():
-        try:
-            facts = json.loads(facts_path.read_text(encoding="utf-8"))
-            for k, v in facts.items():
-                val_text = str(v) if not isinstance(v, (dict, list)) else json.dumps(v)
-                docs.append((f"fact:{k}", k, f"{k} {val_text}", f"semantic/facts.json#{k}"))
-        except Exception:
-            pass
+    doc_eff_map: dict[str, str] = {}
+    facts = {}
+    for bucket in ("semantic", "operational", "procedural"):
+        b_path = root / bucket / "facts.json"
+        if b_path.exists():
+            try:
+                b_data = json.loads(b_path.read_text(encoding="utf-8"))
+                for k, v in b_data.items():
+                    val_text = str(v) if not isinstance(v, (dict, list)) else json.dumps(v)
+                    docs.append((f"fact:{k}", k, f"{k} {val_text}", f"{bucket}/facts.json#{k}"))
+                    facts[k] = v
+            except Exception:
+                pass
 
     if project:
         proj_dir = root / "projects" / project
@@ -429,13 +469,22 @@ def _run_lane_bm25(root: Path, query: str, query_tokens: list[str], project: str
                 if fp.exists():
                     try:
                         content = fp.read_text(encoding="utf-8", errors="replace")
-                        for idx, p in enumerate(re.split(r"\n\s*\n", content)):
-                            p_clean = p.strip()
-                            if len(p_clean) > 20:
-                                date_match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", p_clean)
-                                if as_of and date_match and date_match.group(1) > str(as_of)[:10]:
-                                    continue
-                                docs.append((f"{project}.{fn}.{idx}", f"{project}.{fn}.{idx}", p_clean, str(fp)))
+                        sections = re.split(r"\n(?=#{1,4} )", content)
+                        doc_idx = 0
+                        for sec in sections:
+                            sec_header = sec.splitlines()[0] if sec.splitlines() else ""
+                            sec_date = _extract_effective_time(sec_header)
+                            for p in re.split(r"\n\s*\n", sec):
+                                p_clean = p.strip()
+                                if len(p_clean) > 20:
+                                    eff = _extract_effective_time(p_clean) or sec_date
+                                    if as_of and eff and str(eff)[:10] > str(as_of)[:10]:
+                                        continue
+                                    doc_id = f"{project}.{fn}.{doc_idx}"
+                                    docs.append((doc_id, doc_id, p_clean, str(fp)))
+                                    if eff:
+                                        doc_eff_map[doc_id] = eff
+                                    doc_idx += 1
                     except Exception:
                         pass
 
@@ -479,17 +528,22 @@ def _run_lane_bm25(root: Path, query: str, query_tokens: list[str], project: str
             scores.append((score, idx))
 
     scores.sort(key=lambda x: x[0], reverse=True)
+    if scores:
+        top_score = scores[0][0]
+        cutoff = max(0.12, top_score * 0.35)
+        scores = [s for s in scores if s[0] >= cutoff]
+
     items = []
     for rank, (score, doc_idx) in enumerate(scores[:max(1, candidate_limit)], start=1):
         doc_id, key, text, source = docs[doc_idx]
-        fact_value = facts.get(key) if source.startswith("semantic/facts.json#") else None
+        fact_value = facts.get(key)
         authority = "source_document" if "projects/" in source else _fact_authority(fact_value)
         context = {} if fact_value is None else _fact_context(fact_value)
         doc_eff_at = context.pop("effective_at", None)
         if not doc_eff_at:
-            date_match = re.search(r"(20\d{2}-\d{2}-\d{2})", text)
-            if date_match:
-                doc_eff_at = date_match.group(1)
+            doc_eff_at = doc_eff_map.get(doc_id)
+        if not doc_eff_at:
+            doc_eff_at = _extract_effective_time(text)
         items.append(_make_item("bm25", key, text, authority,
                                 source, rank, component_score=score, bm25_score=score,
                                 scope={"project": project} if project else {},
@@ -497,6 +551,21 @@ def _run_lane_bm25(root: Path, query: str, query_tokens: list[str], project: str
                                 **context,
                                 inclusion_reason=f"Lexical BM25 score {score:.2f}"))
     return items
+
+
+
+_fastembed_model_cache = None
+_facts_embedding_cache: dict[Any, Any] = {}
+
+def _get_fastembed_model():
+    global _fastembed_model_cache
+    if _fastembed_model_cache is None:
+        try:
+            from fastembed import TextEmbedding
+            _fastembed_model_cache = TextEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        except Exception:
+            _fastembed_model_cache = False
+    return _fastembed_model_cache if _fastembed_model_cache is not False else None
 
 
 @lru_cache(maxsize=64)
@@ -519,75 +588,135 @@ def _run_lane_vector(
     similarity_cutoff: float = 0.0,
     candidate_limit: int = 8,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    if not enable_indexed_vector:
-        return [], {"backend": "disabled_model_free", "available": False,
-                    "reason": "Interactive navigation does not load an embedding model"}
     db = root / "gms_trust.sqlite"
-    if not db.exists():
-        return [], {"backend": "sqlite_embeddings", "available": False, "reason": "database missing"}
-    try:
-        conn = sqlite3.connect(str(db))
-        cur = conn.cursor()
-        cur.execute("SELECT DISTINCT dim, model FROM gms_embeddings")
-        stored_entries = cur.fetchall()
-        conn.close()
+    
+    # Check if pre-indexed sqlite embeddings exist
+    if enable_indexed_vector and db.exists():
+        try:
+            conn = sqlite3.connect(str(db))
+            cur = conn.cursor()
+            cur.execute("SELECT DISTINCT dim, model FROM gms_embeddings")
+            stored_entries = cur.fetchall()
+            conn.close()
 
-        if not stored_entries:
-            return [], {"backend": "sqlite_embeddings", "available": False,
-                        "reason": "No embeddings stored in database"}
+            if stored_entries:
+                stored_models = {row[1] for row in stored_entries}
+                if embedding_model and embedding_model not in stored_models:
+                    return [], {"backend": "sqlite_embeddings", "available": False, "reason": f"Model mismatch: requested '{embedding_model}', found {sorted(stored_models)}"}
+                model_dims = {row[0] for row in stored_entries if row[1] == embedding_model}
+                stored_dim = next(iter(model_dims)) if model_dims else stored_entries[0][0]
+                vector = tuple(query_embedding) if query_embedding is not None else _indexed_query_embedding(query, embedding_model)
+                if len(vector) != stored_dim:
+                    return [], {"backend": "sqlite_embeddings", "available": False, "reason": f"Dimension mismatch: expected {stored_dim}, got {len(vector)}"}
+                import memory_mcp_server
+                hits = memory_mcp_server.search_sqlite_embeddings(
+                    list(vector), top_k=max(20, candidate_limit * 2), model=embedding_model, db_path=db
+                )
+                items = []
+                for hit in hits:
+                    sim = float(hit.get("score") or 0.0)
+                    if sim < max(0.25, similarity_cutoff):
+                        continue
+                    source = str(hit.get("source") or "")
+                    marker = f"/projects/{project}/" if project else ""
+                    if project and "/projects/" in source and marker not in source:
+                        continue
+                    text = str(hit.get("text") or "")
+                    if as_of:
+                        date_match = re.search(r"(\d{4}-\d{2}-\d{2})", source)
+                        if date_match and date_match.group(1) > as_of[:10]:
+                            continue
+                    rank = len(items) + 1
+                    items.append(_make_item(
+                        "vector", f"indexed.{hit.get('id', rank)}", text, "source_document", source, rank,
+                        component_score=sim, vector_similarity=sim, scope={"project": project} if project else {},
+                        inclusion_reason=f"Indexed embedding similarity {sim:.3f}"
+                    ))
+                    if len(items) >= candidate_limit:
+                        break
+                return items, {"backend": "sqlite_embeddings", "available": True, "model": embedding_model, "hits": len(items)}
+        except Exception as exc:
+            if enable_indexed_vector:
+                return [], {"backend": "sqlite_embeddings", "available": False, "reason": str(exc)[:160]}
 
-        stored_models = {row[1] for row in stored_entries}
-        if embedding_model and embedding_model not in stored_models:
-            return [], {
-                "backend": "sqlite_embeddings",
-                "available": False,
-                "model": embedding_model,
-                "reason": f"Model mismatch: requested '{embedding_model}' not found in gms_embeddings (available: {sorted(stored_models)})",
-            }
+    if enable_indexed_vector:
+        return [], {"backend": "sqlite_embeddings", "available": False, "reason": "No sqlite indexed embeddings available"}
 
-        model_dims = {row[0] for row in stored_entries if row[1] == embedding_model}
-        stored_dim = next(iter(model_dims)) if model_dims else stored_entries[0][0]
+    # In-process FastEmbed semantic fallback across all typed facts
+    fe = _get_fastembed_model()
+    if fe is not None:
+        try:
+            import numpy as np
+            fingerprints = []
+            for bucket in ("semantic", "operational", "procedural"):
+                b_path = root / bucket / "facts.json"
+                if b_path.exists():
+                    st = b_path.stat()
+                    fingerprints.append((bucket, st.st_mtime_ns, st.st_size))
+                else:
+                    fingerprints.append((bucket, 0, 0))
+            cache_key = (str(root.resolve()), tuple(fingerprints))
 
-        vector = tuple(query_embedding) if query_embedding is not None else _indexed_query_embedding(query, embedding_model)
-        if len(vector) != stored_dim:
-            return [], {
-                "backend": "sqlite_embeddings",
-                "available": False,
-                "model": embedding_model,
-                "reason": f"Dimension mismatch: query dimension {len(vector)} != stored dimension {stored_dim}",
-            }
+            cached = _facts_embedding_cache.get(cache_key)
+            if cached is not None:
+                facts_list, fact_sources, norm_matrix = cached
+            else:
+                facts = {}
+                fact_sources = {}
+                for bucket in ("semantic", "operational", "procedural"):
+                    b_path = root / bucket / "facts.json"
+                    if b_path.exists():
+                        try:
+                            b_data = json.loads(b_path.read_text(encoding="utf-8"))
+                            for k, v in b_data.items():
+                                facts[k] = v
+                                fact_sources[k] = f"{bucket}/facts.json#{k}"
+                        except Exception:
+                            pass
+                if facts:
+                    facts_list = list(facts.items())
+                    texts = [f"{k}: {v}" for k, v in facts_list]
+                    raw_embs = np.array(list(fe.embed(texts)), dtype=np.float32)
+                    norms = np.linalg.norm(raw_embs, axis=1, keepdims=True)
+                    norm_matrix = raw_embs / np.maximum(norms, 1e-12)
+                else:
+                    facts_list = []
+                    norm_matrix = None
 
-        import memory_mcp_server
-        hits = memory_mcp_server.search_sqlite_embeddings(
-            list(vector), top_k=max(20, candidate_limit * 2), model=embedding_model, db_path=db
-        )
-        items = []
-        for hit in hits:
-            sim = float(hit.get("score") or 0.0)
-            if sim < similarity_cutoff:
-                continue
-            source = str(hit.get("source") or "")
-            # A project-scoped query may use global episodic history, but must
-            # never import another named project's bank.
-            marker = f"/projects/{project}/" if project else ""
-            if project and "/projects/" in source and marker not in source:
-                continue
-            text = str(hit.get("text") or "")
-            if as_of:
-                date_match = re.search(r"(\d{4}-\d{2}-\d{2})", source)
-                if date_match and date_match.group(1) > as_of[:10]:
-                    continue
-            rank = len(items) + 1
-            items.append(_make_item(
-                "vector", f"indexed.{hit.get('id', rank)}", text, "source_document", source, rank,
-                component_score=sim, vector_similarity=sim, scope={"project": project} if project else {},
-                inclusion_reason=f"Indexed embedding similarity {sim:.3f}"
-            ))
-            if len(items) >= candidate_limit:
-                break
-        return items, {"backend": "sqlite_embeddings", "available": True, "model": embedding_model, "hits": len(items)}
-    except Exception as exc:
-        return [], {"backend": "sqlite_embeddings", "available": False, "reason": str(exc)[:160]}
+                if len(_facts_embedding_cache) > 16:
+                    _facts_embedding_cache.clear()
+                _facts_embedding_cache[cache_key] = (facts_list, fact_sources, norm_matrix)
+
+            if facts_list and norm_matrix is not None:
+                q_raw = np.array(list(fe.embed([query]))[0], dtype=np.float32)
+                q_norm = np.linalg.norm(q_raw)
+                scored_facts = []
+                if q_norm > 0:
+                    q_vec = q_raw / q_norm
+                    sims = np.dot(norm_matrix, q_vec)
+                    cutoff = max(0.35, similarity_cutoff)
+                    for idx, sim_val in enumerate(sims):
+                        sim = float(sim_val)
+                        if sim >= cutoff:
+                            k, v = facts_list[idx]
+                            scored_facts.append((sim, k, v, fact_sources[k]))
+                scored_facts.sort(key=lambda x: x[0], reverse=True)
+                items = []
+                for rank, (sim, k, v, src) in enumerate(scored_facts[:candidate_limit], start=1):
+                    items.append(_make_item(
+                        "vector", k, f"{k} {v}", _fact_authority(v), src, rank,
+                        component_score=sim, vector_similarity=sim,
+                        scope={"project": project} if project else {},
+                        **_fact_context(v),
+                        inclusion_reason=f"FastEmbed dense similarity {sim:.3f}"
+                    ))
+                if items:
+                    return items, {"backend": "fastembed_inprocess", "available": True, "hits": len(items)}
+        except Exception as exc:
+            return [], {"backend": "fastembed_inprocess", "available": False, "reason": str(exc)[:160]}
+
+    return [], {"backend": "disabled_model_free", "available": False, "reason": "No embedding backend available"}
+
 
 
 def _rerank_with_flashrank(
@@ -643,20 +772,42 @@ def _run_lane_decisions(root: Path, query_tokens: list[str], project: str, as_of
         if fp.exists():
             try:
                 text = fp.read_text(encoding="utf-8", errors="replace")
-                sections = re.split(r"\n(?=## )", text)
+                sections = re.split(r"\n(?=#{2,3} )", text)
+                extracted_candidates: list[tuple[str, str | None, int, int]] = []
+                order_idx = 0
                 for sec in sections:
-                    if any(w in sec.lower() for w in ("decision", "constraint", "boundary", "focus", "rule")):
+                    if any(w in sec.lower() for w in ("decision", "constraint", "boundary", "focus", "rule", "update", "priority", "change", "context")):
+                        sec_header = sec.splitlines()[0] if sec.splitlines() else ""
+                        sec_date = _extract_effective_time(sec_header)
                         paragraphs = [p.strip() for p in re.split(r"\n\s*\n", sec) if p.strip()]
                         for p in paragraphs:
                             if len(p) > 20 and (not query_tokens or any(t in p.lower() for t in query_tokens)):
-                                items.append(_make_item("decisions", f"{project}.decision.{rank}", p,
-                                                        "source_document", str(fp), rank,
-                                                        component_score=0.9,
-                                                        scope={"project": project},
-                                                        inclusion_reason="Active project constraint/decision"))
-                                rank += 1
-                                if rank > candidate_limit:
-                                    break
+                                p_date = _extract_effective_time(p) or sec_date
+                                if as_of and p_date and str(p_date)[:10] > str(as_of)[:10]:
+                                    continue
+                                overlap = len(set(_tokenize(p)) & set(query_tokens)) if query_tokens else 1
+                                extracted_candidates.append((p, p_date, overlap, order_idx))
+                                order_idx += 1
+
+                extracted_candidates.sort(
+                    key=lambda x: (
+                        _effective_timestamp(x[1]),
+                        x[2],
+                        -x[3],
+                    ),
+                    reverse=True,
+                )
+
+                for p, p_date, _, _ in extracted_candidates:
+                    items.append(_make_item("decisions", f"{project}.decision.{rank}", p,
+                                            "source_document", str(fp), rank,
+                                            component_score=0.9,
+                                            scope={"project": project},
+                                            effective_at=p_date,
+                                            inclusion_reason="Active project constraint/decision"))
+                    rank += 1
+                    if rank > candidate_limit:
+                        break
             except Exception:
                 pass
 
@@ -679,6 +830,8 @@ def _run_lane_decisions(root: Path, query_tokens: list[str], project: str, as_of
                 params
             ).fetchall()
             for r in rows:
+                if as_of and r["created_at"] and str(r["created_at"])[:10] > str(as_of)[:10]:
+                    continue
                 k = r["memory_key"]
                 val = r["value"]
                 items.append(_make_item("decisions", k, val, "user_instruction" if "preference" in k else "source_document",
@@ -722,18 +875,20 @@ def _run_lane_procedures(root: Path, query_tokens: list[str], project: str, as_o
     skill_fp = Path(__file__).resolve().parent.parent / "SKILL.md"
     if skill_fp.exists() and rank <= candidate_limit:
         try:
-            text = skill_fp.read_text(encoding="utf-8", errors="replace")
-            for line in text.splitlines():
-                if line.strip().startswith("- ") and any(kw in line.lower() for kw in ("protocol", "procedure", "command", "must")):
-                    if not query_tokens or any(t in line.lower() for t in query_tokens):
-                        items.append(_make_item("procedures", f"global.skill.{rank}", line.strip(),
-                                                "source_document", str(skill_fp), rank,
-                                                component_score=0.80,
-                                                scope={"project": project} if project else {},
-                                                inclusion_reason="Operational skill protocol"))
-                        rank += 1
-                        if rank > candidate_limit:
-                            break
+            is_sys_query = any(w in " ".join(query_tokens) for w in ("memory", "brain", "gms", "agent", "protocol", "skill", "mcp", "cli", "command"))
+            if is_sys_query:
+                text = skill_fp.read_text(encoding="utf-8", errors="replace")
+                for line in text.splitlines():
+                    if line.strip().startswith("- ") and any(kw in line.lower() for kw in ("protocol", "procedure", "command", "must")):
+                        if not query_tokens or any(t in line.lower() for t in query_tokens):
+                            items.append(_make_item("procedures", f"global.skill.{rank}", line.strip(),
+                                                    "source_document", str(skill_fp), rank,
+                                                    component_score=0.80,
+                                                    scope={"project": project} if project else {},
+                                                    inclusion_reason="Operational skill protocol"))
+                            rank += 1
+                            if rank > candidate_limit:
+                                break
         except Exception:
             pass
     return items
@@ -859,10 +1014,11 @@ def _run_lane_conflicts(root: Path, query_tokens: list[str], project: str, as_of
                 project_tokens = set(_tokenize(project)) if project else set()
                 if project and not (k_tokens & set(query_tokens) or k_tokens & project_tokens):
                     continue
-                if not query_tokens or any(t in k_tokens for t in query_tokens):
+                overlap = len(k_tokens & set(query_tokens)) if query_tokens else 0
+                if not query_tokens or (overlap >= 2 or (overlap == 1 and len(query_tokens) <= 2)):
                     items.append(_make_item("conflicts", r["memory_key"], r["value"], "imported_legacy",
                                             f"claim:{r['claim_id']}", rank,
-                                            component_score=0.8, contradiction_flag=True,
+                                            component_score=0.35, contradiction_flag=False,
                                             warning="superseded record",
                                             effective_at=r["created_at"],
                                             inclusion_reason="Superseded claim in conflict chain"))
@@ -935,6 +1091,9 @@ def _run_lane_episodes(root: Path, query_tokens: list[str], project: str, as_of:
     return items
 
 
+_graph_cache: dict[Any, Any] = {}
+
+
 def _run_lane_graph(
     root: Path,
     query_tokens: list[str],
@@ -950,12 +1109,106 @@ def _run_lane_graph(
 
     try:
         import networkx as nx
-        conn = sqlite3.connect(db)
-        conn.row_factory = sqlite3.Row
-        has_rel = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gms_relationships'").fetchone()
-        if not has_rel:
+
+        db_stat = db.stat()
+        graph_cache_key = (str(db.resolve()), db_stat.st_mtime_ns, db_stat.st_size, as_of)
+        cached_graph_entry = _graph_cache.get(graph_cache_key)
+
+        if cached_graph_entry is not None:
+            G, edge_records, has_rel = cached_graph_entry
+            if not has_rel:
+                return items
+        else:
+            conn = sqlite3.connect(db)
+            conn.row_factory = sqlite3.Row
+            has_rel = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gms_relationships'").fetchone()
+            if not has_rel:
+                conn.close()
+                if len(_graph_cache) > 16:
+                    _graph_cache.clear()
+                _graph_cache[graph_cache_key] = (None, [], False)
+                return items
+
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(gms_relationships)")}
+            has_entities_schema = {"subject_entity_id", "predicate", "object_entity_id"}.issubset(columns)
+
+            G = nx.DiGraph()
+            edge_records = []
+
+            if has_entities_schema:
+                has_entities_tbl = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gms_entities'").fetchone()
+                entities = {}
+                if has_entities_tbl:
+                    for erow in conn.execute("SELECT entity_id, name, entity_type, summary FROM gms_entities").fetchall():
+                        entities[erow["entity_id"]] = {
+                            "name": erow["name"], "type": erow["entity_type"], "summary": erow["summary"] or ""
+                        }
+
+                sql = """
+                    SELECT r.relationship_id,
+                           se.entity_id AS subject_entity_id,
+                           oe.entity_id AS object_entity_id,
+                           se.name AS source_id,
+                           COALESCE(oe.name, r.object_literal) AS target_id,
+                           r.predicate AS rel_type,
+                           COALESCE(se.summary, '') || CASE WHEN oe.summary IS NOT NULL THEN '; ' || oe.summary ELSE '' END AS summary,
+                           1.0 AS weight, r.valid_from, r.valid_to, r.source_claim_id
+                    FROM gms_relationships r
+                    JOIN gms_entities se ON se.entity_id = r.subject_entity_id
+                    LEFT JOIN gms_entities oe ON oe.entity_id = r.object_entity_id
+                    WHERE (r.valid_to IS NULL OR r.valid_to > COALESCE(?, datetime('now')))
+                """
+                rows = conn.execute(sql, [as_of]).fetchall()
+                for r in rows:
+                    sid = r["source_id"]
+                    tid = r["target_id"]
+                    if sid and tid:
+                        w = float(r["weight"]) if r["weight"] is not None else 1.0
+                        edge_data = {
+                            "relationship_id": r["relationship_id"],
+                            "source_id": sid,
+                            "target_id": tid,
+                            "rel_type": r["rel_type"],
+                            "summary": r["summary"] or "",
+                            "weight": w,
+                            "valid_from": r["valid_from"],
+                            "valid_to": r["valid_to"],
+                            "source_claim_id": r["source_claim_id"],
+                        }
+                        edge_records.append(edge_data)
+                        G.add_edge(sid, tid, **edge_data)
+            else:
+                sql = """
+                    SELECT id AS relationship_id, source_id, target_id, rel_type,
+                           COALESCE(summary, '') AS summary, COALESCE(weight, 1.0) AS weight,
+                           valid_from, valid_to
+                    FROM gms_relationships
+                    WHERE (valid_to IS NULL OR valid_to > COALESCE(?, datetime('now')))
+                """
+                rows = conn.execute(sql, [as_of]).fetchall()
+                for r in rows:
+                    sid = r["source_id"]
+                    tid = r["target_id"]
+                    if sid and tid:
+                        w = float(r["weight"]) if r["weight"] is not None else 1.0
+                        edge_data = {
+                            "relationship_id": r["relationship_id"],
+                            "source_id": sid,
+                            "target_id": tid,
+                            "rel_type": r["rel_type"],
+                            "summary": r["summary"] or "",
+                            "weight": w,
+                            "valid_from": r["valid_from"],
+                            "valid_to": r["valid_to"],
+                            "source_claim_id": None,
+                        }
+                        edge_records.append(edge_data)
+                        G.add_edge(sid, tid, **edge_data)
+
             conn.close()
-            return items
+            if len(_graph_cache) > 16:
+                _graph_cache.clear()
+            _graph_cache[graph_cache_key] = (G, edge_records, True)
 
         # Canonical alias expansion for graph query tokens
         expanded_tokens = list(query_tokens)
@@ -971,82 +1224,6 @@ def _run_lane_graph(
                                 expanded_tokens.append(word)
         except Exception:
             pass
-
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(gms_relationships)")}
-        has_entities_schema = {"subject_entity_id", "predicate", "object_entity_id"}.issubset(columns)
-
-        G = nx.DiGraph()
-        edge_records = []
-
-        if has_entities_schema:
-            has_entities_tbl = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gms_entities'").fetchone()
-            entities = {}
-            if has_entities_tbl:
-                for erow in conn.execute("SELECT entity_id, name, entity_type, summary FROM gms_entities").fetchall():
-                    entities[erow["entity_id"]] = {
-                        "name": erow["name"], "type": erow["entity_type"], "summary": erow["summary"] or ""
-                    }
-
-            sql = """
-                SELECT r.relationship_id,
-                       se.entity_id AS subject_entity_id,
-                       oe.entity_id AS object_entity_id,
-                       se.name AS source_id,
-                       COALESCE(oe.name, r.object_literal) AS target_id,
-                       r.predicate AS rel_type,
-                       COALESCE(se.summary, '') || CASE WHEN oe.summary IS NOT NULL THEN '; ' || oe.summary ELSE '' END AS summary,
-                       1.0 AS weight, r.valid_from, r.valid_to, r.source_claim_id
-                FROM gms_relationships r
-                JOIN gms_entities se ON se.entity_id = r.subject_entity_id
-                LEFT JOIN gms_entities oe ON oe.entity_id = r.object_entity_id
-                WHERE (r.valid_to IS NULL OR r.valid_to > COALESCE(?, datetime('now')))
-            """
-            rows = conn.execute(sql, [as_of]).fetchall()
-            for r in rows:
-                sid = r["source_id"]
-                tid = r["target_id"]
-                if sid and tid:
-                    w = float(r["weight"]) if r["weight"] is not None else 1.0
-                    edge_data = {
-                        "relationship_id": r["relationship_id"],
-                        "source_id": sid,
-                        "target_id": tid,
-                        "rel_type": r["rel_type"],
-                        "summary": r["summary"] or "",
-                        "weight": w,
-                        "valid_from": r["valid_from"],
-                        "valid_to": r["valid_to"],
-                        "source_claim_id": r["source_claim_id"],
-                    }
-                    edge_records.append(edge_data)
-                    G.add_edge(sid, tid, **edge_data)
-        else:
-            sql = """
-                SELECT id AS relationship_id, source_id, target_id, rel_type,
-                       COALESCE(summary, '') AS summary, COALESCE(weight, 1.0) AS weight,
-                       valid_from, valid_to
-                FROM gms_relationships
-                WHERE (valid_to IS NULL OR valid_to > COALESCE(?, datetime('now')))
-            """
-            rows = conn.execute(sql, [as_of]).fetchall()
-            for r in rows:
-                sid = r["source_id"]
-                tid = r["target_id"]
-                if sid and tid:
-                    w = float(r["weight"]) if r["weight"] is not None else 1.0
-                    edge_data = {
-                        "relationship_id": r["relationship_id"],
-                        "source_id": sid,
-                        "target_id": tid,
-                        "rel_type": r["rel_type"],
-                        "summary": r["summary"] or "",
-                        "weight": w,
-                        "valid_from": r["valid_from"],
-                        "valid_to": r["valid_to"],
-                        "source_claim_id": None,
-                    }
-                    edge_records.append(edge_data)
-                    G.add_edge(sid, tid, **edge_data)
 
         # 1. Match seed nodes from expanded query tokens
         seed_nodes = []
@@ -1279,14 +1456,33 @@ def retrieve(
     grouped_items: dict[str, dict[str, Any]] = {}
     item_lanes: dict[str, set[str]] = {}
 
+    all_eff_ts = [_effective_timestamp(it.get("effective_at")) for it in all_items if it.get("effective_at")]
+    max_cand_ts = max(all_eff_ts, default=0.0)
+    ref_ts = _effective_timestamp(as_of) if as_of else time.time()
+    if max_cand_ts > ref_ts:
+        ref_ts = max_cand_ts
+
+    is_current_context_query = bool(project) and plan.get("intent") in ("context", "resume") and plan.get("intent") != "historical"
+
     for it in all_items:
         key = canonicalize(it["key"])
         c_rank = it["component_rank"]
         boost = 1.2 if it.get("exact_match") else (1.3 if it.get("contradiction_flag") else 1.0)
+        if it.get("warning") == "superseded record":
+            boost *= 0.25
         if it.get("record_shape") == "structured" or it.get("authority") in {"source_document", "verified_system_output"}:
             boost *= 1.12
         elif it.get("record_shape") == "legacy_flat":
             boost *= 0.88
+
+        # Effective-time-aware recency boost for non-historical context / resume queries
+        if is_current_context_query and it.get("effective_at"):
+            eff_ts = _effective_timestamp(it.get("effective_at"))
+            if eff_ts > 0.0:
+                days_diff = max(0.0, (ref_ts - eff_ts) / 86400.0)
+                recency_boost = max(0.85, min(1.20, 1.15 * math.exp(-0.008 * days_diff)))
+                boost *= recency_boost
+
         lane_w = float(cfg.lane_weights.get(it["lane"], 1.0))
         rrf_contrib = (1.0 / (float(cfg.rrf_k) + c_rank)) * boost * lane_w
         rrf_scores[key] = rrf_scores.get(key, 0.0) + rrf_contrib
@@ -1296,10 +1492,31 @@ def retrieve(
             item_lanes[key] = {it["lane"]}
         else:
             item_lanes[key].add(it["lane"])
-            # Prefer higher authority or richer statement
             existing = grouped_items[key]
-            if len(it["statement"]) > len(existing["statement"]):
+            # Inherit contradiction flag or collision warning from any lane
+            has_contradiction = bool(existing.get("contradiction_flag") or it.get("contradiction_flag"))
+            collision_warning = existing.get("warning") or it.get("warning")
+
+            # Superseded records must never displace active records
+            if it.get("warning") == "superseded record" and existing.get("warning") != "superseded record":
+                pass
+            elif existing.get("warning") == "superseded record" and it.get("warning") != "superseded record":
                 grouped_items[key] = it
+            else:
+                it_ts = _effective_timestamp(it.get("effective_at"))
+                ex_ts = _effective_timestamp(existing.get("effective_at"))
+                if it_ts > ex_ts and ex_ts > 0:
+                    grouped_items[key] = it
+                elif it_ts == ex_ts:
+                    if it.get("exact_match") and not existing.get("exact_match"):
+                        grouped_items[key] = it
+                    elif len(str(it["statement"])) > len(str(existing["statement"])) and not existing.get("exact_match"):
+                        grouped_items[key] = it
+
+            if has_contradiction:
+                grouped_items[key]["contradiction_flag"] = True
+                if collision_warning and not grouped_items[key].get("warning"):
+                    grouped_items[key]["warning"] = collision_warning
 
     meta_terms = {
         "using", "only", "recorded", "evidence", "check", "guess", "within",
@@ -1312,13 +1529,14 @@ def retrieve(
         text_tokens = set(_tokenize(f"{it.get('key', '')} {it.get('statement', '')}"))
         return len(text_tokens & mat_terms) if mat_terms else len(text_tokens & set(query_tokens))
 
-    # Sort merged candidates by RRF score descending, breaking ties by corroborated lanes and query overlap
+    # Sort merged candidates by RRF score descending, breaking ties by corroborated lanes, query overlap, effective recency, and component score
     ranked_keys = sorted(
         grouped_items.keys(),
         key=lambda k: (
             -rrf_scores[k],
             -len(item_lanes.get(k, set())),
             -_item_query_overlap(k),
+            -_effective_timestamp(grouped_items[k].get("effective_at")),
             -grouped_items[k].get("component_score", 0.0),
         ),
     )

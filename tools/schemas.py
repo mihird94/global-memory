@@ -294,11 +294,19 @@ def validate_fact(key: str, value: Any) -> tuple[bool, Any, str | None]:
       2. If key does NOT match a known namespace, it is accepted as 'untyped' (permissive fallback).
       3. If Pydantic is not installed, permissive fallback with warning is used.
     """
+    if is_generic_key(key):
+        return False, None, f"Fact key '{key}' is a generic, unnamespaced key and is rejected by the admission guard."
+    if is_parser_error_statement(value):
+        return False, None, f"Fact value for '{key}' is a parser-error artifact or execution traceback and is rejected by the admission guard."
+
     if not PYDANTIC_AVAILABLE:
         # Fallback gracefully if pydantic is not present
         return True, value, None
 
     payload = parse_payload(value)
+    if is_parser_error_statement(payload):
+        return False, None, f"Fact value for '{key}' is a parser-error artifact or execution traceback and is rejected by the admission guard."
+
 
     if isinstance(payload, dict) and payload.get("schema_version") == "gms-context-record-v1":
         model_cls = ContextRecordEnvelope
@@ -393,10 +401,50 @@ GENERIC_RATIONALES = {
     "n/a", "none", "unknown", "todo", "see journal", "not specified"
 }
 
+GENERIC_PROHIBITED_KEYS = {
+    "error", "errors", "exception", "traceback", "status", "message",
+    "result", "results", "output", "data", "value", "key", "text",
+    "test", "temp", "tmp", "null", "undefined", "none", "unknown", "response",
+    "fail", "failed", "failure", "foo", "bar"
+}
+
+PARSER_ERROR_PATTERNS = [
+    re.compile(r"(?i)^(invalid json|jsondecodeerror|syntaxerror|parser error|expecting value|extra data:|unterminated string|traceback \(most recent|parse error|fatal:).*"),
+    re.compile(r"(?i).*(expecting value: line \d+ column \d+|json\.decoder\.JSONDecodeError|syntaxerror: invalid syntax).*"),
+    re.compile(r"(?i)^(nullpointerexception|uncaught typeerror|attributeerror:|keyerror:).*"),
+]
+
+
+def is_generic_key(key: str) -> bool:
+    """Return True if the key is a generic unnamespaced token that lacks durable domain context."""
+    if not isinstance(key, str):
+        return True
+    clean = key.strip().lower()
+    if not clean:
+        return True
+    if clean in GENERIC_PROHIBITED_KEYS:
+        return True
+    if "." not in clean and ":" not in clean:
+        if clean in GENERIC_PROHIBITED_KEYS or re.match(r"^(error|exception|traceback|status|result|temp|tmp)\b", clean):
+            return True
+    return False
+
+
+def is_parser_error_statement(text: Any) -> bool:
+    """Return True if the statement/value is a raw parser error or execution traceback artifact."""
+    if not isinstance(text, str):
+        return False
+    clean = text.strip()
+    if not clean:
+        return False
+    return any(p.match(clean) for p in PARSER_ERROR_PATTERNS)
+
+
 ALLOWED_RECORD_TYPES = {
     "decision", "policy", "fact", "procedure",
     "project_state", "observation", "question", "lesson_candidate"
 }
+
 
 
 def detect_secret_in_payload(val: Any) -> str | None:
@@ -504,6 +552,14 @@ def validate_context_candidate(
     key = str(payload.get("key", "")).strip()
     if not key or not re.match(r"^[a-zA-Z0-9_\.\:\-]+$", key) or len(key) < 3 or len(key) > 128:
         return False, None, f"Invalid canonical key format '{key}': must match ^[a-zA-Z0-9_.\\:-]+$ and length 3-128."
+    if is_generic_key(key):
+        return False, None, f"Invalid canonical key '{key}': generic unnamespaced keys are prohibited from durable context."
+
+    # Statement / value sanity check (reject parser errors and tracebacks)
+    stmt_check = str(payload.get("statement", "")).strip()
+    val_check = payload.get("value")
+    if is_parser_error_statement(stmt_check) or is_parser_error_statement(val_check):
+        return False, None, "Statement appears to be a parser-error artifact or execution traceback and cannot be admitted as durable context."
 
     # 4. Prohibited global trust / synthetic scores
     if has_forbidden_score(payload):
@@ -548,7 +604,11 @@ def validate_context_candidate(
 
     # 7. Record type specific requirements
     statement = str(payload.get("statement", "")).strip()
+    val = payload.get("value")
+    if is_parser_error_statement(statement) or is_parser_error_statement(val):
+        return False, None, "Statement appears to be a parser-error artifact or execution traceback and cannot be admitted as durable context."
     rationale = str(payload.get("rationale", "")).strip()
+
     scope = payload.get("scope")
     if scope is not None and not isinstance(scope, dict):
         return False, None, "Scope must be a dictionary if provided."

@@ -1,10 +1,10 @@
 ---
 name: global-memory
-description: MeshClaw-inspired Unified Memory Layer (UML) protocol for cross-agent interoperability. Activates the GMS (v2.1.0) at ~/memories/ with local vector indexing (FAISS).
+description: Unified Memory Layer (UML) protocol for cross-agent interoperability. Activates GMS (v2.2.0) with 10-lane hybrid retrieval, in-process FastEmbed ONNX dense fallback, pre-edit risk guards (file-context), automatic error learning (learn-error), and 3/3 adversarial defenses at ~/memories/.
 ---
 
 # Global Memory System (GMS) Skill
-**Status: ACTIVE (v2.1.0 MCP-First Architecture)**
+**Status: ACTIVE (v2.2.0 Multi-Agent Epistemic OS)**
 
 This skill provides the logic and protocols for a "Unified Memory Layer" across all AI facets. It leverages the `memoryctl` tool for hybrid (semantic/vector) retrieval and storage.
 
@@ -50,6 +50,9 @@ Before starting any work, you MUST run:
   - Decisions: `memoryctl decision list --project <name>`, `memoryctl decision impact --decision-id <id>`
   - Action Inbox: `memoryctl action-inbox list --project <name>`, `memoryctl action-inbox preview --inbox-id <id>` (Zero durable writes preview).
   - Memory Repair: `memoryctl memory-repair analyze --key <key>`, `memoryctl memory-repair evidence --key <key>`.
+- **Coding Agent Developer Guards & Learning**:
+  - File Pre-Edit Guard: `mem_file_context` / `brain_file_context` or `memoryctl file-context <file_path> [--project <name>]` (Pre-flight gotchas, constraints, and past bug lessons before editing a file).
+  - Error Trace Crystallization: `mem_learn_error` / `brain_learn_error` or `memoryctl learn-error "<trace>" [--command <cmd>]` (Automatically crystallize terminal, compiler, or test error traces into reusable procedural rules).
 - **MCP-Native Context Governance**:
   - Context packet: `mem_context_packet` / `brain_context_packet`.
   - System curation and owner contest: `mem_curation` / `brain_curation`.

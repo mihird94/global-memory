@@ -10,8 +10,10 @@ if command -v readlink >/dev/null 2>&1; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")/.." && pwd)"
+export PYTHONPATH="${ROOT_DIR}:${ROOT_DIR}/tools:${PYTHONPATH:-}"
 PY_VENV="${ROOT_DIR}/.venv/bin/python"
 SCRIPT="${ROOT_DIR}/tools/memoryctl.py"
+
 
 if [[ -n "${PYTHON_BIN:-}" ]] && [[ -x "${PYTHON_BIN}" ]]; then
   exec "${PYTHON_BIN}" "${SCRIPT}" "$@"

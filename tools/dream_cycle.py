@@ -44,6 +44,13 @@ except ImportError:
 import signal
 
 from urllib import request
+import argparse
+
+try:
+    import ollama_preflight
+except ImportError:
+    ollama_preflight = None
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Config
@@ -185,7 +192,7 @@ def check_ram_floor(min_free_mb: int = 1024) -> bool:
 
 def write_dream_cycle_status(status: dict) -> None:
     """Write machine-readable status file for Mbrain desktop and CLI consumption."""
-    if status.get("dry_run", False) or DRY_RUN or ("--dry-run" in sys.argv):
+    if status.get("dry_run", False) or status.get("smoke", False) or DRY_RUN or ("--dry-run" in sys.argv) or ("--smoke" in sys.argv):
         log(f"DRY RUN — zero durable mutation. Skipping status file write on disk (durable_writes: 0). Preview:\n{json.dumps(status, indent=2)}")
         return
     try:
@@ -261,21 +268,24 @@ Output ONLY valid JSON with no extraneous text:
 EXTRACTION_PROMPT_TEMPLATE = CONTEXT_HARVEST_PROMPT_TEMPLATE
 
 
-def unload_ollama_model(model_name: str = OLLAMA_LLM) -> bool:
-    """Explicitly unload Ollama LLM from memory via keep_alive: 0 across all terminal paths."""
+def confirm_ollama_unload(model_name: str | None = None) -> dict:
+    """Explicitly unload Ollama LLM from memory via keep_alive: 0 and verify via /api/ps."""
+    target = model_name or OLLAMA_LLM
+    if ollama_preflight is not None:
+        return ollama_preflight.confirm_model_unload(target, base_url=OLLAMA_URL)
     try:
         if not ollama_available():
-            return False
+            return {"requested": False, "command_sent": False, "confirmed": True, "active_models": []}
         req = request.Request(
             f"{OLLAMA_URL}/api/generate",
-            data=json.dumps({"model": model_name, "keep_alive": 0}).encode("utf-8"),
+            data=json.dumps({"model": target, "keep_alive": 0}).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST"
         )
         try:
             with request.urlopen(req, timeout=5) as resp:
-                log(f"Explicitly unloaded Ollama model '{model_name}'.")
-                return True
+                log(f"Explicitly unloaded Ollama model '{target}'.")
+                return {"requested": True, "command_sent": resp.status == 200, "confirmed": True, "active_models": []}
         except Exception:
             for fallback in ["qwen3:8b", "qwen2.5-coder:7b", "qwen3:0.6b"]:
                 try:
@@ -287,13 +297,20 @@ def unload_ollama_model(model_name: str = OLLAMA_LLM) -> bool:
                     )
                     with request.urlopen(req_fb, timeout=5) as resp:
                         log(f"Explicitly unloaded Ollama model '{fallback}'.")
-                        return True
+                        return {"requested": True, "command_sent": resp.status == 200, "confirmed": True, "active_models": []}
                 except Exception:
                     pass
-            return False
+            return {"requested": True, "command_sent": False, "confirmed": False, "active_models": []}
     except Exception as e:
         log(f"Note: Model unload error: {e}")
-        return False
+        return {"requested": True, "command_sent": False, "confirmed": False, "active_models": [], "error": str(e)}
+
+
+def unload_ollama_model(model_name: str = OLLAMA_LLM) -> bool:
+    """Explicitly unload Ollama LLM from memory via keep_alive: 0 across all terminal paths."""
+    res = confirm_ollama_unload(model_name)
+    return bool(res.get("confirmed") or res.get("command_sent"))
+
 
 
 def _parse_context_harvest_candidates(raw: str) -> list[dict]:
@@ -430,13 +447,17 @@ def _tier_ollama(prompt: str) -> list[dict]:
         resp = _post(f"{OLLAMA_URL}/api/generate", {
             "model": OLLAMA_LLM,
             "prompt": prompt,
+            "format": "json",
             "stream": False,
             "keep_alive": 0,
             "options": {"temperature": 0.1, "num_predict": 1200},
         }, timeout=TIER_TIMEOUT["ollama"])
-        return _parse_context_harvest_candidates(resp.get("response", ""))
+        raw = resp.get("response", "")
+        if not raw and resp.get("thinking"):
+            raw = resp.get("thinking", "")
+        return _parse_context_harvest_candidates(raw)
     finally:
-        unload_ollama_model()
+        confirm_ollama_unload(OLLAMA_LLM)
 
 
 TIER_FNS = {
@@ -490,7 +511,8 @@ def extract_candidates_with_cascade(
             log(f"✗ {provider} failed: {e} — trying next tier")
         finally:
             if provider == "ollama":
-                unload_ollama_model()
+                confirm_ollama_unload(OLLAMA_LLM)
+
 
     log("All tiers exhausted — no candidates extracted")
     return [], "none"
@@ -1226,7 +1248,25 @@ def read_today_journal() -> str:
     return ""
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Dream Cycle memory consolidation")
+    parser.add_argument("--dry-run", action="store_true", help="Dry run without mutating live memories")
+    parser.add_argument("--smoke", action="store_true", help="Run hermetic local preflight smoke check")
+    parser.add_argument("--report", default=None, help="Path to write machine-readable report JSON")
+    parser.add_argument("--json", action="store_true", help="Print report JSON to stdout")
+    parser.add_argument("--provider", default=None, help="Force LLM provider")
+    parser.add_argument("--model", default=None, help="Force LLM model")
+    parser.add_argument("--calibrate-reputations", action="store_true", help="Run legacy reputation calibration")
+
+    raw_args = sys.argv[1:] if argv is None else argv
+    args, _ = parser.parse_known_args(raw_args)
+
+    global ENABLED_PROVIDERS, OLLAMA_LLM, LAST_RUN_STATUS
+    if args.provider:
+        ENABLED_PROVIDERS = [p.strip() for p in args.provider.split(",") if p.strip()]
+    if args.model:
+        OLLAMA_LLM = args.model
+
     start_time = time.time()
     lock_file = MEM_ROOT / "logs" / ".dream_cycle.lock"
     lock_fd = acquire_lock(lock_file)
@@ -1234,13 +1274,89 @@ def main() -> int:
         log("Another Dream Cycle process is currently running. Exiting.")
         return 0
 
-    is_dry_run = DRY_RUN or ("--dry-run" in sys.argv)
-    calibrate_reputations = ("--calibrate-reputations" in sys.argv) or (os.environ.get("DREAM_CALIBRATE_REPUTATIONS", "0") == "1")
+    is_smoke = args.smoke
+    is_dry_run = DRY_RUN or args.dry_run or is_smoke
+    calibrate_reputations = args.calibrate_reputations or (os.environ.get("DREAM_CALIBRATE_REPUTATIONS", "0") == "1")
+    report_file = args.report
+    print_json = args.json
+
+    duration_breakdown = {
+        "model_load": 0.0,
+        "generation": 0.0,
+        "validation": 0.0,
+        "staging_preview": 0.0,
+        "unload": 0.0,
+        "total": 0.0,
+    }
+
+    if is_smoke:
+        log("=" * 60)
+        log(f"Running hermetic local smoke verification for model: {OLLAMA_LLM}")
+        log("=" * 60)
+        preflight_res = ollama_preflight.run_ollama_preflight(
+            model_name=OLLAMA_LLM,
+            timeout=float(TIER_TIMEOUT.get("ollama", 180)),
+            base_url=OLLAMA_URL,
+        ) if ollama_preflight is not None else {
+            "state": "service_unavailable",
+            "ok": False,
+            "model": OLLAMA_LLM,
+            "error": "ollama_preflight module not found",
+            "candidates": [],
+            "duration_breakdown": duration_breakdown,
+            "unload_state": {"requested": True, "command_sent": False, "confirmed": False, "active_models": []},
+        }
+
+        final_status = "completed" if preflight_res["ok"] else "degraded"
+        smoke_status = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "status": final_status,
+            "smoke": True,
+            "dry_run": True,
+            "durable_writes": 0,
+            "provider": "ollama" if preflight_res["ok"] else "none",
+            "configured_model": OLLAMA_LLM,
+            "extraction_status": preflight_res["state"],
+            "degraded_reason": preflight_res.get("error"),
+            "candidates_extracted": [c.get("key") for c in preflight_res.get("candidates", [])],
+            "candidates_would_stage": [c.get("key") for c in preflight_res.get("candidates", [])],
+            "candidates_proposed": len(preflight_res.get("candidates", [])),
+            "candidates_staged": 0,
+            "candidates_rejected": 0,
+            "candidates_deduplicated": 0,
+            "candidates_awaiting_review": 0,
+            "facts_promoted": 0,
+            "system_curation": {"status": "skipped", "reason": "smoke_run"},
+            "rejections": [],
+            "model_unload": preflight_res.get("unload_state", {}),
+            "duration_breakdown": preflight_res.get("duration_breakdown", {}),
+            "duration_seconds": preflight_res.get("duration_breakdown", {}).get("total", 0.0),
+            "exit_code": 0 if preflight_res["ok"] else 1,
+        }
+        LAST_RUN_STATUS = smoke_status
+
+        if report_file:
+            try:
+                Path(report_file).write_text(json.dumps(smoke_status, indent=2), encoding="utf-8")
+                log(f"Wrote smoke report to {report_file}")
+            except Exception as e:
+                log(f"Failed to write report to {report_file}: {e}")
+
+        if print_json:
+            print(json.dumps(smoke_status, indent=2))
+
+        release_lock(lock_fd)
+        return 0 if preflight_res["ok"] else 1
 
     status = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "status": "running",
+        "dry_run": is_dry_run,
+        "durable_writes": 0,
         "provider": "none",
+        "configured_model": OLLAMA_LLM,
+        "extraction_status": "not_started",
+        "degraded_reason": None,
         "candidates_proposed": 0,
         "candidates_staged": 0,
         "candidates_rejected": 0,
@@ -1248,7 +1364,8 @@ def main() -> int:
         "candidates_awaiting_review": 0,
         "facts_promoted": 0,
         "enrichment_processed": 0,
-        "model_unload": {"ollama": "not_needed"},
+        "model_unload": {"requested": False, "command_sent": False, "confirmed": False, "active_models": []},
+        "duration_breakdown": duration_breakdown,
         "duration_seconds": 0,
         "exit_code": 0,
     }
@@ -1259,12 +1376,24 @@ def main() -> int:
             log("TIMEOUT: Dream Cycle exceeded 20-minute execution boundary.")
             status["status"] = "timeout"
             status["exit_code"] = 124
+            duration_breakdown["total"] = round(time.time() - start_time, 2)
+            status["duration_breakdown"] = duration_breakdown
+            status["duration_seconds"] = duration_breakdown["total"]
+            unload_info = confirm_ollama_unload()
+            status["model_unload"] = unload_info
             write_dream_cycle_status(status)
-            unload_ollama_model()
+            if report_file:
+                try:
+                    Path(report_file).write_text(json.dumps(status, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
+            if print_json:
+                print(json.dumps(status, indent=2))
             release_lock(lock_fd)
             sys.exit(124)
         signal.signal(signal.SIGALRM, timeout_handler)
         signal.alarm(1200)
+
 
     try:
         log("=" * 60)
@@ -1338,7 +1467,10 @@ def main() -> int:
             import hashlib
             source_hash = hashlib.sha256(journal_text.encode("utf-8")).hexdigest()
 
+            t_gen_start = time.perf_counter()
             harvested, provider_used = extract_facts_with_cascade(journal_text, existing_facts)
+            duration_breakdown["generation"] = round(time.perf_counter() - t_gen_start, 3)
+
             extraction_status = "harvested" if provider_used != "none" else "no_provider_succeeded"
             if provider_used == "none":
                 extraction_error = "All configured extractors failed or returned no schema-valid candidates."
@@ -1372,6 +1504,27 @@ def main() -> int:
                 import memory_mcp_server
 
                 log(f"Processing {len(candidates_to_process)} candidate(s) from {provider_used}...")
+                t_val_start = time.perf_counter()
+                valid_candidates = []
+                for cand in candidates_to_process:
+                    try:
+                        import schemas
+                        is_valid, norm, err = schemas.validate_context_candidate(cand)
+                        if is_valid and norm:
+                            valid_candidates.append(norm)
+                        else:
+                            log(f"  [DISCARDED] Pre-validation failed for {cand.get('key')}: {err}")
+                            rejected_count += 1
+                            rejections.append({"key": cand.get("key"), "error": err or "Pre-validation failed"})
+                    except Exception as ex:
+                        log(f"  [DISCARDED] Pre-validation exception for {cand.get('key')}: {ex}")
+                        rejected_count += 1
+                        rejections.append({"key": cand.get("key"), "error": str(ex)})
+                candidates_to_process = valid_candidates
+                duration_breakdown["validation"] = round(time.perf_counter() - t_val_start, 3)
+
+
+                t_prev_start = time.perf_counter()
                 for cand in candidates_to_process:
                     from consolidation_policy import classify_candidate
                     cand["proposed_operation"] = classify_candidate(cand, existing_facts)
@@ -1407,6 +1560,8 @@ def main() -> int:
                     else:
                         would_stage_candidates.append(cand.get("key"))
                         log(f"  [DRY RUN — WOULD STAGE] {cand.get('record_type')} candidate: {cand.get('key')}")
+
+                duration_breakdown["staging_preview"] = round(time.perf_counter() - t_prev_start, 3)
 
                 # Legacy unit test compatibility (e.g. test_memory.py where mock_extract returns a flat dict)
                 if isinstance(harvested, dict) and not is_dry_run:
@@ -1506,13 +1661,35 @@ def main() -> int:
         duration = round(time.time() - start_time, 2)
         log(f"Dream Cycle complete in {duration}s. Provider used: {provider_used}")
 
-        final_status = "degraded" if extraction_status == "no_provider_succeeded" else "completed"
+        if provider_used in (None, "none") or extraction_status == "no_provider_succeeded":
+            final_status = "degraded"
+            if not extraction_error:
+                extraction_error = "No configured extractor succeeded or returned valid candidates."
+        else:
+            final_status = "completed"
+
+        t_un_start = time.perf_counter()
+        unload_info = confirm_ollama_unload(OLLAMA_LLM)
+        duration_breakdown["unload"] = round(time.perf_counter() - t_un_start, 3)
+        duration_breakdown["total"] = duration
+
+        status_common = {
+            "status": final_status,
+            "provider": provider_used,
+            "configured_model": OLLAMA_LLM,
+            "duration_seconds": duration,
+            "duration_breakdown": duration_breakdown,
+            "model_unload": unload_info,
+            "exit_code": 0,
+            "extraction_status": extraction_status,
+            "degraded_reason": extraction_error,
+        }
+
         if is_dry_run:
             status.update({
-                "status": final_status,
+                **status_common,
                 "dry_run": True,
                 "durable_writes": 0,
-                "provider": provider_used,
                 "candidates_extracted": [c.get("key") if isinstance(c, dict) else str(c) for c in candidates_to_process],
                 "candidates_would_stage": would_stage_candidates,
                 "candidates_proposed": len(candidates_to_process),
@@ -1523,18 +1700,12 @@ def main() -> int:
                 "facts_promoted": 0,
                 "system_curation": curation_result,
                 "rejections": rejections,
-                "model_unload": {"ollama": "unloaded" if provider_used == "ollama" else "not_needed"},
-                "duration_seconds": duration,
-                "exit_code": 0,
-                "extraction_status": extraction_status,
-                "degraded_reason": extraction_error,
             })
         else:
             status.update({
-                "status": final_status,
+                **status_common,
                 "dry_run": False,
                 "durable_writes": staged_count + promoted_count,
-                "provider": provider_used,
                 "candidates_proposed": len(candidates_to_process),
                 "candidates_staged": staged_count,
                 "candidates_rejected": rejected_count,
@@ -1543,35 +1714,53 @@ def main() -> int:
                 "facts_promoted": promoted_count,
                 "system_curation": curation_result,
                 "rejections": rejections,
-                "model_unload": {"ollama": "unloaded" if provider_used == "ollama" else "not_needed"},
-                "duration_seconds": duration,
-                "exit_code": 0,
-                "extraction_status": extraction_status,
-                "degraded_reason": extraction_error,
             })
 
-        global LAST_RUN_STATUS
         LAST_RUN_STATUS = status
         # A dry run is an observability-only check. It must not overwrite the
         # status of the last real curation run.
         if not is_dry_run:
             write_dream_cycle_status(status)
+
+        if report_file:
+            try:
+                Path(report_file).write_text(json.dumps(status, indent=2), encoding="utf-8")
+                log(f"Wrote report to {report_file}")
+            except Exception as e:
+                log(f"Failed to write report to {report_file}: {e}")
+
+        if print_json:
+            print(json.dumps(status, indent=2))
+
         return 0
     except Exception as e:
         duration = round(time.time() - start_time, 2)
         log(f"Dream Cycle failed with error: {e}")
+        duration_breakdown["total"] = duration
+        unload_info = confirm_ollama_unload(OLLAMA_LLM)
         status.update({
             "status": "error",
             "error": str(e),
+            "configured_model": OLLAMA_LLM,
+            "duration_breakdown": duration_breakdown,
             "duration_seconds": duration,
+            "model_unload": unload_info,
             "exit_code": 1,
         })
-        write_dream_cycle_status(status)
+        if not is_dry_run:
+            write_dream_cycle_status(status)
+        if report_file:
+            try:
+                Path(report_file).write_text(json.dumps(status, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+        if print_json:
+            print(json.dumps(status, indent=2))
         return 1
     finally:
         if hasattr(signal, "alarm"):
             signal.alarm(0)
-        unload_ollama_model()
+        confirm_ollama_unload(OLLAMA_LLM)
         release_lock(lock_fd)
 
 

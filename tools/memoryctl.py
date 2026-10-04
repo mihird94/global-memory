@@ -17,8 +17,11 @@ from urllib import request
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TOOLS_DIR = REPO_ROOT / "tools"
 import sys
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
+
 
 try:
     from schemas import validate_fact, get_namespace_for_key, list_contracts, parse_payload
@@ -1854,8 +1857,21 @@ def cmd_harvest_migrate_flat(args: argparse.Namespace) -> int:
 
 def cmd_harvest_run(args: argparse.Namespace) -> int:
     import dream_cycle
-    res = dream_cycle.main()
-    return res
+    cmd_argv = []
+    if getattr(args, "dry_run", False):
+        cmd_argv.append("--dry-run")
+    if getattr(args, "smoke", False):
+        cmd_argv.append("--smoke")
+    if getattr(args, "json", False):
+        cmd_argv.append("--json")
+    if getattr(args, "report", None):
+        cmd_argv.extend(["--report", args.report])
+    if getattr(args, "provider", None):
+        cmd_argv.extend(["--provider", args.provider])
+    if getattr(args, "model", None):
+        cmd_argv.extend(["--model", args.model])
+    return dream_cycle.main(cmd_argv)
+
 
 
 def cmd_harvest_curate(args: argparse.Namespace) -> int:
@@ -2177,6 +2193,27 @@ def cmd_eval_lab(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_file_context(args: argparse.Namespace) -> int:
+    import memory_mcp_server
+    res = memory_mcp_server.tool_mem_file_context({
+        "file_path": getattr(args, "file_path", ""),
+        "project": getattr(args, "project", "") or "",
+    })
+    print(res)
+    return 0
+
+
+def cmd_learn_error(args: argparse.Namespace) -> int:
+    import memory_mcp_server
+    res = memory_mcp_server.tool_mem_learn_error({
+        "error_trace": getattr(args, "error_trace", ""),
+        "command": getattr(args, "command", "") or "",
+        "resolution": getattr(args, "resolution", "") or "",
+        "project": getattr(args, "project", "") or "",
+        "agent": getattr(args, "agent", "developer"),
+    })
+    print(res)
+    return 0
 
 
 def main() -> int:
@@ -2488,6 +2525,9 @@ def main() -> int:
 
     p_hrun = sub.add_parser("harvest-run", help="Run context harvesting pipeline.")
     p_hrun.add_argument("--dry-run", action="store_true", help="Dry run extraction")
+    p_hrun.add_argument("--smoke", action="store_true", help="Run bounded local preflight smoke check")
+    p_hrun.add_argument("--report", default=None, help="Output machine-readable report JSON to file")
+    p_hrun.add_argument("--json", action="store_true", help="Print report JSON to stdout")
     p_hrun.add_argument("--provider", default=None, help="Force LLM provider")
     p_hrun.add_argument("--model", default=None, help="Force LLM model")
     p_hrun.set_defaults(fn=cmd_harvest_run)
@@ -2617,6 +2657,19 @@ def main() -> int:
     p_evlab.add_argument("--no-export", action="store_true", help="Do not write JSON report")
     p_evlab.add_argument("--live", action="store_true", help="Evaluate live ~/memories instead of sandbox")
     p_evlab.set_defaults(fn=cmd_eval_lab)
+
+    p_fc = sub.add_parser("file-context", help="Pre-edit file risk and gotcha audit for coding agents.")
+    p_fc.add_argument("file_path", help="Path of the file to inspect")
+    p_fc.add_argument("--project", default=None, help="Optional project identifier")
+    p_fc.set_defaults(fn=cmd_file_context)
+
+    p_le = sub.add_parser("learn-error", help="Crystallize a terminal/test/compiler error trace into a procedural lesson.")
+    p_le.add_argument("error_trace", help="Raw terminal error trace or traceback")
+    p_le.add_argument("--command", default=None, help="Command that failed")
+    p_le.add_argument("--resolution", default=None, help="Recommended fix or explanation")
+    p_le.add_argument("--project", default=None, help="Optional project identifier")
+    p_le.add_argument("--agent", default="developer", help="Agent identifier")
+    p_le.set_defaults(fn=cmd_learn_error)
 
     args = parser.parse_args()
     return args.fn(args)

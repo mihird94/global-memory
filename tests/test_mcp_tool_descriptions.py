@@ -60,8 +60,8 @@ def test_context_governance_tools_and_aliases_are_registered():
         assert mem_name in TOOLS
         assert brain_name in TOOLS
         assert TOOLS[brain_name]["description"].endswith(TOOLS[mem_name]["description"])
-    assert len([name for name in TOOLS if name.startswith("mem_")]) == 59
-    assert len(TOOLS) == 118
+    assert len([name for name in TOOLS if name.startswith("mem_")]) == 61
+    assert len(TOOLS) == 122
 
 
 def test_new_read_only_tools_execute_against_minimal_memory_root(tmp_path, monkeypatch):

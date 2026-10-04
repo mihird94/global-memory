@@ -69,7 +69,9 @@ window.App = {
           const st = await window.gms.getDreamCycleStatus();
           const noExtractor = st.status === 'degraded' || (st.status === 'completed' && (!st.provider || st.provider === 'none'));
           const health = noExtractor ? `\nReason: ${st.degraded_reason || 'No extractor succeeded.'}` : '';
-          const info = `Last Run: ${st.timestamp || 'Never'}\nStatus: ${st.status || 'idle'}\nProvider: ${st.provider || 'none'}\nExtraction: ${st.extraction_status || 'unknown'}\nFacts Promoted: ${st.facts_promoted || 0}\nDuration: ${st.duration_seconds || 0}s${health}\n\nTrigger a new consolidation now?`;
+          const unloadInfo = st.model_unload ? (st.model_unload.confirmed ? 'Confirmed Unloaded' : (st.model_unload.command_sent ? 'Unload Sent' : (st.model_unload.ollama || 'N/A'))) : 'N/A';
+          const durBreak = st.duration_breakdown ? `\nTiming: load ${st.duration_breakdown.model_load || 0}s | gen ${st.duration_breakdown.generation || 0}s | val ${st.duration_breakdown.validation || 0}s | unload ${st.duration_breakdown.unload || 0}s` : '';
+          const info = `Model: ${st.configured_model || 'qwen3:8b'}\nLast Run: ${st.timestamp || 'Never'}\nStatus: ${st.status || 'idle'}\nProvider: ${st.provider || 'none'}\nExtraction: ${st.extraction_status || 'unknown'}\nUnload State: ${unloadInfo}\nFacts Promoted: ${st.facts_promoted || 0}\nDuration: ${st.duration_seconds || 0}s${durBreak}${health}\n\nTrigger a new consolidation now?`;
           if (confirm(info)) {
             if (window.gms.triggerDreamCycle) {
               await window.gms.triggerDreamCycle();
@@ -172,16 +174,17 @@ window.App = {
         window.gms.getDreamCycleStatus().then((st) => {
           const el = document.getElementById('dream-cycle-status-text');
           if (el && st) {
+            const unloadLabel = st.model_unload && st.model_unload.confirmed ? ' [Unloaded]' : '';
             if (st.status === 'completed' && st.provider && st.provider !== 'none') {
-              el.innerText = `Consolidated (${st.provider || 'auto'})`;
-              el.parentElement.title = `Last Run: ${st.timestamp}\nProvider: ${st.provider}\nFacts: ${st.facts_promoted}\nDuration: ${st.duration_seconds}s\nClick to inspect or run now`;
+              el.innerText = `Consolidated (${st.provider || 'auto'})${unloadLabel}`;
+              el.parentElement.title = `Model: ${st.configured_model || 'qwen3:8b'}\nLast Run: ${st.timestamp}\nProvider: ${st.provider}\nExtraction: ${st.extraction_status || 'completed'}\nUnload: ${st.model_unload?.confirmed ? 'Confirmed' : 'Pending'}\nFacts: ${st.facts_promoted}\nDuration: ${st.duration_seconds}s\nClick to inspect or run now`;
             } else if (st.status === 'degraded' || (st.status === 'completed' && (!st.provider || st.provider === 'none'))) {
-              el.innerText = 'Curation: Degraded';
-              el.parentElement.title = `Last Run: ${st.timestamp}\n${st.degraded_reason || 'No extractor succeeded.'}\nClick to inspect or run now`;
+              el.innerText = `Curation: Degraded (${st.configured_model || 'qwen3:8b'})`;
+              el.parentElement.title = `Model: ${st.configured_model || 'qwen3:8b'}\nLast Run: ${st.timestamp}\nExtraction: ${st.extraction_status || 'failed'}\n${st.degraded_reason || 'No extractor succeeded.'}\nUnload: ${st.model_unload?.confirmed ? 'Confirmed' : 'Pending'}\nClick to inspect or run now`;
             } else if (st.status === 'running') {
-              el.innerText = `Consolidating...`;
+              el.innerText = `Consolidating (${st.configured_model || 'qwen3:8b'})...`;
             } else {
-              el.innerText = `Dream Cycle: Idle`;
+              el.innerText = `Dream Cycle: Idle (${st.configured_model || 'qwen3:8b'})`;
             }
           }
         }).catch(() => {});

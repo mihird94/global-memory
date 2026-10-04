@@ -2745,12 +2745,43 @@ class GMSDesktopAPI:
     # =========================================================================
     def get_dream_cycle_status(self) -> dict[str, Any]:
         status_file = self.mem_root / "logs" / "dream_cycle_status.json"
+        data: dict[str, Any] = {}
         if status_file.exists():
             try:
-                return json.loads(status_file.read_text(encoding="utf-8"))
+                data = json.loads(status_file.read_text(encoding="utf-8"))
             except Exception:
-                pass
-        return {"status": "idle", "message": "No dream cycle run recorded yet."}
+                data = {}
+
+        if not data:
+            data = {"status": "idle", "message": "No dream cycle run recorded yet."}
+
+        default_model = os.environ.get("DREAM_LLM_MODEL", "qwen3:8b")
+        data.setdefault("configured_model", default_model)
+        data.setdefault("extraction_status", "unknown" if data.get("status") != "idle" else "idle")
+        data.setdefault("degraded_reason", None)
+        data.setdefault("duration_breakdown", {
+            "model_load": 0.0,
+            "generation": 0.0,
+            "validation": 0.0,
+            "staging_preview": 0.0,
+            "unload": 0.0,
+            "total": float(data.get("duration_seconds", 0.0)),
+        })
+        data.setdefault("model_unload", {
+            "requested": False,
+            "command_sent": False,
+            "confirmed": False,
+            "active_models": [],
+        })
+
+        # Acceptance: The report cannot call a provider:none run successful
+        if data.get("provider") in (None, "none") and data.get("status") == "completed":
+            data["status"] = "degraded"
+            if not data.get("degraded_reason"):
+                data["degraded_reason"] = "No extractor succeeded (provider: none)."
+
+        return data
+
 
     def merge_entities(self, source_id: int, target_id: int, reason: str = "") -> dict[str, Any]:
         if not self.db_path.exists():

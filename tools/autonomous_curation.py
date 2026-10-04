@@ -48,6 +48,28 @@ def assess_candidate(candidate: dict[str, Any], mem_root: Path) -> dict[str, Any
             "basis": "Rejected because the candidate's mandatory-human-review posture was superseded by the owner's system-decides policy.",
             "missing_fields": missing, "evidence_failures": failures, "evidence_warnings": warnings,
         }
+
+    cand_key = str(candidate.get("canonical_key") or payload.get("key") or "").strip()
+    statement = str(payload.get("statement") or payload.get("value") or "").strip()
+    if schemas.is_generic_key(cand_key):
+        return {
+            "decision": "reject",
+            "eligible": False,
+            "basis": f"Rejected by admission guard: '{cand_key}' is a generic, unnamespaced key.",
+            "missing_fields": missing,
+            "evidence_failures": failures,
+            "evidence_warnings": warnings,
+        }
+    if schemas.is_parser_error_statement(statement):
+        return {
+            "decision": "reject",
+            "eligible": False,
+            "basis": "Rejected by admission guard: statement is a parser-error artifact or execution traceback.",
+            "missing_fields": missing,
+            "evidence_failures": failures,
+            "evidence_warnings": warnings,
+        }
+
     if missing or failures:
         return {
             "decision": "reject",
