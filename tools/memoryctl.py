@@ -2216,6 +2216,39 @@ def cmd_learn_error(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_core_memory(args: argparse.Namespace) -> int:
+    import memory_mcp_server
+    action = getattr(args, "action", "get")
+    if action == "get":
+        print(memory_mcp_server.tool_mem_core_memory_get({}))
+    elif action == "append":
+        print(memory_mcp_server.tool_mem_core_memory_append({
+            "block": args.block,
+            "content": args.content,
+            "agent": getattr(args, "agent", "developer"),
+        }))
+    elif action == "replace":
+        print(memory_mcp_server.tool_mem_core_memory_replace({
+            "block": args.block,
+            "new_content": args.new_content,
+            "old_content": getattr(args, "old_content", "") or "",
+            "agent": getattr(args, "agent", "developer"),
+        }))
+    return 0
+
+
+def cmd_graph_communities(args: argparse.Namespace) -> int:
+    import memory_mcp_server
+    print(memory_mcp_server.tool_mem_graph_communities({}))
+    return 0
+
+
+def cmd_reflect(args: argparse.Namespace) -> int:
+    import memory_mcp_server
+    print(memory_mcp_server.tool_mem_reflect({}))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Memory control CLI for global-memory skill.")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -2670,6 +2703,29 @@ def main() -> int:
     p_le.add_argument("--project", default=None, help="Optional project identifier")
     p_le.add_argument("--agent", default="developer", help="Agent identifier")
     p_le.set_defaults(fn=cmd_learn_error)
+
+    p_cm = sub.add_parser("core-memory", help="MemGPT/Letta SOTA: Manage agent core memory blocks (persona, human, scratchpad).")
+    cm_sub = p_cm.add_subparsers(dest="action", required=False)
+    p_cm_get = cm_sub.add_parser("get", help="Get core memory blocks")
+    p_cm_get.set_defaults(action="get")
+    p_cm_app = cm_sub.add_parser("append", help="Append to a core memory block")
+    p_cm_app.add_argument("block", choices=["persona", "human", "scratchpad"], help="Target core memory block")
+    p_cm_app.add_argument("content", help="Text content to append")
+    p_cm_app.add_argument("--agent", default="developer", help="Agent identifier")
+    p_cm_app.set_defaults(action="append")
+    p_cm_rep = cm_sub.add_parser("replace", help="Replace content in a core memory block")
+    p_cm_rep.add_argument("block", choices=["persona", "human", "scratchpad"], help="Target core memory block")
+    p_cm_rep.add_argument("new_content", help="Replacement text")
+    p_cm_rep.add_argument("--old-content", default="", help="Optional substring to replace")
+    p_cm_rep.add_argument("--agent", default="developer", help="Agent identifier")
+    p_cm_rep.set_defaults(action="replace")
+    p_cm.set_defaults(fn=cmd_core_memory)
+
+    p_gc = sub.add_parser("graph-communities", help="Microsoft GraphRAG SOTA: Detect modular entity communities using Louvain clustering.")
+    p_gc.set_defaults(fn=cmd_graph_communities)
+
+    p_ref = sub.add_parser("reflect", help="Stanford Generative Agents SOTA: Synthesize reflective insights across recent episodic milestones.")
+    p_ref.set_defaults(fn=cmd_reflect)
 
     args = parser.parse_args()
     return args.fn(args)

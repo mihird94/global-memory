@@ -4362,6 +4362,280 @@ def tool_mem_learn_error(args: dict) -> str:
     }, indent=2)
 
 
+def tool_mem_core_memory_get(args: dict) -> str:
+    """Retrieve the agent's core memory blocks (persona, human, scratchpad) with token estimations."""
+    root = _default_mem_root()
+    cm_path = root / "operational" / "core_memory.json"
+    blocks = {}
+    if cm_path.exists():
+        try:
+            blocks = json.loads(cm_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    if not blocks:
+        pref_path = root / "preferences.md"
+        human_text = pref_path.read_text(encoding="utf-8")[:1200] if pref_path.exists() else "Technical collaborator. Prefers concise, direct, evidence-based answers."
+        blocks = {
+            "persona": "Antigravity/Codex: Technical AI collaborator with deep systems reasoning, mathematical rigor, and zero unnecessary pleasantries.",
+            "human": human_text.strip(),
+            "scratchpad": "Ready for cross-agent collaboration."
+        }
+
+    tokens = {k: max(1, len(v) // 4) for k, v in blocks.items()}
+    return json.dumps({
+        "status": "ok",
+        "blocks": blocks,
+        "tokens": tokens,
+        "total_tokens": sum(tokens.values()),
+        "updated_at": datetime.now(UTC).isoformat()
+    }, indent=2)
+
+
+def tool_mem_core_memory_append(args: dict) -> str:
+    """Append text to an agent core memory block (persona, human, scratchpad) with size bounding."""
+    block = str(args.get("block", "")).strip().lower()
+    if block not in ("persona", "human", "scratchpad"):
+        return "ERROR: 'block' must be one of: 'persona', 'human', 'scratchpad'"
+    content = str(args.get("content", "")).strip()
+    if not content:
+        return "ERROR: 'content' is required"
+
+    root = _default_mem_root()
+    cm_dir = root / "operational"
+    cm_dir.mkdir(parents=True, exist_ok=True)
+    cm_path = cm_dir / "core_memory.json"
+    blocks = {}
+    if cm_path.exists():
+        try:
+            blocks = json.loads(cm_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    if not blocks:
+        pref_path = root / "preferences.md"
+        human_text = pref_path.read_text(encoding="utf-8")[:1200] if pref_path.exists() else "Technical collaborator."
+        blocks = {
+            "persona": "Antigravity/Codex: Technical AI collaborator with deep systems reasoning.",
+            "human": human_text.strip(),
+            "scratchpad": ""
+        }
+
+    existing = blocks.get(block, "")
+    new_text = f"{existing}\n{content}".strip() if existing else content
+    if len(new_text) > 4000:
+        return f"ERROR: block '{block}' would exceed maximum token budget (4000 chars, currently {len(new_text)})"
+
+    blocks[block] = new_text
+    cm_path.write_text(json.dumps(blocks, indent=2), encoding="utf-8")
+
+    agent_id = _normalize_agent_id(args.get("agent", "").strip() or "agent")
+    tool_mem_save_typed({
+        "key": f"core_memory.{block}",
+        "value": new_text,
+        "kind": "operational",
+        "agent": agent_id
+    })
+
+    return json.dumps({
+        "status": "appended",
+        "block": block,
+        "appended_chars": len(content),
+        "total_block_chars": len(new_text),
+        "total_tokens": max(1, len(new_text) // 4)
+    }, indent=2)
+
+
+def tool_mem_core_memory_replace(args: dict) -> str:
+    """Replace content in a core memory block (persona, human, scratchpad) using targeted matching or full overwrite."""
+    block = str(args.get("block", "")).strip().lower()
+    if block not in ("persona", "human", "scratchpad"):
+        return "ERROR: 'block' must be one of: 'persona', 'human', 'scratchpad'"
+    new_content = str(args.get("new_content", "") or args.get("content", "")).strip()
+    old_content = str(args.get("old_content", "")).strip()
+
+    root = _default_mem_root()
+    cm_dir = root / "operational"
+    cm_dir.mkdir(parents=True, exist_ok=True)
+    cm_path = cm_dir / "core_memory.json"
+    blocks = {}
+    if cm_path.exists():
+        try:
+            blocks = json.loads(cm_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    existing = blocks.get(block, "")
+    if old_content:
+        if old_content not in existing:
+            return f"ERROR: 'old_content' not found in block '{block}'"
+        updated = existing.replace(old_content, new_content, 1)
+    else:
+        updated = new_content
+
+    if len(updated) > 4000:
+        return f"ERROR: block '{block}' exceeds budget (max 4000 chars, currently {len(updated)})"
+
+    blocks[block] = updated
+    cm_path.write_text(json.dumps(blocks, indent=2), encoding="utf-8")
+
+    agent_id = _normalize_agent_id(args.get("agent", "").strip() or "agent")
+    tool_mem_save_typed({
+        "key": f"core_memory.{block}",
+        "value": updated,
+        "kind": "operational",
+        "agent": agent_id
+    })
+
+    return json.dumps({
+        "status": "replaced",
+        "block": block,
+        "total_block_chars": len(updated),
+        "total_tokens": max(1, len(updated) // 4)
+    }, indent=2)
+
+
+def tool_mem_graph_communities(args: dict) -> str:
+    """Microsoft GraphRAG SOTA: Detect multi-scale modular communities over the entity graph using Louvain clustering."""
+    root = _default_mem_root()
+    db = root / "gms_trust.sqlite"
+    if not db.exists():
+        return json.dumps({"status": "empty", "message": "No gms_trust.sqlite database found", "communities": []})
+
+    try:
+        import networkx as nx
+        import networkx.algorithms.community as nx_comm
+
+        conn = sqlite3.connect(db)
+        conn.row_factory = sqlite3.Row
+        has_rel = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gms_relationships'").fetchone()
+        if not has_rel:
+            conn.close()
+            return json.dumps({"status": "empty", "message": "No gms_relationships table found", "communities": []})
+
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(gms_relationships)")}
+        has_entities_schema = {"subject_entity_id", "predicate", "object_entity_id"}.issubset(columns)
+
+        UG = nx.Graph()
+        if has_entities_schema:
+            sql = """
+                SELECT se.name AS source_id, COALESCE(oe.name, r.object_literal) AS target_id,
+                       r.predicate AS rel_type, 1.0 AS weight
+                FROM gms_relationships r
+                JOIN gms_entities se ON se.entity_id = r.subject_entity_id
+                LEFT JOIN gms_entities oe ON oe.entity_id = r.object_entity_id
+                WHERE (r.valid_to IS NULL OR r.valid_to > datetime('now'))
+            """
+        else:
+            sql = """
+                SELECT source_id, target_id, rel_type, COALESCE(weight, 1.0) AS weight
+                FROM gms_relationships
+                WHERE (valid_to IS NULL OR valid_to > datetime('now'))
+            """
+        rows = conn.execute(sql).fetchall()
+        conn.close()
+
+        for r in rows:
+            sid, tid = r["source_id"], r["target_id"]
+            if sid and tid:
+                w = float(r["weight"]) if r["weight"] is not None else 1.0
+                UG.add_edge(sid, tid, weight=w, rel_type=r["rel_type"])
+
+        if UG.number_of_nodes() == 0:
+            return json.dumps({"status": "empty", "message": "Knowledge graph has zero active nodes", "communities": []})
+
+        raw_comms = nx_comm.louvain_communities(UG, seed=42)
+        raw_comms = sorted(raw_comms, key=lambda c: len(c), reverse=True)
+
+        communities = []
+        for idx, c_nodes in enumerate(raw_comms):
+            subg = UG.subgraph(c_nodes)
+            deg = dict(subg.degree())
+            central_hubs = sorted(deg.items(), key=lambda x: x[1], reverse=True)[:3]
+            hub_names = [h[0] for h in central_hubs]
+            density = round(nx.density(subg), 3) if len(c_nodes) > 1 else 1.0
+
+            communities.append({
+                "community_id": f"C{idx}",
+                "size": len(c_nodes),
+                "central_hubs": hub_names,
+                "internal_density": density,
+                "sample_entities": sorted(list(c_nodes))[:10]
+            })
+
+        return json.dumps({
+            "status": "ok",
+            "total_nodes": UG.number_of_nodes(),
+            "total_edges": UG.number_of_edges(),
+            "community_count": len(communities),
+            "communities": communities
+        }, indent=2)
+    except Exception as exc:
+        return json.dumps({"status": "error", "message": str(exc)}, indent=2)
+
+
+def tool_mem_reflect(args: dict) -> str:
+    """Stanford Generative Agents SOTA: Generate reflective insight synthesis across recent episodic milestones."""
+    root = _default_mem_root()
+    hist_dir = root / "episodic" / "history"
+    episodes = []
+    if hist_dir.exists():
+        fps = sorted(hist_dir.glob("*.md"), reverse=True)[:3]
+        for fp in fps:
+            try:
+                for line in fp.read_text(encoding="utf-8").splitlines():
+                    if line.strip().startswith("- ") and len(line) > 20:
+                        episodes.append({"date": fp.stem, "text": line.strip().lstrip("- ")})
+            except Exception:
+                pass
+
+    claims = []
+    db = root / "gms_trust.sqlite"
+    if db.exists():
+        try:
+            conn = sqlite3.connect(db)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT memory_key, value, agent_id, created_at FROM gms_claims ORDER BY claim_id DESC LIMIT 10").fetchall()
+            conn.close()
+            for r in rows:
+                claims.append(f"[{r['agent_id']}] {r['memory_key']} -> {str(r['value'])[:80]}")
+        except Exception:
+            pass
+
+    themes = {
+        "architecture_and_infra": [],
+        "trading_and_risk": [],
+        "tools_and_operations": []
+    }
+    for ep in episodes[:15]:
+        t = ep["text"].lower()
+        if any(w in t for w in ("infra", "redis", "postgres", "cluster", "server", "docker", "k8s")):
+            themes["architecture_and_infra"].append(ep["text"])
+        elif any(w in t for w in ("alphaos", "trading", "broker", "risk", "stop", "regime", "order")):
+            themes["trading_and_risk"].append(ep["text"])
+        else:
+            themes["tools_and_operations"].append(ep["text"])
+
+    reflections = []
+    for theme_name, items in themes.items():
+        if items:
+            salience = round(min(1.0, 0.4 + 0.15 * len(items)), 2)
+            reflections.append({
+                "theme": theme_name,
+                "evidence_count": len(items),
+                "salience": salience,
+                "synthesis": f"Cluster of {len(items)} recent operational items indicating ongoing development focus.",
+                "sample_evidence": items[:2]
+            })
+
+    report = {
+        "status": "ok",
+        "total_episodes_analyzed": len(episodes),
+        "total_claims_analyzed": len(claims),
+        "reflections": reflections,
+        "generated_at": datetime.now(UTC).isoformat()
+    }
+    return json.dumps(report, indent=2)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Tool registry
 # ──────────────────────────────────────────────────────────────────────────────
@@ -5045,6 +5319,60 @@ TOOLS = {
                 "agent":       {"type": "string", "description": "Optional agent name"},
             },
             "required": ["error_trace"],
+        },
+    },
+    "mem_core_memory_get": {
+        "fn": tool_mem_core_memory_get,
+        "description": "MemGPT/Letta SOTA: Retrieve the agent's core memory blocks (persona, human, scratchpad) with token estimations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    "mem_core_memory_append": {
+        "fn": tool_mem_core_memory_append,
+        "description": "MemGPT/Letta SOTA: Append text to an agent core memory block (persona, human, scratchpad) with size bounding.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "block":   {"type": "string", "description": "Block name: 'persona', 'human', or 'scratchpad'"},
+                "content": {"type": "string", "description": "Text content to append"},
+                "agent":   {"type": "string", "description": "Optional writing agent identifier"},
+            },
+            "required": ["block", "content"],
+        },
+    },
+    "mem_core_memory_replace": {
+        "fn": tool_mem_core_memory_replace,
+        "description": "MemGPT/Letta SOTA: Replace content in a core memory block (persona, human, scratchpad) using targeted matching or full overwrite.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "block":       {"type": "string", "description": "Block name: 'persona', 'human', or 'scratchpad'"},
+                "new_content": {"type": "string", "description": "Replacement text"},
+                "old_content": {"type": "string", "description": "Optional substring to replace; if omitted, overwrites the whole block"},
+                "agent":       {"type": "string", "description": "Optional writing agent identifier"},
+            },
+            "required": ["block", "new_content"],
+        },
+    },
+    "mem_graph_communities": {
+        "fn": tool_mem_graph_communities,
+        "description": "Microsoft GraphRAG SOTA: Detect multi-scale modular communities over the entity graph using Louvain clustering.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    "mem_reflect": {
+        "fn": tool_mem_reflect,
+        "description": "Stanford Generative Agents SOTA: Generate reflective insight synthesis across recent episodic milestones.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
         },
     },
 }
