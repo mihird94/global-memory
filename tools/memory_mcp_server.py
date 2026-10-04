@@ -103,6 +103,8 @@ def _get_harvest_fn():
 
 
 def _default_mem_root() -> Path:
+    if "MEM_ROOT" in globals() and MEM_ROOT is not None:
+        return MEM_ROOT
     memory_root = os.environ.get("MEMORY_ROOT")
     if memory_root:
         return Path(memory_root).expanduser()
@@ -4636,6 +4638,263 @@ def tool_mem_reflect(args: dict) -> str:
     return json.dumps(report, indent=2)
 
 
+def tool_mem_trap_create(args: dict) -> str:
+    """Invention: Create a reflexive prospective memory trap that fires when an observation or action matches."""
+    name = str(args.get("name", "")).strip().lower()
+    pattern = str(args.get("pattern", "")).strip()
+    payload = str(args.get("payload", "")).strip()
+    if not name or not pattern or not payload:
+        return "ERROR: 'name', 'pattern', and 'payload' are all required"
+    trigger_type = str(args.get("trigger_type", "keyword")).strip().lower()
+    recurring = bool(args.get("recurring", False))
+    agent = _normalize_agent_id(args.get("agent", "").strip() or "developer")
+
+    root = _default_mem_root()
+    traps_file = root / "operational" / "traps.json"
+    traps_file.parent.mkdir(parents=True, exist_ok=True)
+    traps = []
+    if traps_file.exists():
+        try:
+            traps = json.loads(traps_file.read_text(encoding="utf-8"))
+        except Exception:
+            traps = []
+
+    existing = next((t for t in traps if t.get("name") == name), None)
+    entry = {
+        "name": name,
+        "trigger_type": trigger_type,
+        "pattern": pattern,
+        "payload": payload,
+        "recurring": recurring,
+        "active": True,
+        "hit_count": existing.get("hit_count", 0) if existing else 0,
+        "created_at": existing.get("created_at", datetime.now(UTC).isoformat()) if existing else datetime.now(UTC).isoformat(),
+        "last_triggered_at": existing.get("last_triggered_at") if existing else None,
+        "agent": agent,
+    }
+    traps = [t for t in traps if t.get("name") != name] + [entry]
+    traps_file.write_text(json.dumps(traps, indent=2), encoding="utf-8")
+    return json.dumps({"status": "ok", "trap": entry}, indent=2)
+
+
+def tool_mem_trap_list(args: dict) -> str:
+    """Invention: List all prospective attention traps (active and disarmed)."""
+    root = _default_mem_root()
+    traps_file = root / "operational" / "traps.json"
+    traps = []
+    if traps_file.exists():
+        try:
+            traps = json.loads(traps_file.read_text(encoding="utf-8"))
+        except Exception:
+            traps = []
+    active_only = bool(args.get("active_only", False))
+    if active_only:
+        traps = [t for t in traps if t.get("active", True)]
+    return json.dumps({
+        "status": "ok",
+        "total_traps": len(traps),
+        "traps": traps
+    }, indent=2)
+
+
+def tool_mem_trap_eval(args: dict) -> str:
+    """Invention: Fast evaluate observation/action text against prospective attention traps."""
+    context = str(args.get("context", "")).strip()
+    if not context:
+        return json.dumps({"status": "ok", "triggered": []})
+
+    root = _default_mem_root()
+    traps_file = root / "operational" / "traps.json"
+    if not traps_file.exists():
+        return json.dumps({"status": "ok", "triggered": []})
+
+    try:
+        traps = json.loads(traps_file.read_text(encoding="utf-8"))
+    except Exception:
+        return json.dumps({"status": "ok", "triggered": []})
+
+    triggered = []
+    modified = False
+    for t in traps:
+        if not t.get("active", True):
+            continue
+        pat = t.get("pattern", "")
+        matched = False
+        try:
+            if re.search(pat, context, re.IGNORECASE):
+                matched = True
+        except Exception:
+            if pat.lower() in context.lower():
+                matched = True
+
+        if matched:
+            t["hit_count"] = t.get("hit_count", 0) + 1
+            t["last_triggered_at"] = datetime.now(UTC).isoformat()
+            if not t.get("recurring", False):
+                t["active"] = False
+            modified = True
+            triggered.append({
+                "trap_name": t.get("name"),
+                "directive": t.get("payload"),
+                "trigger_type": t.get("trigger_type"),
+                "recurring": t.get("recurring", False),
+            })
+
+    if modified:
+        try:
+            traps_file.write_text(json.dumps(traps, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    return json.dumps({
+        "status": "ok",
+        "evaluated_context": context[:120],
+        "triggered_count": len(triggered),
+        "triggered": triggered
+    }, indent=2)
+
+
+def tool_mem_trap_dismiss(args: dict) -> str:
+    """Invention: Dismiss or disarm a prospective attention trap by name."""
+    name = str(args.get("name", "")).strip().lower()
+    if not name:
+        return "ERROR: 'name' is required"
+    root = _default_mem_root()
+    traps_file = root / "operational" / "traps.json"
+    if not traps_file.exists():
+        return json.dumps({"status": "not_found", "name": name})
+
+    try:
+        traps = json.loads(traps_file.read_text(encoding="utf-8"))
+    except Exception:
+        traps = []
+
+    found = False
+    for t in traps:
+        if t.get("name") == name:
+            t["active"] = False
+            found = True
+
+    if found:
+        traps_file.write_text(json.dumps(traps, indent=2), encoding="utf-8")
+        return json.dumps({"status": "ok", "dismissed": name})
+    return json.dumps({"status": "not_found", "name": name})
+
+
+def tool_mem_speculative_prefetch(args: dict) -> str:
+    """Invention: Anticipatory cognitive branch predictor prefetching traps, prior errors, symbols, and invariants."""
+    active_file = str(args.get("active_file", "")).strip()
+    intent = str(args.get("intent", "")).strip()
+    project = str(args.get("project", "")).strip()
+
+    search_text = f"{active_file} {intent} {project}".strip()
+    root = _default_mem_root()
+
+    # 1. Evaluate traps against search context
+    trap_res = json.loads(tool_mem_trap_eval({"context": search_text}))
+    hazards = [t["directive"] for t in trap_res.get("triggered", [])]
+
+    # 2. Prior regrets / errors from operational/errors.json
+    prior_regrets = []
+    err_file = root / "operational" / "errors.json"
+    if err_file.exists():
+        try:
+            errs = json.loads(err_file.read_text(encoding="utf-8"))
+            for e in errs[-20:]:
+                tokens = [tk for tk in re.split(r"\W+", search_text.lower()) if len(tk) > 3]
+                trace = (e.get("trace", "") + " " + e.get("mitigation", "") + " " + e.get("root_cause", "")).lower()
+                if any(tk in trace for tk in tokens):
+                    prior_regrets.append({
+                        "root_cause": e.get("root_cause"),
+                        "mitigation": e.get("mitigation"),
+                        "timestamp": e.get("timestamp")
+                    })
+        except Exception:
+            pass
+
+    # 3. Code symbols if active_file exists
+    symbols = []
+    if active_file and Path(active_file).exists() and active_file.endswith(".py"):
+        try:
+            import ast
+            tree = ast.parse(Path(active_file).read_text(encoding="utf-8"))
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    symbols.append(node.name)
+        except Exception:
+            pass
+
+    # 4. Invariants matching search_text from facts.json
+    invariants = []
+    facts_file = root / "semantic" / "facts.json"
+    if facts_file.exists():
+        try:
+            facts = json.loads(facts_file.read_text(encoding="utf-8"))
+            for k, v in facts.items():
+                if any(w in k.lower() for w in re.split(r"\W+", search_text.lower()) if len(w) > 3):
+                    invariants.append({"key": k, "value": str(v)[:200]})
+        except Exception:
+            pass
+
+    return json.dumps({
+        "status": "ok",
+        "speculative_bundle": {
+            "active_file": active_file,
+            "intent": intent,
+            "hazards": hazards,
+            "prior_regrets": prior_regrets[:3],
+            "symbols": symbols[:10],
+            "invariants": invariants[:5]
+        },
+        "prefetched_at": datetime.now(UTC).isoformat()
+    }, indent=2)
+
+
+def tool_mem_programmatic_guard(args: dict) -> str:
+    """Invention: Deterministic programmatic memory assertion validator replacing ambiguous natural language advice."""
+    guard_name = str(args.get("guard_name", "")).strip().lower()
+    ctx = args.get("context", {})
+    if not isinstance(ctx, dict):
+        ctx = {}
+
+    if guard_name == "schema_keys":
+        required = args.get("required_keys", [])
+        missing = [k for k in required if k not in ctx]
+        if missing:
+            return json.dumps({"passed": False, "guard": guard_name, "error": f"Missing required keys: {missing}"})
+        return json.dumps({"passed": True, "guard": guard_name, "status": "all required keys present"})
+
+    elif guard_name == "budget_limit":
+        target = str(args.get("target_text", ctx.get("text", "")))
+        limit = int(args.get("max_chars", 4000))
+        if len(target) > limit:
+            return json.dumps({"passed": False, "guard": guard_name, "error": f"Text size {len(target)} exceeds limit {limit}"})
+        return json.dumps({"passed": True, "guard": guard_name, "chars": len(target), "limit": limit})
+
+    elif guard_name == "sqlite_concurrency":
+        root = _default_mem_root()
+        db_path = root / "gms_trust.sqlite"
+        if db_path.exists():
+            import sqlite3
+            try:
+                conn = sqlite3.connect(db_path, timeout=1.0)
+                cur = conn.cursor()
+                cur.execute("PRAGMA journal_mode;")
+                jmode = cur.fetchone()[0]
+                cur.execute("PRAGMA busy_timeout;")
+                timeout = cur.fetchone()[0]
+                conn.close()
+                return json.dumps({"passed": True, "guard": guard_name, "journal_mode": jmode, "busy_timeout": timeout})
+            except Exception as e:
+                return json.dumps({"passed": False, "guard": guard_name, "error": str(e)})
+        return json.dumps({"passed": True, "guard": guard_name, "status": "db not created yet"})
+
+    else:
+        assertion = bool(args.get("condition", True))
+        reason = str(args.get("reason", "Generic invariant assertion"))
+        return json.dumps({"passed": assertion, "guard": guard_name or "custom", "reason": reason})
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Tool registry
 # ──────────────────────────────────────────────────────────────────────────────
@@ -5373,6 +5632,84 @@ TOOLS = {
             "type": "object",
             "properties": {},
             "required": [],
+        },
+    },
+    "mem_trap_create": {
+        "fn": tool_mem_trap_create,
+        "description": "Frontier Invention: Plant a sleeping prospective memory trap with conditional trigger patterns and interrupt directives.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name":         {"type": "string", "description": "Unique identifier for the trap"},
+                "pattern":      {"type": "string", "description": "Substring or regex pattern to match"},
+                "payload":      {"type": "string", "description": "High-priority directive or constraint injected when triggered"},
+                "trigger_type": {"type": "string", "default": "keyword", "description": "Trigger type: 'file_path', 'command', 'keyword', 'git_branch'"},
+                "recurring":    {"type": "boolean", "default": False, "description": "Whether the trap remains active after tripping"},
+                "agent":        {"type": "string", "description": "Creating agent identifier"},
+            },
+            "required": ["name", "pattern", "payload"],
+        },
+    },
+    "mem_trap_list": {
+        "fn": tool_mem_trap_list,
+        "description": "Frontier Invention: List prospective attention traps and their active states, hit counts, and triggers.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "active_only": {"type": "boolean", "default": False, "description": "Filter to active traps only"},
+            },
+            "required": [],
+        },
+    },
+    "mem_trap_eval": {
+        "fn": tool_mem_trap_eval,
+        "description": "Frontier Invention: Fast evaluate observation text or action against active prospective traps to detect interrupts.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "context": {"type": "string", "description": "Text, command, or file context to evaluate"},
+            },
+            "required": ["context"],
+        },
+    },
+    "mem_trap_dismiss": {
+        "fn": tool_mem_trap_dismiss,
+        "description": "Frontier Invention: Dismiss or disarm a prospective attention trap by name.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Name of trap to dismiss"},
+            },
+            "required": ["name"],
+        },
+    },
+    "mem_speculative_prefetch": {
+        "fn": tool_mem_speculative_prefetch,
+        "description": "Frontier Invention: Anticipatory cognitive branch predictor prefetching active traps, prior error regrets, symbols, and invariants.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "active_file": {"type": "string", "description": "Optional file path being inspected or edited"},
+                "intent":      {"type": "string", "description": "Optional short description of pending command or goal"},
+                "project":     {"type": "string", "description": "Optional project identifier"},
+            },
+            "required": [],
+        },
+    },
+    "mem_programmatic_guard": {
+        "fn": tool_mem_programmatic_guard,
+        "description": "Frontier Invention: Deterministic programmatic assertion validator replacing ambiguous natural language advice.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "guard_name":    {"type": "string", "description": "Guard type: 'schema_keys', 'budget_limit', 'sqlite_concurrency', 'custom'"},
+                "context":       {"type": "object", "description": "Runtime context dictionary to evaluate"},
+                "required_keys": {"type": "array", "description": "Required keys for schema_keys guard"},
+                "max_chars":     {"type": "integer", "description": "Max char budget for budget_limit guard"},
+                "condition":     {"type": "boolean", "description": "Boolean assertion for custom guard"},
+                "reason":        {"type": "string", "description": "Reason or invariant description"},
+            },
+            "required": ["guard_name"],
         },
     },
 }

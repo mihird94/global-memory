@@ -2249,6 +2249,63 @@ def cmd_reflect(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_trap(args: argparse.Namespace) -> int:
+    import memory_mcp_server
+    action = getattr(args, "action", "list")
+    if action == "create":
+        print(memory_mcp_server.tool_mem_trap_create({
+            "name": args.name,
+            "pattern": args.pattern,
+            "payload": args.payload,
+            "trigger_type": getattr(args, "trigger_type", "keyword"),
+            "recurring": getattr(args, "recurring", False),
+            "agent": getattr(args, "agent", "developer"),
+        }))
+    elif action == "list":
+        print(memory_mcp_server.tool_mem_trap_list({
+            "active_only": getattr(args, "active_only", False)
+        }))
+    elif action == "eval":
+        print(memory_mcp_server.tool_mem_trap_eval({
+            "context": args.context
+        }))
+    elif action == "dismiss":
+        print(memory_mcp_server.tool_mem_trap_dismiss({
+            "name": args.name
+        }))
+    return 0
+
+
+def cmd_speculative_prefetch(args: argparse.Namespace) -> int:
+    import memory_mcp_server
+    print(memory_mcp_server.tool_mem_speculative_prefetch({
+        "active_file": getattr(args, "active_file", "") or "",
+        "intent": getattr(args, "intent", "") or "",
+        "project": getattr(args, "project", "") or "",
+    }))
+    return 0
+
+
+def cmd_programmatic_guard(args: argparse.Namespace) -> int:
+    import memory_mcp_server
+    ctx = {}
+    if getattr(args, "context", None):
+        try:
+            ctx = json.loads(args.context)
+        except Exception:
+            pass
+    req_keys = [k.strip() for k in args.required_keys.split(",") if k.strip()] if getattr(args, "required_keys", None) else []
+    print(memory_mcp_server.tool_mem_programmatic_guard({
+        "guard_name": args.guard_name,
+        "context": ctx,
+        "required_keys": req_keys,
+        "max_chars": getattr(args, "max_chars", 4000),
+        "condition": getattr(args, "condition", True),
+        "reason": getattr(args, "reason", "CLI programmatic guard"),
+    }))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Memory control CLI for global-memory skill.")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -2726,6 +2783,45 @@ def main() -> int:
 
     p_ref = sub.add_parser("reflect", help="Stanford Generative Agents SOTA: Synthesize reflective insights across recent episodic milestones.")
     p_ref.set_defaults(fn=cmd_reflect)
+
+    p_trap = sub.add_parser("trap", help="Frontier Invention: Manage prospective attention traps (create, list, eval, dismiss).")
+    trap_sub = p_trap.add_subparsers(dest="action", required=False)
+    p_trap_create = trap_sub.add_parser("create", help="Create a prospective attention trap")
+    p_trap_create.add_argument("name", help="Trap name")
+    p_trap_create.add_argument("pattern", help="Match pattern / regex")
+    p_trap_create.add_argument("payload", help="Directive / alert payload")
+    p_trap_create.add_argument("--type", dest="trigger_type", default="keyword", help="Trigger type (file_path, command, keyword)")
+    p_trap_create.add_argument("--recurring", action="store_true", help="Keep active across multiple matches")
+    p_trap_create.add_argument("--agent", default="developer", help="Agent identifier")
+    p_trap_create.set_defaults(action="create")
+
+    p_trap_list = trap_sub.add_parser("list", help="List prospective attention traps")
+    p_trap_list.add_argument("--active-only", action="store_true", help="Filter active only")
+    p_trap_list.set_defaults(action="list")
+
+    p_trap_eval = trap_sub.add_parser("eval", help="Evaluate context against active traps")
+    p_trap_eval.add_argument("context", help="Text/command/file to evaluate")
+    p_trap_eval.set_defaults(action="eval")
+
+    p_trap_dismiss = trap_sub.add_parser("dismiss", help="Dismiss/disarm a trap")
+    p_trap_dismiss.add_argument("name", help="Trap name to disarm")
+    p_trap_dismiss.set_defaults(action="dismiss")
+    p_trap.set_defaults(fn=cmd_trap)
+
+    p_pref = sub.add_parser("prefetch", help="Frontier Invention: Anticipatory cognitive branch predictor prefetching active traps, prior regrets, and invariants.")
+    p_pref.add_argument("--file", dest="active_file", default="", help="Active file path")
+    p_pref.add_argument("--intent", default="", help="Pending command or action goal")
+    p_pref.add_argument("--project", default="", help="Project identifier")
+    p_pref.set_defaults(fn=cmd_speculative_prefetch)
+
+    p_grd = sub.add_parser("guard", help="Frontier Invention: Run deterministic programmatic memory validation assertions.")
+    p_grd.add_argument("guard_name", help="Guard name (schema_keys, budget_limit, sqlite_concurrency, custom)")
+    p_grd.add_argument("--context", default="", help="JSON string representing runtime context")
+    p_grd.add_argument("--required-keys", default="", help="Comma-separated required keys")
+    p_grd.add_argument("--max-chars", type=int, default=4000, help="Max character budget")
+    p_grd.add_argument("--condition", action="store_true", help="Boolean condition for custom assertion")
+    p_grd.add_argument("--reason", default="CLI guard verification", help="Reason or rule description")
+    p_grd.set_defaults(fn=cmd_programmatic_guard)
 
     args = parser.parse_args()
     return args.fn(args)
