@@ -196,20 +196,27 @@ def test_case_3_zero_trust_authority_escalation_guard():
 
 def test_case_4_predicate_and_scope_isolation(clean_memory_env):
     root, db_path = clean_memory_env
+    from schemas import ProceduralTaskContract, ScopeModel
 
-    # Setup: Stored procedure with scope.applies_to = ["provisioned_rds"] and action "--timeout=30m"
+    # Setup: Stored procedure: ProceduralTaskContract with scope.applies_to = ["provisioned_rds"] and action "--timeout=30m"
+    proc_contract = ProceduralTaskContract(
+        name="rds_maintenance_procedure",
+        trigger="maintenance_window",
+        action="--timeout=30m",
+        scope=ScopeModel(
+            level="project",
+            project="infra",
+            applies_to=["provisioned_rds"]
+        )
+    )
+
     conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()
-    proc_context = {
-        "scope": {
-            "project": "infra",
-            "applies_to": ["provisioned_rds"]
-        }
-    }
+    proc_context = {"scope": proc_contract.scope.model_dump()}
     cur.execute("""
         INSERT INTO gms_procedures (name, "trigger", action, context, status)
-        VALUES ('rds_maintenance_procedure', 'maintenance_window', '--timeout=30m', ?, 'active')
-    """, (json.dumps(proc_context),))
+        VALUES (?, ?, ?, ?, 'active')
+    """, (proc_contract.name, proc_contract.trigger, proc_contract.action, json.dumps(proc_context)))
     conn.commit()
     conn.close()
 
@@ -243,27 +250,48 @@ def test_case_4_predicate_and_scope_isolation(clean_memory_env):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def test_case_5_temporal_exponential_decay_scoring():
-    # Formula to verify: W = W_0 * e^(-lambda * delta_t) with lambda = 0.05
+    from datetime import datetime, timedelta
+    from memoryctl import get_decay_rate_for_item
+
     decay_lambda = 0.05
-    w_0 = 0.85
+    raw_similarity = 0.85
+    now = datetime(2026, 10, 5, 12, 0, 0)
 
-    # Document A: delta_t = 1 day, similarity = 0.85
-    delta_t_A = 1.0
-    w_A = w_0 * math.exp(-decay_lambda * delta_t_A)
+    # Document A: Timestamped t = now - 1 day, raw cosine similarity = 0.85
+    doc_A_date = now - timedelta(days=1)
+    doc_A = {
+        "source": f"history/{doc_A_date.strftime('%Y-%m-%d')}.md",
+        "text": "Operational memory record regarding active cluster configuration",
+        "raw_score": raw_similarity
+    }
 
-    # Document B: delta_t = 180 days, similarity = 0.85
-    delta_t_B = 180.0
-    w_B = w_0 * math.exp(-decay_lambda * delta_t_B)
+    # Document B: Timestamped t = now - 180 days, raw cosine similarity = 0.85
+    doc_B_date = now - timedelta(days=180)
+    doc_B = {
+        "source": f"history/{doc_B_date.strftime('%Y-%m-%d')}.md",
+        "text": "Operational memory record regarding active cluster configuration",
+        "raw_score": raw_similarity
+    }
+
+    # Execute scoring through GMS retrieval decay engine (memoryctl)
+    days_ago_A = (now - doc_A_date).days
+    rate_A = get_decay_rate_for_item(doc_A["source"], doc_A["text"], decay_lambda)
+    decay_factor_A = math.exp(-rate_A * days_ago_A)
+    fused_score_A = float(doc_A["raw_score"] * decay_factor_A)
+
+    days_ago_B = (now - doc_B_date).days
+    rate_B = get_decay_rate_for_item(doc_B["source"], doc_B["text"], decay_lambda)
+    decay_factor_B = math.exp(-rate_B * days_ago_B)
+    fused_score_B = float(doc_B["raw_score"] * decay_factor_B)
 
     # Assertion 1: Final fused score of Document A is significantly higher than Document B
-    assert w_A > w_B
-    assert w_A > (w_B * 5000.0), f"Doc A ({w_A}) is not significantly higher than Doc B ({w_B})"
+    assert fused_score_A > fused_score_B
+    assert fused_score_A > (fused_score_B * 5000.0), f"Doc A ({fused_score_A}) not significantly higher than Doc B ({fused_score_B})"
 
-    # Assertion 2: Ratio of scores matches exponential decay curve within 1% tolerance
-    actual_ratio = w_A / w_B
-    expected_ratio = math.exp(-decay_lambda * delta_t_A) / math.exp(-decay_lambda * delta_t_B)
-    # Equivalently: e^(0.05 * 179)
-    theoretical_ratio = math.exp(decay_lambda * (delta_t_B - delta_t_A))
+    # Assertion 2: Ratio of scores matches the exponential decay curve within 1% tolerance
+    actual_ratio = fused_score_A / fused_score_B
+    # Theoretical ratio: e^(-lambda * 1) / e^(-lambda * 180) = e^(0.05 * 179)
+    theoretical_ratio = math.exp(decay_lambda * (days_ago_B - days_ago_A))
 
     relative_error = abs(actual_ratio - theoretical_ratio) / theoretical_ratio
     assert relative_error < 0.01, f"Decay curve ratio error {relative_error:.6f} exceeds 1% tolerance"

@@ -70,6 +70,12 @@ if PYDANTIC_AVAILABLE:
         priority: int = Field(default=100, description="Priority integer (lower is higher priority)")
         description: str = Field(default="", description="Rule rationale and constraints")
 
+    class ScopeModel(BaseModel):
+        level: Literal["global", "project", "workstream", "file", "system", "personal"] = "project"
+        project: str = ""
+        workstream: str = ""
+        applies_to: list[str] = Field(default_factory=list)
+
     class ProceduralTaskContract(BaseModel):
         name: str = Field(..., description="Procedure name")
         trigger: str = Field(..., description="Trigger condition or event regex")
@@ -77,12 +83,8 @@ if PYDANTIC_AVAILABLE:
         prerequisites: list[str] = Field(default_factory=list, description="Prerequisite conditions")
         steps: list[str] = Field(default_factory=list, description="Ordered step instructions")
         timeout_seconds: int = Field(default=300, description="Execution timeout limit")
+        scope: ScopeModel = Field(default_factory=ScopeModel)
 
-    class ScopeModel(BaseModel):
-        level: Literal["global", "project", "workstream", "file", "system", "personal"] = "project"
-        project: str = ""
-        workstream: str = ""
-        applies_to: list[str] = Field(default_factory=list)
 
     class ProvenanceModel(BaseModel):
         observed_agents: list[str] = Field(default_factory=list)
