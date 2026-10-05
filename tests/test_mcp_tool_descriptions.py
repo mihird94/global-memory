@@ -58,6 +58,7 @@ def test_context_governance_tools_and_aliases_are_registered():
         "trap_create", "trap_list", "trap_eval", "trap_dismiss",
         "speculative_prefetch", "programmatic_guard",
         "staleness_verify", "causal_recall",
+        "thermodynamic_compact",
     }
     for capability in additions:
         mem_name = f"mem_{capability}"
@@ -65,8 +66,9 @@ def test_context_governance_tools_and_aliases_are_registered():
         assert mem_name in TOOLS
         assert brain_name in TOOLS
         assert TOOLS[brain_name]["description"].endswith(TOOLS[mem_name]["description"])
-    assert len([name for name in TOOLS if name.startswith("mem_")]) == 74
-    assert len(TOOLS) == 148
+    assert len([name for name in TOOLS if name.startswith("mem_")]) == 75
+    assert len(TOOLS) == 150
+
 
 
 def test_new_read_only_tools_execute_against_minimal_memory_root(tmp_path, monkeypatch):

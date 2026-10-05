@@ -252,3 +252,36 @@ def test_causal_recall(clean_memory_root):
     assert failures["results"][0]["causal_outcome"] == "failed_attempt"
     assert "OperationalError" in failures["results"][0]["summary"]
 
+
+def test_thermodynamic_compaction_and_sublimation(clean_memory_root):
+    errs_file = clean_memory_root / "operational" / "errors.json"
+    # Seed 5 repetitive traces of the same operational issue to trigger sublimation
+    traces = []
+    for i in range(5):
+        traces.append({
+            "timestamp": f"2026-10-04T0{i}:00:00Z",
+            "trace": "sqlite3.OperationalError: database locked",
+            "root_cause": "Missing WAL mode",
+            "mitigation": "Set PRAGMA journal_mode=WAL and PRAGMA busy_timeout=5000",
+        })
+    errs_file.write_text(json.dumps(traces))
+
+    # Run thermodynamic compaction with min_frequency=3
+    res = json.loads(memory_mcp_server.tool_mem_thermodynamic_compact({
+        "sublimate": True,
+        "min_frequency": 3,
+        "dry_run": False
+    }))
+
+    assert res["status"] == "ok"
+    assert len(res["sublimated_guards"]) == 1
+    assert res["sublimated_guards"][0]["phase"] == "SUBLIMATION"
+    assert res["sublimated_guards"][0]["frequency"] == 5
+    assert res["metrics"]["purged_entries_count"] == 4
+    assert res["metrics"]["volume_reduction_pct"] > 50.0
+
+    # Verify that errors.json was compacted on disk to 1 deduped entry
+    compacted_errs = json.loads(errs_file.read_text(encoding="utf-8"))
+    assert len(compacted_errs) == 1
+
+
