@@ -848,11 +848,47 @@ def _run_lane_decisions(root: Path, query_tokens: list[str], project: str, as_of
     return items
 
 
-def _run_lane_procedures(root: Path, query_tokens: list[str], project: str, as_of: str | None, candidate_limit: int = 6) -> list[dict[str, Any]]:
+def _run_lane_procedures(root: Path, query_tokens: list[str], project: str, as_of: str | None, candidate_limit: int = 6, query_context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     items = []
     rank = 1
-    # 1. Project systemPatterns.md
-    if project:
+
+    # 1. Registered procedures from gms_procedures in gms_trust.sqlite
+    db = root / "gms_trust.sqlite"
+    if db.exists() and rank <= candidate_limit:
+        try:
+            conn = sqlite3.connect(db)
+            conn.row_factory = sqlite3.Row
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gms_procedures'").fetchone():
+                rows = conn.execute("SELECT procedure_id, name, \"trigger\", action, context, status FROM gms_procedures WHERE status = 'active'").fetchall()
+                for r in rows:
+                    ctx = {}
+                    if r["context"]:
+                        try:
+                            ctx = json.loads(r["context"])
+                        except Exception:
+                            ctx = {}
+                    scope = ctx.get("scope") or {}
+                    statement = f"Procedure {r['name']}: trigger={r['trigger']} action={r['action']}"
+                    items.append(_make_item(
+                        "procedures",
+                        f"procedure.{r['name']}",
+                        statement,
+                        "verified_system_output",
+                        f"procedure:{r['procedure_id']}",
+                        rank,
+                        component_score=0.90,
+                        scope=scope,
+                        inclusion_reason=f"Registered active procedure {r['name']}"
+                    ))
+                    rank += 1
+                    if rank > candidate_limit:
+                        break
+            conn.close()
+        except Exception:
+            pass
+
+    # 2. Project systemPatterns.md
+    if project and rank <= candidate_limit:
         fp = root / "projects" / project / "systemPatterns.md"
         if fp.exists():
             try:
@@ -871,7 +907,7 @@ def _run_lane_procedures(root: Path, query_tokens: list[str], project: str, as_o
             except Exception:
                 pass
 
-    # 2. SKILL.md protocols
+    # 3. SKILL.md protocols
     skill_fp = Path(__file__).resolve().parent.parent / "SKILL.md"
     if skill_fp.exists() and rank <= candidate_limit:
         try:
@@ -1358,6 +1394,7 @@ def retrieve(
     query: str,
     *,
     project: str = "",
+    query_context: dict[str, Any] | None = None,
     as_of: str | None = None,
     assurance: str = "standard",
     token_budget: int = 2400,
@@ -1373,6 +1410,8 @@ def retrieve(
     config: RetrievalConfig | None = None,
 ) -> dict[str, Any]:
     root = Path(mem_root)
+    if query_context and not project:
+        project = str(query_context.get("project", ""))
     cfg = config if config is not None else RetrievalConfig(
         rerank_policy="always" if enable_reranking else "never",
         rerank_model=rerank_model,
@@ -1430,7 +1469,8 @@ def retrieve(
                                                               candidate_limit=limits.get("decisions", 10)))
     if "procedures" in enabled_lanes:
         _execute_lane("procedures", lambda: _run_lane_procedures(root, query_tokens, project, as_of,
-                                                                candidate_limit=limits.get("procedures", 6)))
+                                                                candidate_limit=limits.get("procedures", 6),
+                                                                query_context=query_context))
     if "tasks" in enabled_lanes:
         _execute_lane("tasks", lambda: _run_lane_tasks(root, project, as_of,
                                                        candidate_limit=limits.get("tasks", 10),
@@ -1711,6 +1751,18 @@ def retrieve(
         item["rrf_score"] = round(rrf_scores[k], 5)
         item["lanes_matched"] = sorted(item_lanes[k])
 
+        # Predicate & scope isolation check (The Aurora Bug defense)
+        it_scope = item.get("scope") or {}
+        applies_to = it_scope.get("applies_to") or []
+        if isinstance(applies_to, str):
+            applies_to = [applies_to]
+        if applies_to and query_context:
+            target = query_context.get("target_service") or query_context.get("service") or query_context.get("entity")
+            if target and target not in applies_to and "*" not in applies_to:
+                reason = f"Scope mismatch on applies_to: item applies to {applies_to}, but query context target is {target}"
+                omitted.append({"key": item["key"], "reason": reason, "scope_mismatch": "applies_to"})
+                continue
+
         # Temporal filter: check as_of
         if as_of and item.get("effective_at"):
             if str(item["effective_at"])[:10] > str(as_of)[:10]:
@@ -1816,6 +1868,7 @@ def retrieve(
     manifest["retrieval_confidence"] = retrieval_confidence
     manifest["abstention_recommended"] = abstention_recommended
     manifest["abstention_reason"] = abstention_reason
+    manifest["filter_logs"] = [x.get("reason", "") for x in omitted]
 
     return {
         "plan": plan,
@@ -1833,6 +1886,7 @@ def retrieve(
         "reranker": rerank_meta,
         "rerank_diagnostics": diagnostics,
         "omission_manifest": omitted,
+        "filter_logs": [x.get("reason", "") for x in omitted],
     }
 
 
