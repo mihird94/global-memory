@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from eval.ablations import run_ablation_study
-from eval.datasets.continuation import CONTINUATION_CASES
-from eval.datasets.longmemeval import LONGMEMEVAL_CASES
-from eval.datasets.memoryagentbench import MEMORYAGENTBENCH_CASES
-from eval.harness import MemoryEvalHarness, create_fixture_memory_root, fixture_query_embedding
-from eval.metrics import (
+from research_harness.eval.ablations import run_ablation_study
+from research_harness.eval.datasets.continuation import CONTINUATION_CASES
+from research_harness.eval.datasets.longmemeval import LONGMEMEVAL_CASES
+from research_harness.eval.datasets.memoryagentbench import MEMORYAGENTBENCH_CASES
+from research_harness.eval.harness import MemoryEvalHarness, create_fixture_memory_root, fixture_query_embedding
+from research_harness.eval.metrics import (
     abstention_accuracy,
     constraint_retention_rate,
     dcg_at_k,

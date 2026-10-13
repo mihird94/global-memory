@@ -34,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # ==============================================================================
 
 def test_eval_lab_cli_from_foreign_cwd(tmp_path: Path):
-    """Verify brain eval-lab runs from outside the repo root without ModuleNotFoundError."""
+    """The retired product entry point explains the research migration from any CWD."""
     brain_bin = REPO_ROOT / "tools" / "brain"
     assert brain_bin.exists(), f"Brain executable missing at {brain_bin}"
 
@@ -51,10 +51,11 @@ def test_eval_lab_cli_from_foreign_cwd(tmp_path: Path):
         env=env,
         timeout=120,
     )
-    assert proc.returncode == 0, f"eval-lab failed with stderr:\n{proc.stderr}\nstdout:\n{proc.stdout}"
+    assert proc.returncode == 2
     assert "ModuleNotFoundError" not in proc.stderr
     assert "ModuleNotFoundError" not in proc.stdout
-    assert "Pass Rate: 100.0%" in proc.stdout
+    assert "research_harness.eval.cli" in proc.stdout
+    assert "Pass Rate:" not in proc.stdout
 
 
 # ==============================================================================

@@ -17,17 +17,17 @@ official LongMemEval, LoCoMo, or MemoryAgentBench scores.
 ## Commands
 
 ```bash
-PYTHONPATH=.:tools .venv/bin/python -m eval.cli run
-PYTHONPATH=.:tools .venv/bin/python -m eval.cli run --suite locomo
-PYTHONPATH=.:tools .venv/bin/python -m eval.cli run --suite longmemeval
-PYTHONPATH=.:tools .venv/bin/python -m eval.cli ablate
+PYTHONPATH=.:tools .venv/bin/python -m research_harness.eval.cli run
+PYTHONPATH=.:tools .venv/bin/python -m research_harness.eval.cli run --suite locomo
+PYTHONPATH=.:tools .venv/bin/python -m research_harness.eval.cli run --suite longmemeval
+PYTHONPATH=.:tools .venv/bin/python -m research_harness.eval.cli ablate
 ```
 
 The ablation runs only genuinely isolated retrieval lanes. Dense retrieval uses
 deterministic query embeddings against stored SQLite vectors so it remains
 repeatable; graph retrieval uses real fixture triples. The reranked strategy
 executes the planner's real, lazy FlashRank ONNX cross-encoder path. Install its
-optional runtime with `pip install -r eval/requirements.txt`. If a dependency or
+optional runtime with `pip install -r research_harness/eval/requirements.txt`. If a dependency or
 cached model is absent, the strategy is reported as unavailable rather than
 silently substituted.
 

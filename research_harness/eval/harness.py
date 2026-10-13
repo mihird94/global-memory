@@ -15,11 +15,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from eval.datasets.continuation import CONTINUATION_CASES, ContinuationTestCase
-from eval.datasets.locomo import LOCOMO_CASES, LoCoMoTestCase
-from eval.datasets.longmemeval import LONGMEMEVAL_CASES, LongMemEvalTestCase
-from eval.datasets.memoryagentbench import MEMORYAGENTBENCH_CASES, MemoryAgentBenchTestCase
-from eval.metrics import (
+from research_harness.isolation import reject_live_memory_path
+
+from research_harness.eval.datasets.continuation import CONTINUATION_CASES, ContinuationTestCase
+from research_harness.eval.datasets.locomo import LOCOMO_CASES, LoCoMoTestCase
+from research_harness.eval.datasets.longmemeval import LONGMEMEVAL_CASES, LongMemEvalTestCase
+from research_harness.eval.datasets.memoryagentbench import MEMORYAGENTBENCH_CASES, MemoryAgentBenchTestCase
+from research_harness.eval.metrics import (
     abstention_accuracy,
     constraint_retention_rate,
     hit_at_k,
@@ -33,6 +35,7 @@ from eval.metrics import (
 
 def create_fixture_memory_root(dest: Path) -> Path:
     """Populates an ephemeral sandbox memory root with comprehensive test fixtures."""
+    reject_live_memory_path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     (dest / "semantic").mkdir(parents=True, exist_ok=True)
     (dest / "episodic" / "history").mkdir(parents=True, exist_ok=True)
@@ -304,6 +307,7 @@ class MemoryEvalHarness:
             self.root = create_fixture_memory_root(Path(self._temp_dir.name))
         else:
             self.root = Path(memory_root)
+            reject_live_memory_path(self.root)
 
     def cleanup(self) -> None:
         if self._temp_dir is not None:
@@ -382,6 +386,7 @@ class MemoryEvalHarness:
                 "ability": case.ability,
                 "query": case.query,
                 "variant_of": case.variant_of,
+                "should_abstain": bool(case.should_abstain),
                 "passed": passed,
                 "retrieval_only_hit": retrieval_only_hit,
                 "actionable": actionable,
@@ -496,6 +501,7 @@ class MemoryEvalHarness:
                 "category": case.category,
                 "query": case.query,
                 "variant_of": case.variant_of,
+                "should_abstain": bool(case.should_abstain),
                 "passed": passed,
                 "retrieval_only_hit": retrieval_only_hit,
                 "actionable": actionable,
@@ -592,7 +598,12 @@ class MemoryEvalHarness:
                 "category": case.category,
                 "query": case.query,
                 "variant_of": case.variant_of,
+                "should_abstain": bool((case.category == "selective_forgetting" and not case.valid_keys) or case.category == "contradiction_resistance"),
                 "passed": passed,
+                "retrieval_only_hit": False,
+                "actionable": bool(retrieval.get("actionable", False)),
+                "prohibited_leak_count": len(proh_leaks),
+                "actionable_prohibited_leaks": proh_leaks if retrieval.get("actionable") else [],
                 "latency_ms": round(lat_ms, 2),
                 "valid_hits": valid_hits,
                 "prohibited_leaks": proh_leaks,

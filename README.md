@@ -26,6 +26,11 @@ It exposes a unified memory substrate through stdio MCP server (`brain_*` / `mem
 - **Terminal UI:** `brain tui`
 - **Eval Harness:** `tools/gms_eval.py`
 
+Experimental promotion mechanisms and benchmark studies live in the optional
+[research workspace](research_harness/README.md). The memory runtime does not
+import research code. Run product tests with `.venv/bin/python -m pytest` and
+research tests separately with `PYTHONPATH=.:tools .venv/bin/python -m pytest research_harness/tests`.
+
 ---
 
 ## Quick Start Commands

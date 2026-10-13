@@ -1,0 +1,189 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CCP Independent Evaluation Dataset Schema",
+  "description": "Standard schema for third-tier independent held-out evaluation datasets in Common-Cause-Aware Contestable Promotion (CCP).",
+  "type": "object",
+  "required": [
+    "dataset_id",
+    "version",
+    "description",
+    "author_id",
+    "created_at",
+    "frozen_hash",
+    "adjudication_protocol",
+    "cases"
+  ],
+  "properties": {
+    "dataset_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]+$"
+    },
+    "version": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "author_id": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "frozen_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "adjudication_protocol": {
+      "type": "object",
+      "required": ["blinded", "adjudicator_count", "arbitration_rule"],
+      "properties": {
+        "blinded": { "type": "boolean" },
+        "adjudicator_count": { "type": "integer", "minimum": 1 },
+        "arbitration_rule": { "type": "string" },
+        "inter_rater_agreement_cohen_kappa": { "type": "number", "minimum": -1.0, "maximum": 1.0 }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "case_id",
+          "description",
+          "memory_key",
+          "statement",
+          "source_scope",
+          "target_scope",
+          "authority",
+          "effective_at",
+          "evidence_nodes",
+          "evidence_edges",
+          "ground_truth"
+        ],
+        "properties": {
+          "case_id": { "type": "string" },
+          "description": { "type": "string" },
+          "memory_key": { "type": "string" },
+          "statement": { "type": "string" },
+          "source_scope": {
+            "type": "string",
+            "enum": ["private", "task", "project", "team", "organization"]
+          },
+          "target_scope": {
+            "type": "string",
+            "enum": ["private", "task", "project", "team", "organization"]
+          },
+          "authority": { "type": "string" },
+          "effective_at": { "type": "string", "format": "date-time" },
+          "expires_at": { "type": ["string", "null"] },
+          "metadata": { "type": "object" },
+          "evidence_nodes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "node_id",
+                "node_type",
+                "agent_id",
+                "session_id",
+                "statement",
+                "source_ref",
+                "payload_hash",
+                "created_at",
+                "is_authoritative"
+              ],
+              "properties": {
+                "node_id": { "type": "string" },
+                "node_type": {
+                  "type": "string",
+                  "enum": [
+                    "raw_tool_execution",
+                    "verified_system_fact",
+                    "agent_observation",
+                    "synthetic_generation",
+                    "external_web_fetch",
+                    "artifact_read",
+                    "unverified_rumor"
+                  ]
+                },
+                "agent_id": { "type": "string" },
+                "session_id": { "type": "string" },
+                "statement": { "type": "string" },
+                "source_ref": { "type": "string" },
+                "payload_hash": { "type": "string" },
+                "created_at": { "type": "string", "format": "date-time" },
+                "is_authoritative": { "type": "boolean" },
+                "artifact": { "type": ["object", "null"] },
+                "supported_claim_key": { "type": ["string", "null"] }
+              }
+            }
+          },
+          "evidence_edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "edge_id",
+                "parent_node_id",
+                "child_node_id",
+                "relation_type",
+                "created_at"
+              ],
+              "properties": {
+                "edge_id": { "type": "string" },
+                "parent_node_id": { "type": "string" },
+                "child_node_id": { "type": "string" },
+                "relation_type": {
+                  "type": "string",
+                  "enum": [
+                    "derived_from",
+                    "copied_from",
+                    "paraphrased_from",
+                    "summarizes",
+                    "contradicts",
+                    "corroborates"
+                  ]
+                },
+                "created_at": { "type": "string", "format": "date-time" }
+              }
+            }
+          },
+          "ground_truth": {
+            "type": "object",
+            "required": [
+              "expected_action",
+              "expected_transform",
+              "authoritative_verdict",
+              "taint_expected",
+              "rationale"
+            ],
+            "properties": {
+              "expected_action": {
+                "type": "string",
+                "enum": [
+                  "retain_private",
+                  "share_verbatim",
+                  "share_redacted",
+                  "share_aggregate",
+                  "request_corroboration",
+                  "reject_promotion"
+                ]
+              },
+              "expected_transform": {
+                "type": "string",
+                "enum": ["none", "verbatim", "redacted", "aggregate"]
+              },
+              "authoritative_verdict": { "type": "boolean" },
+              "taint_expected": { "type": "boolean" },
+              "rationale": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

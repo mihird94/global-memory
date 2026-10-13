@@ -2182,15 +2182,13 @@ def cmd_eval_resumption(args: argparse.Namespace) -> int:
 
 
 def cmd_eval_lab(args: argparse.Namespace) -> int:
-    import eval.cli
-    action = getattr(args, "action", "run")
-    if action == "run":
-        eval.cli.run_evals(suite=getattr(args, "suite", "all"), export=not getattr(args, "no_export", False), live=getattr(args, "live", False))
-        return 0
-    elif action == "ablate":
-        eval.cli.run_ablations(export=not getattr(args, "no_export", False), live=getattr(args, "live", False))
-        return 0
-    return 1
+    print(
+        "The experimental evaluation lab is separate from Brain. "
+        "From the repository, run: PYTHONPATH=.:tools .venv/bin/python "
+        "-m research_harness.eval.cli run --no-export. "
+        "See research_harness/README.md. Live memory evaluation is disabled."
+    )
+    return 2
 
 
 def cmd_file_context(args: argparse.Namespace) -> int:
@@ -2761,7 +2759,7 @@ def main() -> int:
     p_evr.add_argument("--model", default="qwen3:8b", help="Installed Ollama model for --live-agent; models are never downloaded automatically.")
     p_evr.set_defaults(fn=cmd_eval_resumption)
 
-    p_evlab = sub.add_parser("eval-lab", help="Run academic memory evaluations (LongMemEval, MemoryAgentBench, Ablations).")
+    p_evlab = sub.add_parser("eval-lab", help="Show migration instructions for the separate research harness.")
     p_evlab.add_argument("action", nargs="?", default="run", choices=["run", "ablate"], help="Action to perform (run or ablate)")
     p_evlab.add_argument("--suite", choices=["all", "longmemeval", "agentbench", "continuation"], default="all", help="Evaluation suite to run")
     p_evlab.add_argument("--no-export", action="store_true", help="Do not write JSON report")

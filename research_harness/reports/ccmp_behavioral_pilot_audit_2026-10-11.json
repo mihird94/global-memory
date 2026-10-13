@@ -1,0 +1,186 @@
+{
+  "source": "/Users/mihirdeshpande/projects/learning/agent_memory/_research/ccmp_behavioral/evidence/runs/ccmp_behavioral_pilot/20261012_032515_650813Z-c5d6baa8a94e",
+  "method": "Independent mutation per temporary copy, all manifest hashes recomputed, auditor called without artifact writes",
+  "results": [
+    {
+      "case": "baseline",
+      "outcome": {
+        "verdict": "PILOT_EXECUTED",
+        "all_passed": true,
+        "target_run_directory": "/var/folders/pt/62fqrrf91b32pntww882c9rc0000gn/T/tmpw9o3yt87/run",
+        "stage": "pilot",
+        "worker_backend": "ollama",
+        "gates": {
+          "GATE_INVENTORY_AND_CARRIER": {
+            "status": "PASS",
+            "details": "Verified 72 execution records with valid carrier fields"
+          },
+          "GATE_SNAPSHOT_INTEGRITY": {
+            "status": "PASS",
+            "details": "All 72 records have consistent initial/final repository digests"
+          },
+          "GATE_HIDDEN_TEST_ISOLATION": {
+            "status": "PASS",
+            "details": "Hidden test isolation verified across all 72 records"
+          },
+          "GATE_RECEIPT_AND_SELECTION": {
+            "status": "PASS",
+            "details": "Candidate pool and selection containment verified across all 72 records"
+          },
+          "GATE_USAGE_HONESTY": {
+            "status": "PASS",
+            "details": "Token usage accounting verified across all 72 records"
+          },
+          "GATE_EXECUTION_INTEGRITY": {
+            "status": "PASS",
+            "details": "Execution consistency verified across all 72 records"
+          },
+          "GATE_STATISTICAL_VALIDITY": {
+            "status": "PASS",
+            "details": "All summary aggregates independently recomputed and verified against raw evidence"
+          },
+          "GATE_EVIDENCE_AUDIT": {
+            "status": "PASS",
+            "details": "All 3 artifacts verified against cryptographic SHA-256 manifest"
+          }
+        },
+        "discrepancies": []
+      }
+    },
+    {
+      "case": "fabricated_paired_effect",
+      "outcome": {
+        "verdict": "PILOT_EXECUTED",
+        "all_passed": true,
+        "target_run_directory": "/var/folders/pt/62fqrrf91b32pntww882c9rc0000gn/T/tmp_u3q182y/run",
+        "stage": "pilot",
+        "worker_backend": "ollama",
+        "gates": {
+          "GATE_INVENTORY_AND_CARRIER": {
+            "status": "PASS",
+            "details": "Verified 72 execution records with valid carrier fields"
+          },
+          "GATE_SNAPSHOT_INTEGRITY": {
+            "status": "PASS",
+            "details": "All 72 records have consistent initial/final repository digests"
+          },
+          "GATE_HIDDEN_TEST_ISOLATION": {
+            "status": "PASS",
+            "details": "Hidden test isolation verified across all 72 records"
+          },
+          "GATE_RECEIPT_AND_SELECTION": {
+            "status": "PASS",
+            "details": "Candidate pool and selection containment verified across all 72 records"
+          },
+          "GATE_USAGE_HONESTY": {
+            "status": "PASS",
+            "details": "Token usage accounting verified across all 72 records"
+          },
+          "GATE_EXECUTION_INTEGRITY": {
+            "status": "PASS",
+            "details": "Execution consistency verified across all 72 records"
+          },
+          "GATE_STATISTICAL_VALIDITY": {
+            "status": "PASS",
+            "details": "All summary aggregates independently recomputed and verified against raw evidence"
+          },
+          "GATE_EVIDENCE_AUDIT": {
+            "status": "PASS",
+            "details": "All 3 artifacts verified against cryptographic SHA-256 manifest"
+          }
+        },
+        "discrepancies": []
+      }
+    },
+    {
+      "case": "arbitrary_snapshot_hashes",
+      "outcome": {
+        "verdict": "PILOT_EXECUTED",
+        "all_passed": true,
+        "target_run_directory": "/var/folders/pt/62fqrrf91b32pntww882c9rc0000gn/T/tmp9_fo69qz/run",
+        "stage": "pilot",
+        "worker_backend": "ollama",
+        "gates": {
+          "GATE_INVENTORY_AND_CARRIER": {
+            "status": "PASS",
+            "details": "Verified 72 execution records with valid carrier fields"
+          },
+          "GATE_SNAPSHOT_INTEGRITY": {
+            "status": "PASS",
+            "details": "All 72 records have consistent initial/final repository digests"
+          },
+          "GATE_HIDDEN_TEST_ISOLATION": {
+            "status": "PASS",
+            "details": "Hidden test isolation verified across all 72 records"
+          },
+          "GATE_RECEIPT_AND_SELECTION": {
+            "status": "PASS",
+            "details": "Candidate pool and selection containment verified across all 72 records"
+          },
+          "GATE_USAGE_HONESTY": {
+            "status": "PASS",
+            "details": "Token usage accounting verified across all 72 records"
+          },
+          "GATE_EXECUTION_INTEGRITY": {
+            "status": "PASS",
+            "details": "Execution consistency verified across all 72 records"
+          },
+          "GATE_STATISTICAL_VALIDITY": {
+            "status": "PASS",
+            "details": "All summary aggregates independently recomputed and verified against raw evidence"
+          },
+          "GATE_EVIDENCE_AUDIT": {
+            "status": "PASS",
+            "details": "All 3 artifacts verified against cryptographic SHA-256 manifest"
+          }
+        },
+        "discrepancies": []
+      }
+    },
+    {
+      "case": "forged_checker_success",
+      "outcome": {
+        "verdict": "PILOT_EXECUTED",
+        "all_passed": true,
+        "target_run_directory": "/var/folders/pt/62fqrrf91b32pntww882c9rc0000gn/T/tmp926f0i0r/run",
+        "stage": "pilot",
+        "worker_backend": "ollama",
+        "gates": {
+          "GATE_INVENTORY_AND_CARRIER": {
+            "status": "PASS",
+            "details": "Verified 72 execution records with valid carrier fields"
+          },
+          "GATE_SNAPSHOT_INTEGRITY": {
+            "status": "PASS",
+            "details": "All 72 records have consistent initial/final repository digests"
+          },
+          "GATE_HIDDEN_TEST_ISOLATION": {
+            "status": "PASS",
+            "details": "Hidden test isolation verified across all 72 records"
+          },
+          "GATE_RECEIPT_AND_SELECTION": {
+            "status": "PASS",
+            "details": "Candidate pool and selection containment verified across all 72 records"
+          },
+          "GATE_USAGE_HONESTY": {
+            "status": "PASS",
+            "details": "Token usage accounting verified across all 72 records"
+          },
+          "GATE_EXECUTION_INTEGRITY": {
+            "status": "PASS",
+            "details": "Execution consistency verified across all 72 records"
+          },
+          "GATE_STATISTICAL_VALIDITY": {
+            "status": "PASS",
+            "details": "All summary aggregates independently recomputed and verified against raw evidence"
+          },
+          "GATE_EVIDENCE_AUDIT": {
+            "status": "PASS",
+            "details": "All 3 artifacts verified against cryptographic SHA-256 manifest"
+          }
+        },
+        "discrepancies": []
+      }
+    }
+  ]
+}

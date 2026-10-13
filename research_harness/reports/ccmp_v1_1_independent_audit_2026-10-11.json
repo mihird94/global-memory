@@ -1,0 +1,49 @@
+{
+  "source_run": "/Users/mihirdeshpande/projects/learning/agent_memory/_research/ccmp_v1/evidence/runs/ccmp_v1_1_evaluation/20261012_005900_459885Z-3f9cddb72fd4",
+  "method": "One mutation per temporary copy; rehash manifest; run auditor in memory without writing audit artifacts",
+  "tests": "43 passed in 1.657s",
+  "results": [
+    {
+      "case": "baseline",
+      "all_passed": true,
+      "verdict": "CCMP_V1_1_SYNTHETIC_HARNESS_VALIDATED",
+      "failed_gates": []
+    },
+    {
+      "case": "false_64_char_receipts",
+      "all_passed": true,
+      "verdict": "CCMP_V1_1_SYNTHETIC_HARNESS_VALIDATED",
+      "failed_gates": []
+    },
+    {
+      "case": "leaked_candidate_in_mode_D",
+      "all_passed": true,
+      "verdict": "CCMP_V1_1_SYNTHETIC_HARNESS_VALIDATED",
+      "failed_gates": []
+    },
+    {
+      "case": "contradictory_rollback_digest",
+      "all_passed": true,
+      "verdict": "CCMP_V1_1_SYNTHETIC_HARNESS_VALIDATED",
+      "failed_gates": []
+    },
+    {
+      "case": "delete_single_replay",
+      "all_passed": true,
+      "verdict": "CCMP_V1_1_SYNTHETIC_HARNESS_VALIDATED",
+      "failed_gates": []
+    },
+    {
+      "case": "remove_safety_policy",
+      "all_passed": true,
+      "verdict": "CCMP_V1_1_SYNTHETIC_HARNESS_VALIDATED",
+      "failed_gates": []
+    },
+    {
+      "case": "fabricate_hypothesis",
+      "all_passed": true,
+      "verdict": "CCMP_V1_1_SYNTHETIC_HARNESS_VALIDATED",
+      "failed_gates": []
+    }
+  ]
+}

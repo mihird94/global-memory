@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from eval.datasets.longmemeval import LONGMEMEVAL_CASES, LongMemEvalTestCase
+from research_harness.eval.datasets.longmemeval import LONGMEMEVAL_CASES, LongMemEvalTestCase
 
 PARTITION_CANONICAL_IDS: dict[str, tuple[str, ...]] = {
     "train": (

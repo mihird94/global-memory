@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from eval.datasets.locomo import LOCOMO_CASES, LoCoMoTestCase, get_locomo_cases_by_category
-from eval.harness import MemoryEvalHarness, create_fixture_memory_root
+from research_harness.eval.datasets.locomo import LOCOMO_CASES, LoCoMoTestCase, get_locomo_cases_by_category
+from research_harness.eval.harness import MemoryEvalHarness, create_fixture_memory_root
 
 
 def test_locomo_dataset_structure():

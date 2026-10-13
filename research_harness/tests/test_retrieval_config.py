@@ -17,14 +17,14 @@ from context_retrieval_planner import (
     _run_lane_vector,
     retrieve,
 )
-from eval.harness import MemoryEvalHarness, fixture_query_embedding
-from eval.partitions import (
+from research_harness.eval.harness import MemoryEvalHarness, fixture_query_embedding
+from research_harness.eval.partitions import (
     PARTITION_CANONICAL_IDS,
     get_partition_cases,
     get_partition_for_case_id,
     verify_partition_isolation,
 )
-from eval.tuning import (
+from research_harness.eval.tuning import (
     check_ollama_status,
     collect_provenance,
     convert_maxrss_to_mb,

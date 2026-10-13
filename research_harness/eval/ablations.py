@@ -13,9 +13,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from eval.datasets.longmemeval import LONGMEMEVAL_CASES
-from eval.harness import fixture_query_embedding
-from eval.metrics import hit_at_k, latency_percentiles, ndcg_at_k, recall_at_k, reciprocal_rank
+from research_harness.eval.datasets.longmemeval import LONGMEMEVAL_CASES
+from research_harness.eval.harness import fixture_query_embedding
+from research_harness.eval.metrics import hit_at_k, latency_percentiles, ndcg_at_k, recall_at_k, reciprocal_rank
 
 ABLATION_CONFIGS = [
     {"name": "lexical_bm25", "lanes": ["bm25"], "rerank": False},
