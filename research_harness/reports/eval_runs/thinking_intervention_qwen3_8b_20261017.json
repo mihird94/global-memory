@@ -1,0 +1,58 @@
+{
+  "bundle_id": "thinking_intervention_qwen3_8b_20261017",
+  "recorded_at": "2026-10-17T17:47:35Z",
+  "evidence_scope": "saved_single_fixture_intervention_study",
+  "scope_limitation_note": "Saved single-fixture intervention on qwen3:8b (gold_1_architecture_decision). This establishes reasoning-token budget exhaustion under think=True vs recovery under think=False on this specific Qwen3:8b fixture only; do not attribute the 7,183-character trace or causal intervention result to qwen3.5:9b without separate raw evidence.",
+  "runtime_identity": {
+    "provider": "ollama_local",
+    "endpoint": "http://127.0.0.1:11434/api/generate",
+    "hardware": "Apple Silicon M-series (arm64)",
+    "model_tag": "qwen3:8b",
+    "model_digest": "500a1f067a9f",
+    "parameter_size": "8.2B",
+    "quantization": "Q4_K_M"
+  },
+  "fixture": {
+    "case_id": "gold_1_architecture_decision",
+    "prompt_template": "gms-context-harvest-v1",
+    "shared_request_parameters": {
+      "model": "qwen3:8b",
+      "format": "json",
+      "stream": false,
+      "keep_alive": 0,
+      "options": {
+        "temperature": 0.1,
+        "num_predict": 1536,
+        "num_ctx": 8192
+      }
+    }
+  },
+  "interventions": {
+    "think_True": {
+      "request_override": {
+        "think": true
+      },
+      "duration_sec": 104.19,
+      "prompt_eval_count": 1066,
+      "eval_count": 1536,
+      "thinking_chars": 7183,
+      "response_chars": 0,
+      "done_reason": "length",
+      "parser_error": "Expecting value: line 1 column 1 (char 0)",
+      "parsed_candidates": 0
+    },
+    "think_False": {
+      "request_override": {
+        "think": false
+      },
+      "duration_sec": 55.06,
+      "prompt_eval_count": 1072,
+      "eval_count": 564,
+      "thinking_chars": 0,
+      "response_chars": 2054,
+      "done_reason": "stop",
+      "parser_error": null,
+      "parsed_candidates": 2
+    }
+  }
+}

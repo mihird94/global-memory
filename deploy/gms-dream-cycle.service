@@ -8,6 +8,7 @@ WorkingDirectory=%h/projects/global-memory
 Environment=MEMORY_ROOT=%h/memories
 Environment=OLLAMA_URL=http://127.0.0.1:11434
 Environment=MEMORY_EMBED_MODEL=nomic-embed-text
+Environment=DREAM_PROVIDERS=ollama
 Environment=DREAM_LLM_MODEL=qwen3.5:9b
 Environment=CONCEPT_ENRICHMENT_ENABLED=1
 Environment=CONCEPT_PROVIDER=ollama

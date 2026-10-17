@@ -1,0 +1,54 @@
+{
+  "overall_pass": true,
+  "span_integrity": {
+    "pass": true,
+    "errors": []
+  },
+  "gold_replay": {
+    "pass": true,
+    "metrics": {
+      "canonical_passed": 12,
+      "canonical_total": 12,
+      "pair_passed": 12,
+      "pair_total": 12,
+      "alternatives_passed": 13,
+      "failures": []
+    }
+  },
+  "counterexample_rejection": {
+    "pass": true,
+    "metrics": {
+      "rejected_wrong": 24,
+      "rejected_refusal": 12,
+      "rejected_omitted": 13,
+      "false_passes": []
+    }
+  },
+  "representation_arms": {
+    "pass": true,
+    "metrics": {
+      "Arm_A_Full_Source": {
+        "tested": 12,
+        "passed": 12
+      },
+      "Arm_B_Extractive_Excerpts": {
+        "tested": 12,
+        "passed": 12
+      },
+      "Arm_C_Ordinary_Structured": {
+        "tested": 12,
+        "passed": 12
+      },
+      "Arm_D_Source_Bound": {
+        "tested": 12,
+        "passed": 12
+      }
+    }
+  },
+  "semantic_validation": {
+    "pass": true,
+    "errors": []
+  },
+  "families_audited": 12,
+  "total_scenarios": 24
+}

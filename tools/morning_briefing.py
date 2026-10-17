@@ -56,6 +56,8 @@ def generate_morning_briefing(
         f"**Active Blockers**: {len(blockers)} items requiring resolution",
         f"**Awaiting Review**: {len(briefing.get('candidates_awaiting_review', []))} candidates",
     ]
+    if briefing.get("context_freshness_warning"):
+        summary_lines.append(f"**Context Freshness Warning**: {briefing['context_freshness_warning']}")
 
     return {
         "schema_version": "gms-morning-briefing-v1",
@@ -67,6 +69,7 @@ def generate_morning_briefing(
         "active_tasks": active_tasks,
         "recent_changes": recent_changes,
         "decisions_proposed": proposed_decisions,
+        "context_freshness_warning": briefing.get("context_freshness_warning"),
         "inbox_items_count": len(proj_inbox),
         "inbox_items": proj_inbox[:5],
         "packet_hash": briefing.get("packet_hash"),

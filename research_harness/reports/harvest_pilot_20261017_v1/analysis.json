@@ -1,0 +1,345 @@
+{
+  "status": "FAILED_BACKEND",
+  "model_summary": {
+    "qwen2.5-coder:7b": {
+      "scheduled": 4,
+      "attempted": 2,
+      "parseable": 0,
+      "invalid_output": 1,
+      "transport_errors": 1,
+      "per_case": [
+        {
+          "case": "configuration_update",
+          "state": "INVALID_OUTPUT",
+          "error": "Unterminated string starting at: line 99 column 27 (char 4659)"
+        },
+        {
+          "case": "procedure_with_secret",
+          "state": "ERROR",
+          "error": "timed out"
+        }
+      ]
+    },
+    "qwen3:8b": {
+      "scheduled": 4,
+      "attempted": 4,
+      "parseable": 4,
+      "invalid_output": 0,
+      "transport_errors": 0,
+      "per_case": [
+        {
+          "case": "procedure_with_secret",
+          "state": "COMPLETED",
+          "raw_candidates": 2,
+          "admitted_candidates": 1,
+          "raw_proxy": {
+            "expected_count": 1,
+            "candidate_count": 2,
+            "true_positives": 1,
+            "false_positives": 1,
+            "false_negatives": 0,
+            "recall": 1.0,
+            "precision": 0.5,
+            "f1": 0.6667,
+            "type_matches": 1,
+            "rationale_expected": 0,
+            "rationale_matches": 0
+          },
+          "admitted_proxy": {
+            "expected_count": 1,
+            "candidate_count": 1,
+            "true_positives": 1,
+            "false_positives": 0,
+            "false_negatives": 0,
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0,
+            "type_matches": 1,
+            "rationale_expected": 0,
+            "rationale_matches": 0
+          },
+          "boundary": {
+            "audit_scope": "surrogate_isolated_persistence_and_readback_audit",
+            "raw_candidates": {
+              "leaks": 1,
+              "denominator": 2
+            },
+            "raw_graph": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "admitted_candidates": {
+              "leaks": 0,
+              "denominator": 1
+            },
+            "admitted_graph": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "persisted_facts_json_readback": {
+              "leaks": 0,
+              "denominator": 1
+            },
+            "persisted_sqlite_candidates_readback": {
+              "leaks": 0,
+              "denominator": 1
+            },
+            "persisted_sqlite_relationships_readback": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "persisted_disk_readback": {
+              "leaks": 0,
+              "denominator": 1,
+              "unique_candidate_records": 1,
+              "unique_graph_records": 0,
+              "representation_rows_checked": 2
+            },
+            "retrieved_output": {
+              "leaks": 0,
+              "denominator": 1
+            }
+          }
+        },
+        {
+          "case": "no_write_control",
+          "state": "COMPLETED",
+          "raw_candidates": 3,
+          "admitted_candidates": 0,
+          "raw_proxy": {
+            "expected_count": 0,
+            "candidate_count": 3,
+            "true_positives": 0,
+            "false_positives": 3,
+            "false_negatives": 0,
+            "recall": 0.0,
+            "precision": 0.0,
+            "f1": 0.0,
+            "type_matches": 0,
+            "rationale_expected": 0,
+            "rationale_matches": 0
+          },
+          "admitted_proxy": {
+            "expected_count": 0,
+            "candidate_count": 0,
+            "true_positives": 0,
+            "false_positives": 0,
+            "false_negatives": 0,
+            "recall": 0.0,
+            "precision": 0.0,
+            "f1": 0.0,
+            "type_matches": 0,
+            "rationale_expected": 0,
+            "rationale_matches": 0
+          },
+          "boundary": {
+            "audit_scope": "surrogate_isolated_persistence_and_readback_audit",
+            "raw_candidates": {
+              "leaks": 1,
+              "denominator": 3
+            },
+            "raw_graph": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "admitted_candidates": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "admitted_graph": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "persisted_facts_json_readback": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "persisted_sqlite_candidates_readback": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "persisted_sqlite_relationships_readback": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "persisted_disk_readback": {
+              "leaks": 0,
+              "denominator": 0,
+              "unique_candidate_records": 0,
+              "unique_graph_records": 0,
+              "representation_rows_checked": 0
+            },
+            "retrieved_output": {
+              "leaks": 0,
+              "denominator": 0
+            }
+          }
+        },
+        {
+          "case": "backup_scope",
+          "state": "COMPLETED",
+          "raw_candidates": 2,
+          "admitted_candidates": 1,
+          "raw_proxy": {
+            "expected_count": 1,
+            "candidate_count": 2,
+            "true_positives": 1,
+            "false_positives": 1,
+            "false_negatives": 0,
+            "recall": 1.0,
+            "precision": 0.5,
+            "f1": 0.6667,
+            "type_matches": 1,
+            "rationale_expected": 1,
+            "rationale_matches": 1
+          },
+          "admitted_proxy": {
+            "expected_count": 1,
+            "candidate_count": 1,
+            "true_positives": 1,
+            "false_positives": 0,
+            "false_negatives": 0,
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0,
+            "type_matches": 1,
+            "rationale_expected": 1,
+            "rationale_matches": 1
+          },
+          "boundary": {
+            "audit_scope": "surrogate_isolated_persistence_and_readback_audit",
+            "raw_candidates": {
+              "leaks": 0,
+              "denominator": 2
+            },
+            "raw_graph": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "admitted_candidates": {
+              "leaks": 0,
+              "denominator": 1
+            },
+            "admitted_graph": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "persisted_facts_json_readback": {
+              "leaks": 0,
+              "denominator": 1
+            },
+            "persisted_sqlite_candidates_readback": {
+              "leaks": 0,
+              "denominator": 1
+            },
+            "persisted_sqlite_relationships_readback": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "persisted_disk_readback": {
+              "leaks": 0,
+              "denominator": 1,
+              "unique_candidate_records": 1,
+              "unique_graph_records": 0,
+              "representation_rows_checked": 2
+            },
+            "retrieved_output": {
+              "leaks": 0,
+              "denominator": 1
+            }
+          }
+        },
+        {
+          "case": "configuration_update",
+          "state": "COMPLETED",
+          "raw_candidates": 2,
+          "admitted_candidates": 2,
+          "raw_proxy": {
+            "expected_count": 1,
+            "candidate_count": 2,
+            "true_positives": 1,
+            "false_positives": 1,
+            "false_negatives": 0,
+            "recall": 1.0,
+            "precision": 0.5,
+            "f1": 0.6667,
+            "type_matches": 1,
+            "rationale_expected": 1,
+            "rationale_matches": 1
+          },
+          "admitted_proxy": {
+            "expected_count": 1,
+            "candidate_count": 2,
+            "true_positives": 1,
+            "false_positives": 1,
+            "false_negatives": 0,
+            "recall": 1.0,
+            "precision": 0.5,
+            "f1": 0.6667,
+            "type_matches": 1,
+            "rationale_expected": 1,
+            "rationale_matches": 1
+          },
+          "boundary": {
+            "audit_scope": "surrogate_isolated_persistence_and_readback_audit",
+            "raw_candidates": {
+              "leaks": 0,
+              "denominator": 2
+            },
+            "raw_graph": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "admitted_candidates": {
+              "leaks": 0,
+              "denominator": 2
+            },
+            "admitted_graph": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "persisted_facts_json_readback": {
+              "leaks": 0,
+              "denominator": 2
+            },
+            "persisted_sqlite_candidates_readback": {
+              "leaks": 0,
+              "denominator": 2
+            },
+            "persisted_sqlite_relationships_readback": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "persisted_disk_readback": {
+              "leaks": 0,
+              "denominator": 2,
+              "unique_candidate_records": 2,
+              "unique_graph_records": 0,
+              "representation_rows_checked": 4
+            },
+            "retrieved_output": {
+              "leaks": 0,
+              "denominator": 2
+            }
+          }
+        }
+      ]
+    }
+  },
+  "reported_usage_only_tokens": 10702,
+  "unknown_usage_dispatch_indices": [
+    5
+  ],
+  "unattempted_schedule": [
+    [
+      "qwen2.5-coder:7b",
+      "no_write_control"
+    ],
+    [
+      "qwen2.5-coder:7b",
+      "backup_scope"
+    ]
+  ],
+  "manifest_verified": true,
+  "snapshot_sources_match_freeze": true
+}

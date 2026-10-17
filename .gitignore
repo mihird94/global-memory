@@ -6,3 +6,4 @@ memories/
 desktop/node_modules/
 desktop/dist/
 .DS_Store
+*.ses

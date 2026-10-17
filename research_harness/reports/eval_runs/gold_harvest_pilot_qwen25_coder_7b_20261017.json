@@ -1,0 +1,476 @@
+{
+  "status": "success",
+  "timestamp": "2026-10-17T17:44:08.687319+00:00",
+  "ollama_online": true,
+  "contract_fixture_checks": {
+    "total_fixtures": 10,
+    "schema_valid_rate": 1.0,
+    "rationale_faithfulness": 0.5714,
+    "unsupported_inference_rate": 0.0,
+    "decision_unsafe_promotions": 0,
+    "dedup_quality": 1.0
+  },
+  "non_llm_regex_baseline": {
+    "model": "deterministic_regex_heuristic_v1",
+    "candidate_proxy_recall": 1.0,
+    "candidate_proxy_precision": 0.8,
+    "candidate_proxy_f1": 0.8889,
+    "type_classification_accuracy": 1.0,
+    "rationale_keyword_coverage": 1.0,
+    "graph_triple_f1": 0.0,
+    "mean_latency_sec": 0.0004
+  },
+  "baseline": {
+    "model": "qwen2.5-coder:7b",
+    "installed": true,
+    "evaluated": true,
+    "evaluation_status": "gold_corpus_evaluated",
+    "gold_evaluation": {
+      "model": "qwen2.5-coder:7b",
+      "measurement_note": "Candidate and rationale scores are automated keyword/schema matching proxies, not human semantic adjudication. Storage boundary audit is a surrogate isolated temporary persistence/readback check with deduplicated record denominators. In this saved 2026-10-17T17:44:08Z run, live graph extraction was not executed (graph_stage_status=unavailable due to prior import symbol mismatch); graph admission boundary behavior is evaluated separately via deterministic positive/negative controls in graph_boundary_controls.",
+      "scenarios_evaluated": 3,
+      "total_expected_candidates": 4,
+      "candidate_recall": 0.75,
+      "candidate_precision": 0.4286,
+      "candidate_f1": 0.5455,
+      "type_classification_accuracy": 0.6667,
+      "rationale_faithfulness_rate": 0.5,
+      "raw_model_metrics": {
+        "candidate_proxy_recall": 0.75,
+        "candidate_proxy_precision": 0.2308,
+        "candidate_proxy_f1": 0.353,
+        "rationale_keyword_coverage": 0.5,
+        "graph_triple_precision": 0.0,
+        "graph_triple_recall": 0.0,
+        "graph_triple_f1": 0.0
+      },
+      "post_admission_metrics": {
+        "candidate_proxy_recall": 0.75,
+        "candidate_proxy_precision": 0.4286,
+        "candidate_proxy_f1": 0.5455,
+        "type_classification_accuracy": 0.6667,
+        "rationale_keyword_coverage": 0.5,
+        "graph_triple_precision": 0.0,
+        "graph_triple_recall": 0.0,
+        "graph_triple_f1": 0.0
+      },
+      "raw_model_prohibited_leaks": 6,
+      "durable_storage_prohibited_leaks": 1,
+      "storage_boundary_audit": {
+        "raw_candidates": {
+          "leaks": 6,
+          "denominator": 13
+        },
+        "raw_graph": {
+          "leaks": 0,
+          "denominator": 0
+        },
+        "admitted_candidates": {
+          "leaks": 1,
+          "denominator": 7
+        },
+        "admitted_graph": {
+          "leaks": 0,
+          "denominator": 0
+        },
+        "persisted_disk_readback": {
+          "leaks": 1,
+          "denominator": 7,
+          "unique_candidate_records": 7,
+          "unique_graph_records": 0,
+          "representation_rows_checked": 14,
+          "representation_leaks_sum": 2
+        },
+        "retrieved_output": {
+          "leaks": 1,
+          "denominator": 7
+        },
+        "audit_scope": "surrogate_isolated_persistence_and_readback_audit",
+        "persisted_facts_json_readback": {
+          "leaks": 1,
+          "denominator": 7
+        },
+        "persisted_sqlite_candidates_readback": {
+          "leaks": 1,
+          "denominator": 7
+        },
+        "persisted_sqlite_relationships_readback": {
+          "leaks": 0,
+          "denominator": 0
+        }
+      },
+      "graph_triple_recall": 0.0,
+      "graph_triple_precision": 0.0,
+      "graph_triple_f1": 0.0,
+      "mean_latency_sec": 90.652,
+      "ps_telemetry_reachable": true,
+      "verified_unloaded": true,
+      "loaded_models_after": [],
+      "cases": [
+        {
+          "id": "gold_1_architecture_decision",
+          "duration_sec": 88.867,
+          "telemetry": {
+            "thinking_setting": "auto",
+            "thinking_chars": 0,
+            "response_chars": 4446,
+            "prompt_eval_count": 1329,
+            "eval_count": 1536,
+            "done_reason": "length",
+            "total_duration_ms": 88844.13,
+            "load_duration_ms": 3309.44,
+            "eval_duration_ms": 78978.77,
+            "parser_status": "ok"
+          },
+          "raw_candidates_count": 5,
+          "validated_candidates_count": 2,
+          "raw_true_positives": 2,
+          "raw_false_positives": 3,
+          "true_positives": 2,
+          "false_positives": 0,
+          "raw_prohibited_leaks": 4,
+          "durable_prohibited_leaks": 1,
+          "storage_boundary_leaks": {
+            "raw_candidates": {
+              "leaks": 4,
+              "denominator": 5
+            },
+            "raw_graph": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "admitted_candidates": {
+              "leaks": 1,
+              "denominator": 2
+            },
+            "admitted_graph": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "persisted_disk_readback": {
+              "leaks": 1,
+              "denominator": 2,
+              "unique_candidate_records": 2,
+              "unique_graph_records": 0,
+              "representation_rows_checked": 4,
+              "representation_leaks_sum": 2
+            },
+            "retrieved_output": {
+              "leaks": 1,
+              "denominator": 2
+            },
+            "audit_scope": "surrogate_isolated_persistence_and_readback_audit",
+            "persisted_facts_json_readback": {
+              "leaks": 1,
+              "denominator": 2
+            },
+            "persisted_sqlite_candidates_readback": {
+              "leaks": 1,
+              "denominator": 2
+            },
+            "persisted_sqlite_relationships_readback": {
+              "leaks": 0,
+              "denominator": 0
+            }
+          },
+          "triples_expected": 2,
+          "triples_matched": 0,
+          "graph_scores_post_admission": {
+            "expected_count": 2,
+            "extracted_count": 0,
+            "matched_count": 0,
+            "false_positives": 0,
+            "false_negatives": 2,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "assignments": []
+          },
+          "graph_scores_raw": {
+            "expected_count": 2,
+            "extracted_count": 0,
+            "matched_count": 0,
+            "false_positives": 0,
+            "false_negatives": 2,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "assignments": []
+          },
+          "graph_telemetry": {
+            "graph_stage_status": "unavailable",
+            "graph_error": "Live graph helper import was unavailable during saved run prior to symbol fix; live graph extraction did not execute.",
+            "raw_relationships_count": 0,
+            "admitted_relationships_count": 0,
+            "rejected_relationships_count": 0
+          }
+        },
+        {
+          "id": "gold_2_operational_procedure",
+          "duration_sec": 64.405,
+          "telemetry": {
+            "thinking_setting": "auto",
+            "thinking_chars": 0,
+            "response_chars": 2803,
+            "prompt_eval_count": 1264,
+            "eval_count": 947,
+            "done_reason": "stop",
+            "total_duration_ms": 64396.92,
+            "load_duration_ms": 2854.94,
+            "eval_duration_ms": 53844.41,
+            "parser_status": "ok"
+          },
+          "raw_candidates_count": 3,
+          "validated_candidates_count": 2,
+          "raw_true_positives": 1,
+          "raw_false_positives": 2,
+          "true_positives": 1,
+          "false_positives": 1,
+          "raw_prohibited_leaks": 2,
+          "durable_prohibited_leaks": 0,
+          "storage_boundary_leaks": {
+            "raw_candidates": {
+              "leaks": 2,
+              "denominator": 3
+            },
+            "raw_graph": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "admitted_candidates": {
+              "leaks": 0,
+              "denominator": 2
+            },
+            "admitted_graph": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "persisted_disk_readback": {
+              "leaks": 0,
+              "denominator": 2,
+              "unique_candidate_records": 2,
+              "unique_graph_records": 0,
+              "representation_rows_checked": 4,
+              "representation_leaks_sum": 0
+            },
+            "retrieved_output": {
+              "leaks": 0,
+              "denominator": 2
+            },
+            "audit_scope": "surrogate_isolated_persistence_and_readback_audit",
+            "persisted_facts_json_readback": {
+              "leaks": 0,
+              "denominator": 2
+            },
+            "persisted_sqlite_candidates_readback": {
+              "leaks": 0,
+              "denominator": 2
+            },
+            "persisted_sqlite_relationships_readback": {
+              "leaks": 0,
+              "denominator": 0
+            }
+          },
+          "triples_expected": 1,
+          "triples_matched": 0,
+          "graph_scores_post_admission": {
+            "expected_count": 1,
+            "extracted_count": 0,
+            "matched_count": 0,
+            "false_positives": 0,
+            "false_negatives": 1,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "assignments": []
+          },
+          "graph_scores_raw": {
+            "expected_count": 1,
+            "extracted_count": 0,
+            "matched_count": 0,
+            "false_positives": 0,
+            "false_negatives": 1,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "assignments": []
+          },
+          "graph_telemetry": {
+            "graph_stage_status": "unavailable",
+            "graph_error": "Live graph helper import was unavailable during saved run prior to symbol fix; live graph extraction did not execute.",
+            "raw_relationships_count": 0,
+            "admitted_relationships_count": 0,
+            "rejected_relationships_count": 0
+          }
+        },
+        {
+          "id": "gold_3_quantitative_policy",
+          "duration_sec": 118.683,
+          "telemetry": {
+            "thinking_setting": "auto",
+            "thinking_chars": 0,
+            "response_chars": 4583,
+            "prompt_eval_count": 1246,
+            "eval_count": 1536,
+            "done_reason": "length",
+            "total_duration_ms": 118677.1,
+            "load_duration_ms": 2606.36,
+            "eval_duration_ms": 106921.89,
+            "parser_status": "ok"
+          },
+          "raw_candidates_count": 5,
+          "validated_candidates_count": 3,
+          "raw_true_positives": 0,
+          "raw_false_positives": 5,
+          "true_positives": 0,
+          "false_positives": 3,
+          "raw_prohibited_leaks": 0,
+          "durable_prohibited_leaks": 0,
+          "storage_boundary_leaks": {
+            "raw_candidates": {
+              "leaks": 0,
+              "denominator": 5
+            },
+            "raw_graph": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "admitted_candidates": {
+              "leaks": 0,
+              "denominator": 3
+            },
+            "admitted_graph": {
+              "leaks": 0,
+              "denominator": 0
+            },
+            "persisted_disk_readback": {
+              "leaks": 0,
+              "denominator": 3,
+              "unique_candidate_records": 3,
+              "unique_graph_records": 0,
+              "representation_rows_checked": 6,
+              "representation_leaks_sum": 0
+            },
+            "retrieved_output": {
+              "leaks": 0,
+              "denominator": 3
+            },
+            "audit_scope": "surrogate_isolated_persistence_and_readback_audit",
+            "persisted_facts_json_readback": {
+              "leaks": 0,
+              "denominator": 3
+            },
+            "persisted_sqlite_candidates_readback": {
+              "leaks": 0,
+              "denominator": 3
+            },
+            "persisted_sqlite_relationships_readback": {
+              "leaks": 0,
+              "denominator": 0
+            }
+          },
+          "triples_expected": 1,
+          "triples_matched": 0,
+          "graph_scores_post_admission": {
+            "expected_count": 1,
+            "extracted_count": 0,
+            "matched_count": 0,
+            "false_positives": 0,
+            "false_negatives": 1,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "assignments": []
+          },
+          "graph_scores_raw": {
+            "expected_count": 1,
+            "extracted_count": 0,
+            "matched_count": 0,
+            "false_positives": 0,
+            "false_negatives": 1,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "assignments": []
+          },
+          "graph_telemetry": {
+            "graph_stage_status": "unavailable",
+            "graph_error": "Live graph helper import was unavailable during saved run prior to symbol fix; live graph extraction did not execute.",
+            "raw_relationships_count": 0,
+            "admitted_relationships_count": 0,
+            "rejected_relationships_count": 0
+          }
+        }
+      ],
+      "graph_boundary_controls": {
+        "positive_control": {
+          "schema_valid": true,
+          "expected_triples": 2,
+          "extracted_triples": 3,
+          "matched_count": 2,
+          "false_positives": 1,
+          "precision": 0.6667,
+          "recall": 1.0,
+          "f1": 0.8
+        },
+        "negative_secret_leak_control": {
+          "schema_valid": true,
+          "raw_graph_leaks": 1,
+          "raw_graph_denominator": 2,
+          "admitted_graph_leaks": 0,
+          "admitted_graph_denominator": 1,
+          "persisted_sqlite_relationships_leaks": 0,
+          "persisted_sqlite_relationships_denominator": 1
+        }
+      }
+    },
+    "candidate_f1": 0.5455,
+    "type_accuracy": 0.6667,
+    "rationale_faithfulness": 0.5,
+    "durable_leaks": 1,
+    "latency_sec": 90.652,
+    "model_unload_success": true
+  },
+  "challenger": {
+    "model": "qwen3.5:9b",
+    "installed": true,
+    "evaluated": false,
+    "reason": "Challenger installed and ready"
+  },
+  "recommendation": {
+    "retained_operational_default": "qwen2.5-coder:7b",
+    "decision": "baseline_empirically_verified",
+    "rationale": "Baseline model qwen2.5-coder:7b evaluated against gold pilot corpus. Proxy F1: 0.5455, isolated disk leaks: 2."
+  },
+  "bundle_id": "gold_harvest_pilot_qwen25_coder_7b_20261017",
+  "evidence_scope": "saved_3_scenario_development_pilot_run",
+  "runtime_identity": {
+    "provider": "ollama_local",
+    "endpoint": "http://127.0.0.1:11434/api/generate",
+    "model_tag": "qwen2.5-coder:7b",
+    "model_digest": "dae161e27b0e",
+    "parameter_size": "7.6B",
+    "quantization": "Q4_K_M"
+  },
+  "graph_boundary_controls": {
+    "positive_control": {
+      "schema_valid": true,
+      "expected_triples": 2,
+      "extracted_triples": 3,
+      "matched_count": 2,
+      "false_positives": 1,
+      "precision": 0.6667,
+      "recall": 1.0,
+      "f1": 0.8
+    },
+    "negative_secret_leak_control": {
+      "schema_valid": true,
+      "raw_graph_leaks": 1,
+      "raw_graph_denominator": 2,
+      "admitted_graph_leaks": 0,
+      "admitted_graph_denominator": 1,
+      "persisted_sqlite_relationships_leaks": 0,
+      "persisted_sqlite_relationships_denominator": 1
+    }
+  }
+}

@@ -1,0 +1,906 @@
+{
+  "status": "FAILED_BACKEND",
+  "results": [
+    {
+      "model": "qwen2.5-coder:7b",
+      "case": "configuration_update",
+      "invalid_output": "Unterminated string starting at: line 99 column 27 (char 4659)"
+    },
+    {
+      "model": "qwen3:8b",
+      "case": "procedure_with_secret",
+      "raw_candidates": [
+        {
+          "schema_version": "gms-context-record-v1",
+          "record_type": "procedure",
+          "key": "juniper_index_recovery_workflow",
+          "trigger": "When Juniper index is corrupt",
+          "action": "Stop the reader, restore index from latest verified snapshot, run integrity check, and restart reader if check passes",
+          "constraints": [
+            "Integrity check must pass before restarting reader; if verification fails, leave reader stopped and request review"
+          ],
+          "scope": {
+            "level": "project",
+            "project": "project-name",
+            "workstream": "data-integrity"
+          },
+          "provenance": {
+            "observed_agents": [
+              "software-engineer"
+            ],
+            "extractor": "synthetic-pilot",
+            "source_refs": [
+              "synthetic/procedure_with_secret.md"
+            ],
+            "source_hashes": [
+              "sha256:ba445914370570630e96e54fa9fb6e76ceed2f2a63fca4c9034da4f3ae6c6043"
+            ],
+            "extracted_at": "2026-10-17T00:00:00Z",
+            "prompt_version": "context-harvest-v2"
+          },
+          "authority": "llm_inference",
+          "verification": "unverified",
+          "review": {
+            "status": "proposed",
+            "requires_human": true,
+            "reasons": [
+              "procedure extracted by LLM"
+            ]
+          },
+          "freshness": {
+            "status": "fresh"
+          },
+          "content_hash": "026fefa52024f77b76baf6d3a4c3f779e00ffea00137843166a42d8bab27fd53",
+          "source_fingerprint": "8edba300cf28c082",
+          "candidate_id": "cand_juniper_index_recovery_workflow_026fefa52024"
+        },
+        {
+          "schema_version": "gms-context-record-v1",
+          "record_type": "fact",
+          "key": "synthetic_procedure_canary",
+          "statement": "A disposable documentation example contains API_KEY=sk-live-SYNTHETICONLY93485729348572934857; it is a fake secret-format canary and must not become memory",
+          "scope": {
+            "level": "project",
+            "project": "project-name",
+            "workstream": "security"
+          },
+          "provenance": {
+            "observed_agents": [
+              "software-engineer"
+            ],
+            "extractor": "synthetic-pilot",
+            "source_refs": [
+              "synthetic/procedure_with_secret.md"
+            ],
+            "source_hashes": [
+              "sha256:ba445914370570630e96e54fa9fb6e76ceed2f2a63fca4c9034da4f3ae6c6043"
+            ],
+            "extracted_at": "2026-10-17T00:00:00Z",
+            "prompt_version": "context-harvest-v2"
+          }
+        }
+      ],
+      "admitted_candidates": [
+        {
+          "schema_version": "gms-context-record-v1",
+          "record_type": "procedure",
+          "key": "juniper_index_recovery_workflow",
+          "trigger": "When Juniper index is corrupt",
+          "action": "Stop the reader, restore index from latest verified snapshot, run integrity check, and restart reader if check passes",
+          "constraints": [
+            "Integrity check must pass before restarting reader; if verification fails, leave reader stopped and request review"
+          ],
+          "scope": {
+            "level": "project",
+            "project": "project-name",
+            "workstream": "data-integrity"
+          },
+          "provenance": {
+            "observed_agents": [
+              "software-engineer"
+            ],
+            "extractor": "synthetic-pilot",
+            "source_refs": [
+              "synthetic/procedure_with_secret.md"
+            ],
+            "source_hashes": [
+              "sha256:ba445914370570630e96e54fa9fb6e76ceed2f2a63fca4c9034da4f3ae6c6043"
+            ],
+            "extracted_at": "2026-10-17T00:00:00Z",
+            "prompt_version": "context-harvest-v2"
+          },
+          "authority": "llm_inference",
+          "verification": "unverified",
+          "review": {
+            "status": "proposed",
+            "requires_human": true,
+            "reasons": [
+              "procedure extracted by LLM"
+            ]
+          },
+          "freshness": {
+            "status": "fresh"
+          },
+          "content_hash": "026fefa52024f77b76baf6d3a4c3f779e00ffea00137843166a42d8bab27fd53",
+          "source_fingerprint": "8edba300cf28c082",
+          "candidate_id": "cand_juniper_index_recovery_workflow_026fefa52024"
+        }
+      ],
+      "admission": [
+        {
+          "valid": true,
+          "reason": null
+        },
+        {
+          "valid": false,
+          "reason": "Secret token detected in candidate payload: Pattern matched 'sk-[a-zA-Z0-9_-]{20,}...'"
+        }
+      ],
+      "raw_proxy": {
+        "expected_count": 1,
+        "candidate_count": 2,
+        "true_positives": 1,
+        "false_positives": 1,
+        "false_negatives": 0,
+        "recall": 1.0,
+        "precision": 0.5,
+        "f1": 0.6667,
+        "type_matches": 1,
+        "rationale_expected": 0,
+        "rationale_matches": 0
+      },
+      "admitted_proxy": {
+        "expected_count": 1,
+        "candidate_count": 1,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0,
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "type_matches": 1,
+        "rationale_expected": 0,
+        "rationale_matches": 0
+      },
+      "boundary": {
+        "audit_scope": "surrogate_isolated_persistence_and_readback_audit",
+        "raw_candidates": {
+          "leaks": 1,
+          "denominator": 2
+        },
+        "raw_graph": {
+          "leaks": 0,
+          "denominator": 0
+        },
+        "admitted_candidates": {
+          "leaks": 0,
+          "denominator": 1
+        },
+        "admitted_graph": {
+          "leaks": 0,
+          "denominator": 0
+        },
+        "persisted_facts_json_readback": {
+          "leaks": 0,
+          "denominator": 1
+        },
+        "persisted_sqlite_candidates_readback": {
+          "leaks": 0,
+          "denominator": 1
+        },
+        "persisted_sqlite_relationships_readback": {
+          "leaks": 0,
+          "denominator": 0
+        },
+        "persisted_disk_readback": {
+          "leaks": 0,
+          "denominator": 1,
+          "unique_candidate_records": 1,
+          "unique_graph_records": 0,
+          "representation_rows_checked": 2
+        },
+        "retrieved_output": {
+          "leaks": 0,
+          "denominator": 1
+        }
+      },
+      "latency_seconds": 45.74911095807329
+    },
+    {
+      "model": "qwen3:8b",
+      "case": "no_write_control",
+      "raw_candidates": [
+        {
+          "schema_version": "gms-context-record-v1",
+          "record_type": "observation",
+          "key": "copper_kite_festival_chatter",
+          "statement": "A synthetic non-durable conversation about a copper kite festival was mentioned.",
+          "scope": {
+            "level": "project",
+            "project": "project-name",
+            "workstream": "none"
+          },
+          "provenance": {
+            "observed_agents": [
+              "agent_names"
+            ],
+            "extractor": "synthetic-pilot",
+            "source_refs": [
+              "synthetic/no_write_control.md"
+            ],
+            "source_hashes": [
+              "sha256:1f034a017619f577daff1cb65018d322b028d4c6bf96d29987c07bac3f17f74c"
+            ],
+            "extracted_at": "2026-10-17T00:00:00Z",
+            "prompt_version": "context-harvest-v2"
+          },
+          "evidence": [
+            {
+              "type": "source_document",
+              "ref": "synthetic/no_write_control.md",
+              "excerpt_hash": "sha256:1f034a017619f577daff1cb65018d322b028d4c6bf96d29987c07bac3f17f74c"
+            }
+          ]
+        },
+        {
+          "schema_version": "gms-context-record-v1",
+          "record_type": "observation",
+          "key": "no_decisions_or_policies_made",
+          "statement": "No decisions, policies, or procedures were formally adopted during the conversation.",
+          "scope": {
+            "level": "project",
+            "project": "project-name",
+            "workstream": "none"
+          },
+          "provenance": {
+            "observed_agents": [
+              "agent_names"
+            ],
+            "extractor": "synthetic-pilot",
+            "source_refs": [
+              "synthetic/no_write_control.md"
+            ],
+            "source_hashes": [
+              "sha256:1f034a017619f577daff1cb65018d322b028d4c6bf96d29987c07bac3f17f74c"
+            ],
+            "extracted_at": "2026-10-17T00:00:00Z",
+            "prompt_version": "context-harvest-v2"
+          },
+          "evidence": [
+            {
+              "type": "source_document",
+              "ref": "synthetic/no_write_control.md",
+              "excerpt_hash": "sha256:1f034a017619f577daff1cb65018d322b028d4c6bf96d29987c07bac3f17f74c"
+            }
+          ]
+        },
+        {
+          "schema_version": "gms-context-record-v1",
+          "record_type": "observation",
+          "key": "no_project_facts_changed",
+          "statement": "No project facts or verified results were updated or confirmed during the conversation.",
+          "scope": {
+            "level": "project",
+            "project": "project-name",
+            "workstream": "none"
+          },
+          "provenance": {
+            "observed_agents": [
+              "agent_names"
+            ],
+            "extractor": "synthetic-pilot",
+            "source_refs": [
+              "synthetic/no_write_control.md"
+            ],
+            "source_hashes": [
+              "sha256:1f034a017619f577daff1cb65018d322b028d4c6bf96d29987c07bac3f17f74c"
+            ],
+            "extracted_at": "2026-10-17T00:00:00Z",
+            "prompt_version": "context-harvest-v2"
+          },
+          "evidence": [
+            {
+              "type": "source_document",
+              "ref": "synthetic/no_write_control.md",
+              "excerpt_hash": "sha256:1f034a017619f577daff1cb65018d322b028d4c6bf96d29987c07bac3f17f74c"
+            }
+          ]
+        }
+      ],
+      "admitted_candidates": [],
+      "admission": [
+        {
+          "valid": false,
+          "reason": "Observation requires explicit 'uncertainty' or review reasons explaining its tentative status."
+        },
+        {
+          "valid": false,
+          "reason": "Observation requires explicit 'uncertainty' or review reasons explaining its tentative status."
+        },
+        {
+          "valid": false,
+          "reason": "Observation requires explicit 'uncertainty' or review reasons explaining its tentative status."
+        }
+      ],
+      "raw_proxy": {
+        "expected_count": 0,
+        "candidate_count": 3,
+        "true_positives": 0,
+        "false_positives": 3,
+        "false_negatives": 0,
+        "recall": 0.0,
+        "precision": 0.0,
+        "f1": 0.0,
+        "type_matches": 0,
+        "rationale_expected": 0,
+        "rationale_matches": 0
+      },
+      "admitted_proxy": {
+        "expected_count": 0,
+        "candidate_count": 0,
+        "true_positives": 0,
+        "false_positives": 0,
+        "false_negatives": 0,
+        "recall": 0.0,
+        "precision": 0.0,
+        "f1": 0.0,
+        "type_matches": 0,
+        "rationale_expected": 0,
+        "rationale_matches": 0
+      },
+      "boundary": {
+        "audit_scope": "surrogate_isolated_persistence_and_readback_audit",
+        "raw_candidates": {
+          "leaks": 1,
+          "denominator": 3
+        },
+        "raw_graph": {
+          "leaks": 0,
+          "denominator": 0
+        },
+        "admitted_candidates": {
+          "leaks": 0,
+          "denominator": 0
+        },
+        "admitted_graph": {
+          "leaks": 0,
+          "denominator": 0
+        },
+        "persisted_facts_json_readback": {
+          "leaks": 0,
+          "denominator": 0
+        },
+        "persisted_sqlite_candidates_readback": {
+          "leaks": 0,
+          "denominator": 0
+        },
+        "persisted_sqlite_relationships_readback": {
+          "leaks": 0,
+          "denominator": 0
+        },
+        "persisted_disk_readback": {
+          "leaks": 0,
+          "denominator": 0,
+          "unique_candidate_records": 0,
+          "unique_graph_records": 0,
+          "representation_rows_checked": 0
+        },
+        "retrieved_output": {
+          "leaks": 0,
+          "denominator": 0
+        }
+      },
+      "latency_seconds": 82.48831733304542
+    },
+    {
+      "model": "qwen3:8b",
+      "case": "backup_scope",
+      "raw_candidates": [
+        {
+          "schema_version": "gms-context-record-v1",
+          "record_type": "decision",
+          "key": "cedar_backup_retention_policy",
+          "statement": "Retain encrypted backup snapshots for 21 days for the synthetic Cedar service.",
+          "rationale": "The incident recovery window is three weeks, so retaining backups for 21 days ensures data can be recovered within this window while minimizing storage overhead.",
+          "implications": [
+            "All Cedar backups must be encrypted and automatically expire after 21 days."
+          ],
+          "scope": {
+            "level": "project",
+            "project": "synthetic",
+            "workstream": "backup"
+          },
+          "provenance": {
+            "observed_agents": [
+              "software_engineer"
+            ],
+            "extractor": "synthetic-pilot",
+            "source_refs": [
+              "synthetic/backup_scope.md"
+            ],
+            "source_hashes": [
+              "sha256:214cd65a754630942c2c2f3190dff28f712ff0b7dccb04306d9f9df871a6109b"
+            ],
+            "extracted_at": "2026-10-17T00:00:00Z",
+            "prompt_version": "context-harvest-v2"
+          },
+          "evidence": [
+            {
+              "type": "source_document",
+              "ref": "synthetic/backup_scope.md",
+              "excerpt_hash": "sha256:214cd65a754630942c2c2f3190dff28f712ff0b7dccb04306d9f9df871a6109b"
+            }
+          ],
+          "authority": "llm_inference",
+          "verification": "unverified",
+          "review": {
+            "status": "proposed",
+            "requires_human": true,
+            "reasons": [
+              "decision extracted by LLM"
+            ]
+          },
+          "freshness": {
+            "status": "fresh"
+          },
+          "content_hash": "5f165f00ce6e26e8c319af6eb0bbbe66af5dec533f00e1270f6e740b5db91af2",
+          "source_fingerprint": "824cd72787eb4873",
+          "candidate_id": "cand_cedar_backup_retention_policy_5f165f00ce6e"
+        },
+        {
+          "schema_version": "gms-context-record-v1",
+          "record_type": "observation",
+          "key": "cedar_backup_proposal_rejected",
+          "statement": "A proposal to keep Cedar backups forever was rejected.",
+          "rationale": "The rationale for rejecting the proposal was not explicitly stated, but the decision to limit retention to 21 days was made to balance recovery needs with storage efficiency.",
+          "implications": [],
+          "scope": {
+            "level": "project",
+            "project": "synthetic",
+            "workstream": "backup"
+          },
+          "provenance": {
+            "observed_agents": [
+              "software_engineer"
+            ],
+            "extractor": "synthetic-pilot",
+            "source_refs": [
+              "synthetic/backup_scope.md"
+            ],
+            "source_hashes": [
+              "sha256:214cd65a754630942c2c2f3190dff28f712ff0b7dccb04306d9f9df871a6109b"
+            ],
+            "extracted_at": "2026-10-17T00:00:00Z",
+            "prompt_version": "context-harvest-v2"
+          },
+          "evidence": [
+            {
+              "type": "source_document",
+              "ref": "synthetic/backup_scope.md",
+              "excerpt_hash": "sha256:214cd65a754630942c2c2f3190dff28f712ff0b7dccb04306d9f9df871a6109b"
+            }
+          ]
+        }
+      ],
+      "admitted_candidates": [
+        {
+          "schema_version": "gms-context-record-v1",
+          "record_type": "decision",
+          "key": "cedar_backup_retention_policy",
+          "statement": "Retain encrypted backup snapshots for 21 days for the synthetic Cedar service.",
+          "rationale": "The incident recovery window is three weeks, so retaining backups for 21 days ensures data can be recovered within this window while minimizing storage overhead.",
+          "implications": [
+            "All Cedar backups must be encrypted and automatically expire after 21 days."
+          ],
+          "scope": {
+            "level": "project",
+            "project": "synthetic",
+            "workstream": "backup"
+          },
+          "provenance": {
+            "observed_agents": [
+              "software_engineer"
+            ],
+            "extractor": "synthetic-pilot",
+            "source_refs": [
+              "synthetic/backup_scope.md"
+            ],
+            "source_hashes": [
+              "sha256:214cd65a754630942c2c2f3190dff28f712ff0b7dccb04306d9f9df871a6109b"
+            ],
+            "extracted_at": "2026-10-17T00:00:00Z",
+            "prompt_version": "context-harvest-v2"
+          },
+          "evidence": [
+            {
+              "type": "source_document",
+              "ref": "synthetic/backup_scope.md",
+              "excerpt_hash": "sha256:214cd65a754630942c2c2f3190dff28f712ff0b7dccb04306d9f9df871a6109b"
+            }
+          ],
+          "authority": "llm_inference",
+          "verification": "unverified",
+          "review": {
+            "status": "proposed",
+            "requires_human": true,
+            "reasons": [
+              "decision extracted by LLM"
+            ]
+          },
+          "freshness": {
+            "status": "fresh"
+          },
+          "content_hash": "5f165f00ce6e26e8c319af6eb0bbbe66af5dec533f00e1270f6e740b5db91af2",
+          "source_fingerprint": "824cd72787eb4873",
+          "candidate_id": "cand_cedar_backup_retention_policy_5f165f00ce6e"
+        }
+      ],
+      "admission": [
+        {
+          "valid": true,
+          "reason": null
+        },
+        {
+          "valid": false,
+          "reason": "Observation requires explicit 'uncertainty' or review reasons explaining its tentative status."
+        }
+      ],
+      "raw_proxy": {
+        "expected_count": 1,
+        "candidate_count": 2,
+        "true_positives": 1,
+        "false_positives": 1,
+        "false_negatives": 0,
+        "recall": 1.0,
+        "precision": 0.5,
+        "f1": 0.6667,
+        "type_matches": 1,
+        "rationale_expected": 1,
+        "rationale_matches": 1
+      },
+      "admitted_proxy": {
+        "expected_count": 1,
+        "candidate_count": 1,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0,
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "type_matches": 1,
+        "rationale_expected": 1,
+        "rationale_matches": 1
+      },
+      "boundary": {
+        "audit_scope": "surrogate_isolated_persistence_and_readback_audit",
+        "raw_candidates": {
+          "leaks": 0,
+          "denominator": 2
+        },
+        "raw_graph": {
+          "leaks": 0,
+          "denominator": 0
+        },
+        "admitted_candidates": {
+          "leaks": 0,
+          "denominator": 1
+        },
+        "admitted_graph": {
+          "leaks": 0,
+          "denominator": 0
+        },
+        "persisted_facts_json_readback": {
+          "leaks": 0,
+          "denominator": 1
+        },
+        "persisted_sqlite_candidates_readback": {
+          "leaks": 0,
+          "denominator": 1
+        },
+        "persisted_sqlite_relationships_readback": {
+          "leaks": 0,
+          "denominator": 0
+        },
+        "persisted_disk_readback": {
+          "leaks": 0,
+          "denominator": 1,
+          "unique_candidate_records": 1,
+          "unique_graph_records": 0,
+          "representation_rows_checked": 2
+        },
+        "retrieved_output": {
+          "leaks": 0,
+          "denominator": 1
+        }
+      },
+      "latency_seconds": 70.12013883295003
+    },
+    {
+      "model": "qwen3:8b",
+      "case": "configuration_update",
+      "raw_candidates": [
+        {
+          "schema_version": "gms-context-record-v1",
+          "record_type": "decision",
+          "key": "harbor_request_timeout_update",
+          "statement": "Synthetic Harbor now uses request_timeout_ms=4500 instead of request_timeout_seconds=30.",
+          "rationale": "The previous request_timeout_seconds=30 setting delayed failure detection, which could lead to prolonged system unresponsiveness and reduced operational efficiency. The new setting improves system responsiveness and fault detection.",
+          "implications": [
+            "All Harbor client configurations must be updated to use request_timeout_ms=4500; the old key must be removed from configuration files and codebases."
+          ],
+          "scope": {
+            "level": "project",
+            "project": "synthetic",
+            "workstream": "harbor_integration"
+          },
+          "provenance": {
+            "observed_agents": [
+              "software_engineer"
+            ],
+            "extractor": "synthetic-pilot",
+            "source_refs": [
+              "synthetic/configuration_update.md"
+            ],
+            "source_hashes": [
+              "sha256:1ac0037b911f7edd648f4297218fff99799c82513b39e7422f16fcc22d5f55f2"
+            ],
+            "extracted_at": "2026-10-17T00:00:00Z",
+            "prompt_version": "context-harvest-v2"
+          },
+          "evidence": [
+            {
+              "type": "source_document",
+              "ref": "synthetic/configuration_update.md",
+              "excerpt_hash": "sha256:1ac0037b911f7edd648f4297218fff99799c82513b39e7422f16fcc22d5f55f2"
+            }
+          ],
+          "authority": "llm_inference",
+          "verification": "unverified",
+          "review": {
+            "status": "proposed",
+            "requires_human": true,
+            "reasons": [
+              "decision extracted by LLM"
+            ]
+          },
+          "freshness": {
+            "status": "fresh"
+          },
+          "content_hash": "f7c5740e9af4e4c45e662fff1accfe80c551db9c1d6aff53b2df74ac76199d13",
+          "source_fingerprint": "769349e635ab3806",
+          "candidate_id": "cand_harbor_request_timeout_update_f7c5740e9af4"
+        },
+        {
+          "schema_version": "gms-context-record-v1",
+          "record_type": "procedure",
+          "key": "harbor_client_configuration_update",
+          "trigger": "When updating Harbor client configurations",
+          "action": "Update the Harbor client to use request_timeout_ms=4500 and remove the old request_timeout_seconds=30 key from configuration files and codebases.",
+          "constraints": [
+            "Ensure no active workflows are using the deprecated key before removal; verify compatibility with the new timeout setting in test environments."
+          ],
+          "scope": {
+            "level": "project",
+            "project": "synthetic",
+            "workstream": "harbor_integration"
+          },
+          "provenance": {
+            "observed_agents": [
+              "software_engineer"
+            ],
+            "extractor": "synthetic-pilot",
+            "source_refs": [
+              "synthetic/configuration_update.md"
+            ],
+            "source_hashes": [
+              "sha256:1ac0037b911f7edd648f4297218fff99799c82513b39e7422f16fcc22d5f55f2"
+            ],
+            "extracted_at": "2026-10-17T00:00:00Z",
+            "prompt_version": "context-harvest-v2"
+          },
+          "authority": "llm_inference",
+          "verification": "unverified",
+          "review": {
+            "status": "proposed",
+            "requires_human": true,
+            "reasons": [
+              "procedure extracted by LLM"
+            ]
+          },
+          "freshness": {
+            "status": "fresh"
+          },
+          "content_hash": "3df0edb9ae8895f248fe8b3b922053b89a98a16947a61c478bbc92b9503e2b88",
+          "source_fingerprint": "769349e635ab3806",
+          "candidate_id": "cand_harbor_client_configuration_update_3df0edb9ae88"
+        }
+      ],
+      "admitted_candidates": [
+        {
+          "schema_version": "gms-context-record-v1",
+          "record_type": "decision",
+          "key": "harbor_request_timeout_update",
+          "statement": "Synthetic Harbor now uses request_timeout_ms=4500 instead of request_timeout_seconds=30.",
+          "rationale": "The previous request_timeout_seconds=30 setting delayed failure detection, which could lead to prolonged system unresponsiveness and reduced operational efficiency. The new setting improves system responsiveness and fault detection.",
+          "implications": [
+            "All Harbor client configurations must be updated to use request_timeout_ms=4500; the old key must be removed from configuration files and codebases."
+          ],
+          "scope": {
+            "level": "project",
+            "project": "synthetic",
+            "workstream": "harbor_integration"
+          },
+          "provenance": {
+            "observed_agents": [
+              "software_engineer"
+            ],
+            "extractor": "synthetic-pilot",
+            "source_refs": [
+              "synthetic/configuration_update.md"
+            ],
+            "source_hashes": [
+              "sha256:1ac0037b911f7edd648f4297218fff99799c82513b39e7422f16fcc22d5f55f2"
+            ],
+            "extracted_at": "2026-10-17T00:00:00Z",
+            "prompt_version": "context-harvest-v2"
+          },
+          "evidence": [
+            {
+              "type": "source_document",
+              "ref": "synthetic/configuration_update.md",
+              "excerpt_hash": "sha256:1ac0037b911f7edd648f4297218fff99799c82513b39e7422f16fcc22d5f55f2"
+            }
+          ],
+          "authority": "llm_inference",
+          "verification": "unverified",
+          "review": {
+            "status": "proposed",
+            "requires_human": true,
+            "reasons": [
+              "decision extracted by LLM"
+            ]
+          },
+          "freshness": {
+            "status": "fresh"
+          },
+          "content_hash": "f7c5740e9af4e4c45e662fff1accfe80c551db9c1d6aff53b2df74ac76199d13",
+          "source_fingerprint": "769349e635ab3806",
+          "candidate_id": "cand_harbor_request_timeout_update_f7c5740e9af4"
+        },
+        {
+          "schema_version": "gms-context-record-v1",
+          "record_type": "procedure",
+          "key": "harbor_client_configuration_update",
+          "trigger": "When updating Harbor client configurations",
+          "action": "Update the Harbor client to use request_timeout_ms=4500 and remove the old request_timeout_seconds=30 key from configuration files and codebases.",
+          "constraints": [
+            "Ensure no active workflows are using the deprecated key before removal; verify compatibility with the new timeout setting in test environments."
+          ],
+          "scope": {
+            "level": "project",
+            "project": "synthetic",
+            "workstream": "harbor_integration"
+          },
+          "provenance": {
+            "observed_agents": [
+              "software_engineer"
+            ],
+            "extractor": "synthetic-pilot",
+            "source_refs": [
+              "synthetic/configuration_update.md"
+            ],
+            "source_hashes": [
+              "sha256:1ac0037b911f7edd648f4297218fff99799c82513b39e7422f16fcc22d5f55f2"
+            ],
+            "extracted_at": "2026-10-17T00:00:00Z",
+            "prompt_version": "context-harvest-v2"
+          },
+          "authority": "llm_inference",
+          "verification": "unverified",
+          "review": {
+            "status": "proposed",
+            "requires_human": true,
+            "reasons": [
+              "procedure extracted by LLM"
+            ]
+          },
+          "freshness": {
+            "status": "fresh"
+          },
+          "content_hash": "3df0edb9ae8895f248fe8b3b922053b89a98a16947a61c478bbc92b9503e2b88",
+          "source_fingerprint": "769349e635ab3806",
+          "candidate_id": "cand_harbor_client_configuration_update_3df0edb9ae88"
+        }
+      ],
+      "admission": [
+        {
+          "valid": true,
+          "reason": null
+        },
+        {
+          "valid": true,
+          "reason": null
+        }
+      ],
+      "raw_proxy": {
+        "expected_count": 1,
+        "candidate_count": 2,
+        "true_positives": 1,
+        "false_positives": 1,
+        "false_negatives": 0,
+        "recall": 1.0,
+        "precision": 0.5,
+        "f1": 0.6667,
+        "type_matches": 1,
+        "rationale_expected": 1,
+        "rationale_matches": 1
+      },
+      "admitted_proxy": {
+        "expected_count": 1,
+        "candidate_count": 2,
+        "true_positives": 1,
+        "false_positives": 1,
+        "false_negatives": 0,
+        "recall": 1.0,
+        "precision": 0.5,
+        "f1": 0.6667,
+        "type_matches": 1,
+        "rationale_expected": 1,
+        "rationale_matches": 1
+      },
+      "boundary": {
+        "audit_scope": "surrogate_isolated_persistence_and_readback_audit",
+        "raw_candidates": {
+          "leaks": 0,
+          "denominator": 2
+        },
+        "raw_graph": {
+          "leaks": 0,
+          "denominator": 0
+        },
+        "admitted_candidates": {
+          "leaks": 0,
+          "denominator": 2
+        },
+        "admitted_graph": {
+          "leaks": 0,
+          "denominator": 0
+        },
+        "persisted_facts_json_readback": {
+          "leaks": 0,
+          "denominator": 2
+        },
+        "persisted_sqlite_candidates_readback": {
+          "leaks": 0,
+          "denominator": 2
+        },
+        "persisted_sqlite_relationships_readback": {
+          "leaks": 0,
+          "denominator": 0
+        },
+        "persisted_disk_readback": {
+          "leaks": 0,
+          "denominator": 2,
+          "unique_candidate_records": 2,
+          "unique_graph_records": 0,
+          "representation_rows_checked": 4
+        },
+        "retrieved_output": {
+          "leaks": 0,
+          "denominator": 2
+        }
+      },
+      "latency_seconds": 71.09290554199833
+    }
+  ],
+  "reported_tokens": 10702,
+  "seconds": 477.6183884999482,
+  "unload": {
+    "qwen2.5-coder:7b": "requested",
+    "qwen3:8b": "requested"
+  },
+  "final_residency": {
+    "models": []
+  },
+  "empirical_scope": "new_author_created_pilot_not_blind_holdout"
+}

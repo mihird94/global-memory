@@ -1132,6 +1132,14 @@ def cmd_task_complete(args: argparse.Namespace) -> int:
     return _call_memory_tool("mem_task_complete", vars(args))
 
 
+def cmd_task_readiness(args: argparse.Namespace) -> int:
+    import task_readiness
+    project = getattr(args, "project", "global-memory") or "global-memory"
+    res = task_readiness.check_task_readiness(MEM_ROOT, project=project)
+    print(json.dumps(res, indent=2))
+    return 0
+
+
 def cmd_project_state(args: argparse.Namespace) -> int:
     return _call_memory_tool("mem_project_state", vars(args))
 
@@ -1799,10 +1807,23 @@ def cmd_apple(args: argparse.Namespace) -> int:
     return 1
 
 
-def cmd_harvest_status(_: argparse.Namespace) -> int:
+def cmd_harvest_status(args: argparse.Namespace) -> int:
     import gms_desktop_api
     api = gms_desktop_api.GMSDesktopAPI(mem_root=MEM_ROOT)
     status = api.get_harvest_status()
+    if getattr(args, "diagnose", False):
+        last_run = status.get("last_run", {})
+        attempts = status.get("provider_attempts") or last_run.get("provider_attempts", [])
+        diag = {
+            "status": status.get("status"),
+            "last_run_status": last_run.get("status"),
+            "degraded_reason": last_run.get("degraded_reason"),
+            "configured_model": last_run.get("configured_model"),
+            "provider_attempts": attempts,
+            "next_scheduled_run": status.get("next_scheduled_run"),
+        }
+        print(json.dumps(diag, indent=2))
+        return 0
     print(json.dumps(status, indent=2))
     return 0
 
@@ -1942,7 +1963,11 @@ def cmd_source_verify(args: argparse.Namespace) -> int:
 
 def cmd_eval_harvesting(args: argparse.Namespace) -> int:
     import eval_model_harvesting
-    report = eval_model_harvesting.run_evaluation(run_live=getattr(args, "live", False))
+    report = eval_model_harvesting.run_evaluation(
+        run_live=getattr(args, "live", False) or getattr(args, "gold", False),
+        run_gold=getattr(args, "gold", False),
+        target_model=getattr(args, "model", None),
+    )
     print(json.dumps(report, indent=2))
     return 0
 
@@ -2016,8 +2041,35 @@ def cmd_project_briefing(args: argparse.Namespace) -> int:
     if action == "explain":
         res = explain_project_briefing(briefing)
         print(json.dumps(res, indent=2))
+    elif action == "reconcile":
+        return cmd_project_reconcile(args)
     else:
         print(json.dumps(briefing, indent=2))
+    return 0
+
+
+def cmd_project_reconcile(args: argparse.Namespace) -> int:
+    from project_context_reconciliation import (
+        build_project_context_reconciliation,
+        apply_project_context_reconciliation,
+    )
+    project_id = getattr(args, "project", "")
+    if not project_id:
+        print(json.dumps({"error": "Missing required --project"}, indent=2))
+        return 1
+    if getattr(args, "apply", False):
+        res = apply_project_context_reconciliation(
+            MEM_ROOT,
+            project_id,
+            actor=getattr(args, "actor", "cli"),
+            rationale=getattr(args, "rationale", ""),
+            expected_snapshot_hash=getattr(args, "expected_hash", ""),
+        )
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("status") == "success" else 1
+
+    preview = build_project_context_reconciliation(MEM_ROOT, project_id)
+    print(json.dumps(preview, indent=2))
     return 0
 
 
@@ -2491,6 +2543,10 @@ def main() -> int:
     p21.add_argument("--agent", required=True)
     p21.set_defaults(fn=cmd_task_complete)
 
+    p21_r = sub.add_parser("task-readiness", help="Check read-only whether suitable task continuity exists for a project.")
+    p21_r.add_argument("--project", default="global-memory", help="Project identifier")
+    p21_r.set_defaults(fn=cmd_task_readiness)
+
     p22 = sub.add_parser("project-state", help="Show current tasks and latest handoffs/checkpoints for a project.")
     p22.add_argument("project")
     p22.add_argument("--include-completed", action="store_true")
@@ -2602,6 +2658,7 @@ def main() -> int:
     p39.set_defaults(fn=cmd_apple)
 
     p_hs = sub.add_parser("harvest-status", help="Show context harvesting and review queue status.")
+    p_hs.add_argument("--diagnose", action="store_true", help="Show structured diagnostic breakdown of provider attempts")
     p_hs.set_defaults(fn=cmd_harvest_status)
 
     p_hc = sub.add_parser("harvest-candidates", help="Query staged context harvest candidates.")
@@ -2665,6 +2722,8 @@ def main() -> int:
 
     p_eh = sub.add_parser("eval-harvesting", help="Evaluate local model harvesting against checked-in corpus and installed models.")
     p_eh.add_argument("--live", action="store_true", help="Run live inference and test explicit model unload")
+    p_eh.add_argument("--gold", action="store_true", help="Run gold-labeled ground-truth extraction and graph evaluation")
+    p_eh.add_argument("--model", type=str, default=None, help="Target specific model for live/gold evaluation")
     p_eh.set_defaults(fn=cmd_eval_harvesting)
 
     p_ca = sub.add_parser("convention-audit", help="Read-only memory convention and fixture-warning audit.")
@@ -2702,11 +2761,19 @@ def main() -> int:
     p_lc.add_argument("--request",default="{}"); p_lc.add_argument("--apply",action="store_true"); p_lc.set_defaults(fn=cmd_lifecycle)
 
     p_pb = sub.add_parser("project-briefing", help="Generate or explain operational project briefing.")
-    p_pb.add_argument("action", nargs="?", default="get", choices=["get", "generate", "explain"])
+    p_pb.add_argument("action", nargs="?", default="get", choices=["get", "generate", "explain", "reconcile"])
     p_pb.add_argument("--project", required=True, help="Project identifier")
     p_pb.add_argument("--as-of", default=None, help="Historical point-in-time timestamp")
     p_pb.add_argument("--profile", default="standard", choices=["standard", "condensed", "deep"])
     p_pb.set_defaults(fn=cmd_project_briefing)
+
+    p_pr = sub.add_parser("project-reconcile", help="Show read-only project-context reconciliation preview comparing bank to evidence.")
+    p_pr.add_argument("--project", required=True, help="Target project ID")
+    p_pr.add_argument("--apply", action="store_true", help="Explicitly attempt to apply reconciliation (guarded)")
+    p_pr.add_argument("--actor", default="cli", help="Explicit registered actor identity")
+    p_pr.add_argument("--rationale", default="", help="Substantive rationale for applying update (>=10 chars)")
+    p_pr.add_argument("--expected-hash", default="", help="Expected snapshot hash for optimistic concurrency")
+    p_pr.set_defaults(fn=cmd_project_reconcile)
 
     p_pt = sub.add_parser("project-timeline", help="Unified stream of project history and lifecycle events.")
     p_pt.add_argument("action", nargs="?", default="list", choices=["list", "event"])

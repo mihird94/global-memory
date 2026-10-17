@@ -2256,6 +2256,9 @@ def tool_mem_project_briefing(args: dict) -> str:
     briefing = generate_project_briefing(MEM_ROOT, project_id, as_of=as_of, profile=profile)
     if action == "explain":
         return json.dumps(explain_project_briefing(briefing), indent=2)
+    elif action == "reconcile":
+        from project_context_reconciliation import build_project_context_reconciliation
+        return json.dumps(build_project_context_reconciliation(MEM_ROOT, project_id), indent=2)
     return json.dumps(briefing, indent=2)
 
 

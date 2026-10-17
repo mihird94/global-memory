@@ -350,7 +350,8 @@ def run_resumption_evaluation(
         t_elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
 
         items = retrieval.get("items", [])
-        combined_text = " ".join([f"{it.get('key', '')} {it.get('statement', '')}".lower() for it in items])
+        lifecycle = retrieval.get("lifecycle_evidence", [])
+        combined_text = " ".join([f"{it.get('key', '')} {it.get('statement', '')}".lower() for it in (items + lifecycle)])
 
         # Record lane latencies
         for l_name, l_lat in retrieval.get("lane_latencies_ms", {}).items():

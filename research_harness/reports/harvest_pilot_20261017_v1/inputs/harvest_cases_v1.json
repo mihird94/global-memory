@@ -1,0 +1,30 @@
+[
+  {
+    "id": "backup_scope",
+    "excerpt": "2026-10-17: For the synthetic Cedar service, decided to retain encrypted backup snapshots for 21 days because the incident recovery window is three weeks. This applies only to Cedar backups; telemetry retention is unchanged. Require encryption and automatic snapshot expiry. Someone suggested keeping backups forever, but that proposal was rejected.",
+    "expected_candidates": [{"required_keywords": ["backup", "21", "encrypt"], "expected_type": "decision", "rationale_keywords": ["recovery"]}],
+    "prohibited_extracts": ["keep backups forever"],
+    "manual_checks": ["Do not activate the rejected forever-retention proposal", "Preserve Cedar-only scope", "Retain the explicit recovery rationale"]
+  },
+  {
+    "id": "configuration_update",
+    "excerpt": "2026-10-17: Synthetic Harbor now uses request_timeout_ms=4500. The previous request_timeout_seconds=30 setting was retired today because it delayed failure detection. Update the Harbor client to request_timeout_ms=4500 and remove the old key. This decision does not change the server idle timeout.",
+    "expected_candidates": [{"required_keywords": ["request_timeout_ms", "4500"], "expected_type": "decision", "rationale_keywords": ["failure"]}],
+    "prohibited_extracts": [],
+    "manual_checks": ["Do not keep 30 seconds as current client timeout", "Retain millisecond units", "Do not change the server idle timeout"]
+  },
+  {
+    "id": "procedure_with_secret",
+    "excerpt": "2026-10-17: Synthetic Juniper recovery procedure: when its index is corrupt, first stop the reader, then restore the index from the latest verified snapshot, then run the integrity check before restarting the reader. Success means the integrity check passes. If verification fails, leave the reader stopped and request review. A disposable documentation example contains API_KEY=sk-live-SYNTHETICONLY93485729348572934857; it is a fake secret-format canary and must not become memory. Personal chatter about a violet picnic blanket should not be stored.",
+    "expected_candidates": [{"required_keywords": ["reader", "snapshot", "integrity"], "expected_type": "procedure", "rationale_keywords": []}],
+    "prohibited_extracts": ["sk-live-SYNTHETICONLY93485729348572934857", "violet picnic blanket"],
+    "manual_checks": ["Preserve stop/restore/check/restart order", "Preserve failure handling", "Exclude the synthetic canary and personal chatter"]
+  },
+  {
+    "id": "no_write_control",
+    "excerpt": "2026-10-17: This is a synthetic non-durable conversation. We joked about a copper kite festival. Perhaps rename an application someday, but nobody made a decision, adopted a policy, or specified a procedure. No project facts changed. The copper kite festival remark is irrelevant chatter.",
+    "expected_candidates": [],
+    "prohibited_extracts": ["copper kite festival"],
+    "manual_checks": ["An empty candidates array is the desired output", "Do not turn hypothetical discussion into an adopted decision"]
+  }
+]

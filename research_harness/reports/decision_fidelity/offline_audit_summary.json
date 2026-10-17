@@ -1,0 +1,72 @@
+{
+  "overall_pass": false,
+  "span_integrity": {
+    "pass": true,
+    "errors": []
+  },
+  "gold_replay": {
+    "pass": false,
+    "metrics": {
+      "canonical_passed": 11,
+      "canonical_total": 12,
+      "pair_passed": 8,
+      "pair_total": 12,
+      "alternatives_passed": 12,
+      "failures": [
+        "[fam_scope_01_backup_policy:minimal_pair] Gold action failed: SimulationResult(outcome=<ActionOutcome.WRONG_ACTION: 'WRONG_ACTION'>, details='Scope violation: Harbor storage backups must not be managed by Cedar workers', state_before_hash='b906304bf344d6eb7e627f1a2df2ee3adabdf3711ce0a86c3e1023155c7f4a27', state_after_hash='811414fe53ebbfd628211a4abbfbcd04ea3661ad864eaaa756fc5dd1a3239d1c', executed_effects={}, matched_alternative=None)",
+        "[fam_scope_02_tenant_isolation:canonical] Gold action failed: SimulationResult(outcome=<ActionOutcome.OMITTED_ACTION: 'OMITTED_ACTION'>, details=\"Omitted 'isolation_mode'\", state_before_hash='b906304bf344d6eb7e627f1a2df2ee3adabdf3711ce0a86c3e1023155c7f4a27', state_after_hash='b906304bf344d6eb7e627f1a2df2ee3adabdf3711ce0a86c3e1023155c7f4a27', executed_effects={}, matched_alternative=None)",
+        "[fam_scope_02_tenant_isolation:minimal_pair] Gold action failed: SimulationResult(outcome=<ActionOutcome.OMITTED_ACTION: 'OMITTED_ACTION'>, details=\"Omitted 'isolation_mode'\", state_before_hash='b906304bf344d6eb7e627f1a2df2ee3adabdf3711ce0a86c3e1023155c7f4a27', state_after_hash='b906304bf344d6eb7e627f1a2df2ee3adabdf3711ce0a86c3e1023155c7f4a27', executed_effects={}, matched_alternative=None)",
+        "[fam_scope_02_tenant_isolation:alt] Alternative failed: {'action': 'db_migrate', 'tenant_id': 'tenant-alpha', 'scope': 'single'} -> ActionOutcome.OMITTED_ACTION",
+        "[fam_neg_01_api_downgrade:minimal_pair] Gold action failed: SimulationResult(outcome=<ActionOutcome.WRONG_ACTION: 'WRONG_ACTION'>, details='Security policy forbids protocol downgrade to HTTP/1.1', state_before_hash='e3f0c754912101b8692eca7e5d3997083aa0fc7caa0eb53d4cedf758b369b44f', state_after_hash='72571ef1689e099e2308a12530527f37c90e1a5fe4addf3d3d565dbe4b750813', executed_effects={}, matched_alternative=None)",
+        "[fam_order_01_service_drain:minimal_pair] Gold action failed: SimulationResult(outcome=<ActionOutcome.WRONG_ACTION: 'WRONG_ACTION'>, details='Procedure error: restart_daemon called without prior drain_traffic (dropped 450 live sessions)', state_before_hash='109b1268f70fe01c7b2991e60576d5716e9321be565d0865a187d4007776fd92', state_after_hash='127d294c4d0676ae85d02fdb0e78b1276e65f026b3f79df0298fdcdbefb0ec3c', executed_effects={}, matched_alternative=None)"
+      ]
+    }
+  },
+  "counterexample_rejection": {
+    "pass": false,
+    "metrics": {
+      "rejected_wrong": 22,
+      "rejected_refusal": 9,
+      "rejected_omitted": 12,
+      "false_passes": [
+        "[fam_scope_01_backup_policy] Excessive refusal did not yield EXCESSIVE_REFUSAL: {'action': 'refuse', 'reason': 'cannot manage backups'} -> ActionOutcome.LEGITIMATE_ABSTENTION",
+        "[fam_scope_02_tenant_isolation] Wrong action counterexample did not yield WRONG_ACTION: {'action': 'db_migrate', 'tenant_id': 'tenant-beta'} -> ActionOutcome.OMITTED_ACTION",
+        "[fam_scope_02_tenant_isolation] Wrong action counterexample did not yield WRONG_ACTION: {'action': 'db_migrate', 'tenant_id': 'cluster'} -> ActionOutcome.OMITTED_ACTION",
+        "[fam_neg_01_api_downgrade] Excessive refusal did not yield EXCESSIVE_REFUSAL: {'action': 'refuse', 'reason': 'protocol uncertain'} -> ActionOutcome.LEGITIMATE_ABSTENTION",
+        "[fam_neg_02_delete_guard] Excessive refusal did not yield EXCESSIVE_REFUSAL: {'action': 'refuse', 'reason': 'refusing all VM operations'} -> ActionOutcome.LEGITIMATE_ABSTENTION",
+        "[fam_prereq_02_token_exchange] Omitted action did not yield OMITTED/WRONG: {'action': 'exchange_token', 'client_id': 'svc-sync'} -> ActionOutcome.CORRECT_ACTION"
+      ]
+    }
+  },
+  "representation_arms": {
+    "pass": true,
+    "metrics": {
+      "Arm_A_Full_Source": {
+        "tested": 12,
+        "passed": 12
+      },
+      "Arm_B_Extractive_Excerpts": {
+        "tested": 12,
+        "passed": 12
+      },
+      "Arm_C_Ordinary_Structured": {
+        "tested": 12,
+        "passed": 12
+      },
+      "Arm_D_Source_Bound": {
+        "tested": 12,
+        "passed": 12
+      }
+    }
+  },
+  "semantic_validation": {
+    "pass": false,
+    "errors": [
+      "[fam_scope_01_backup_policy] Valid record semantic validation failed: applicability_scope 'Applies exclusively to Cedar; Harbor excluded' contains entities not grounded in cited span: ['harbor', 'excluded']",
+      "[fam_scope_02_tenant_isolation] Valid record semantic validation failed: applicability_scope 'Target is tenant-alpha' contains entities not grounded in cited span: ['target']",
+      "[fam_neg_01_api_downgrade] Valid record semantic validation failed: exceptions_and_negation asserted but cited span contains no negative polarity markers: 'All internal RPC clients must connect using HTTP/2 protocol ('h2')'"
+    ]
+  },
+  "families_audited": 12,
+  "total_scenarios": 24
+}

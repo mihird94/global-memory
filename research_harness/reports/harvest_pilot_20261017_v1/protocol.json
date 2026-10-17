@@ -1,0 +1,62 @@
+{
+  "classification": "new_author_created_pilot_not_blind_holdout",
+  "scope": "synthetic harvesting only; no graph extraction or CCMP efficacy claims",
+  "models": [
+    "qwen2.5-coder:7b",
+    "qwen3:8b"
+  ],
+  "think": false,
+  "seed": 1742,
+  "temperature": 0,
+  "num_ctx": 8192,
+  "num_predict": 1536,
+  "max_calls": 8,
+  "max_seconds": 1200,
+  "request_timeout_seconds": 120,
+  "max_reported_tokens": 32000,
+  "request_token_reservation": 9728,
+  "token_limit_note": "Conservative full context plus completion reservation; not a tokenizer measurement",
+  "schedule": [
+    [
+      "qwen2.5-coder:7b",
+      "configuration_update"
+    ],
+    [
+      "qwen3:8b",
+      "procedure_with_secret"
+    ],
+    [
+      "qwen3:8b",
+      "no_write_control"
+    ],
+    [
+      "qwen3:8b",
+      "backup_scope"
+    ],
+    [
+      "qwen3:8b",
+      "configuration_update"
+    ],
+    [
+      "qwen2.5-coder:7b",
+      "procedure_with_secret"
+    ],
+    [
+      "qwen2.5-coder:7b",
+      "no_write_control"
+    ],
+    [
+      "qwen2.5-coder:7b",
+      "backup_scope"
+    ]
+  ],
+  "source_sha256": {
+    "research_harness/pilots/harvest_cases_v1.json": "f19e2e0cefe6886f60e79d48dc8519990ec781f863918d7b5196c954c18e8741",
+    "research_harness/pilots/harvest_pilot.py": "5a9b87cb8024d2232251698b7b9e9a3e3f7f18801bcafce19ff1db55b96147ed",
+    "tools/dream_cycle.py": "fab43e069d30410053b4eeccdeef8052ae92083a24b0d77e358e408faf17df6e",
+    "tools/schemas.py": "24879c3b9e5bce0feea95284dfd58b9743dc9e9c753fcbe531630d7897dd3311",
+    "tools/eval_model_harvesting.py": "2d13172d1c2f65c1f114cf5d9edfd63e7d33b6e1550e8f9aba33d6bc04f58a1f",
+    "tools/concept_enrichment.py": "790ed3b13fa0af64b920544050b0bdeb98358d5803ae54c1203dd819307b7b36"
+  },
+  "analysis": "Report raw and admitted keyword proxies, canary leaks, no-write behavior, schema failures, latency and missingness. Independently inspect semantics; no significance or non-inferiority claim. No tuning or retries after responses."
+}

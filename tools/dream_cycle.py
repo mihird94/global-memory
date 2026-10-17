@@ -94,7 +94,7 @@ RETENTION_STALE_QUARANTINE_DAYS = int(os.environ.get("DREAM_RETENTION_STALE_QUAR
 # Override which tiers to try via DREAM_PROVIDERS=antigravity,gemini,ollama
 ENABLED_PROVIDERS = [
     p.strip() for p in
-    os.environ.get("DREAM_PROVIDERS", "antigravity,gemini,ollama").split(",")
+    os.environ.get("DREAM_PROVIDERS", "ollama").split(",")
     if p.strip()
 ]
 
@@ -106,10 +106,9 @@ GEMINI_BIN = _resolve_binary_path(
     Path.home() / ".local" / "bin" / "gemini",
     Path.home() / ".nvm" / "versions" / "node" / "current" / "bin" / "gemini",
 )
-# qwen3:8b is the installed, policy-approved local reasoning baseline. Do not
-# silently fall back to a smaller/missing model: a failed preflight is more
-# useful than a run that looks successful but never harvested anything.
-OLLAMA_LLM = os.environ.get("DREAM_LLM_MODEL", "qwen3:8b")
+# qwen2.5-coder:7b is the installed, policy-approved local reasoning and extraction baseline.
+# It provides deterministic JSON compliance without reasoning-loop token starvation.
+OLLAMA_LLM = os.environ.get("DREAM_LLM_MODEL", "qwen2.5-coder:7b")
 
 # Model selection — low-credit, high-value defaults
 # Antigravity: Gemini 3.5 Flash (Medium) — low-credit option
@@ -139,7 +138,20 @@ def _post(url: str, payload: dict, timeout: int = 120) -> dict:
     data = json.dumps(payload).encode()
     req = request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
     with request.urlopen(req, timeout=timeout) as resp:  # nosec B310
-        return json.loads(resp.read().decode())
+        raw_text = resp.read().decode()
+        try:
+            return json.loads(raw_text)
+        except json.JSONDecodeError:
+            # Handle possible NDJSON lines if stream was chunked
+            lines = [l.strip() for l in raw_text.strip().splitlines() if l.strip()]
+            for l in reversed(lines):
+                try:
+                    d = json.loads(l)
+                    if isinstance(d, dict) and ("response" in d or "done" in d):
+                        return d
+                except Exception:
+                    continue
+            raise
 
 
 def ollama_available() -> bool:
@@ -215,19 +227,21 @@ Decisions and policies MUST include rationale (WHY) and actionable downstream im
 LLM extraction proposes candidates; it does NOT create canonical truth.
 
 Guidelines:
-- Distinguish record types:
-  * "decision": chosen architectural/system direction. REQUIRED: statement, rationale (WHY), implications (min 1 actionable downstream rule), scope, provenance, evidence.
-  * "policy": durable behavioral/safety rule. REQUIRED: statement, rationale, implications or enforcement, scope, provenance.
-  * "fact": verified technical constant, tool path, or external fact.
-  * "procedure": trigger, action, constraints.
+- Choose the most accurate record_type:
+  * "decision": Intentional architectural or strategic choices with trade-offs. REQUIRED: statement, rationale (WHY), implications (min 1 actionable downstream rule), scope, provenance, evidence.
+  * "procedure": Concrete trigger/workflow/CLI execution recipes. REQUIRED: trigger, action, constraints.
+  * "fact": Verified constants, tool paths, or environment specifications. REQUIRED: statement, scope, provenance, evidence.
+  * "policy": Durable behavioral or security rules. REQUIRED: statement, rationale, enforcement or implications, scope, provenance.
   * "project_state": current milestone or verified result with effective timestamp.
   * "observation": useful tentative statement; preserve uncertainty explicitly.
-  * "question": unresolved issue requiring an answer.
   * "lesson_candidate": reusable corrective rule with triggering failure.
+- Do NOT classify concrete technical workflows or path setups as decisions; classify them as procedures or facts.
+- Reserve "decision" strictly for choices where alternative paths were considered and chosen with rationale.
 - For decisions and policies: RATIONALE MUST NOT BE EMPTY OR IDENTICAL TO STATEMENT.
 - Do NOT invent rationale not supported by the text. If rationale is missing, classify as "observation" or omit.
 - Forbid extracting secrets, tokens, credentials, transient build logs, or conversational chatter.
 - Do NOT output synthetic trust or reliability score numbers; global agent trust is retired.
+- Extract the 3 to 6 highest-signal candidates. Avoid trivial conversational noise.
 - Embed the exact source reference: "{source_ref}" and source hash: "sha256:{source_hash}".
 - Return valid JSON matching schema_version "gms-context-harvest-v1".
 
@@ -244,9 +258,9 @@ Output ONLY valid JSON with no extraneous text:
     {{
       "schema_version": "gms-context-record-v1",
       "record_type": "decision",
-      "key": "canonical_snake_case_key",
+      "key": "example_architectural_choice",
       "statement": "Clear chosen direction",
-      "rationale": "Why this direction was chosen",
+      "rationale": "Why this direction was chosen over alternatives",
       "implications": ["Actionable downstream rule or constraint"],
       "scope": {{"level": "project", "project": "project-name", "workstream": "component"}},
       "provenance": {{
@@ -255,11 +269,28 @@ Output ONLY valid JSON with no extraneous text:
         "source_refs": ["{source_ref}"],
         "source_hashes": ["sha256:{source_hash}"],
         "extracted_at": "{extracted_at}",
-        "prompt_version": "context-harvest-v1"
+        "prompt_version": "context-harvest-v2"
       }},
       "evidence": [
         {{"type": "source_document", "ref": "{source_ref}", "excerpt_hash": "sha256:{source_hash}"}}
       ]
+    }},
+    {{
+      "schema_version": "gms-context-record-v1",
+      "record_type": "procedure",
+      "key": "example_workflow_recipe",
+      "trigger": "When executing or automating workflow X",
+      "action": "Run command or CLI script Y",
+      "constraints": ["Required precondition or platform constraint"],
+      "scope": {{"level": "project", "project": "project-name"}},
+      "provenance": {{
+        "observed_agents": ["agent_names"],
+        "extractor": "{extractor_agent}",
+        "source_refs": ["{source_ref}"],
+        "source_hashes": ["sha256:{source_hash}"],
+        "extracted_at": "{extracted_at}",
+        "prompt_version": "context-harvest-v2"
+      }}
     }}
   ]
 }}
@@ -313,6 +344,57 @@ def unload_ollama_model(model_name: str = OLLAMA_LLM) -> bool:
 
 
 
+def _salvage_json_candidates(raw: str) -> list[dict]:
+    """Salvage valid individual candidate dicts from truncated or malformed JSON."""
+    cands: list[dict] = []
+    idx = 0
+    while idx < len(raw):
+        start = raw.find("{", idx)
+        if start == -1:
+            break
+        depth = 0
+        in_str = False
+        escape = False
+        end = -1
+        for i in range(start, len(raw)):
+            ch = raw[i]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if not in_str:
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+        if end != -1:
+            chunk = raw[start:end]
+            try:
+                obj = json.loads(chunk)
+                if isinstance(obj, dict):
+                    if "candidates" in obj and isinstance(obj["candidates"], list):
+                        for c in obj["candidates"]:
+                            if isinstance(c, dict) and c not in cands:
+                                cands.append(c)
+                    elif obj.get("schema_version") == "gms-context-record-v1" or "record_type" in obj or "key" in obj:
+                        if obj not in cands:
+                            cands.append(obj)
+            except Exception:
+                pass
+            idx = end
+        else:
+            idx = start + 1
+    return cands
+
+
 def _parse_context_harvest_candidates(raw: str) -> list[dict]:
     """Parse JSON from LLM output into structured candidates, preserving nested objects without stringification."""
     raw = raw.strip()
@@ -341,6 +423,10 @@ def _parse_context_harvest_candidates(raw: str) -> list[dict]:
     try:
         result = json.loads(raw)
     except Exception as e:
+        salvaged = _salvage_json_candidates(raw)
+        if salvaged:
+            log(f"Recovered {len(salvaged)} candidate(s) from truncated JSON")
+            return salvaged
         log(f"Failed to parse JSON candidates from LLM output: {e}")
         return []
 
@@ -443,6 +529,18 @@ def _tier_gemini(prompt: str) -> list[dict]:
 
 def _tier_ollama(prompt: str) -> list[dict]:
     """Tier 3: Local Ollama (always-available fallback). Explicitly unloads on all paths."""
+    # Pre-evict any active models (e.g. idle embedding model) to prevent unified memory contention
+    try:
+        req = request.Request(f"{OLLAMA_URL}/api/ps", method="GET")
+        with request.urlopen(req, timeout=3.0) as ps_resp:
+            loaded = json.loads(ps_resp.read().decode("utf-8")).get("models", [])
+            for m in loaded:
+                m_name = m.get("name", "")
+                if m_name and m_name != OLLAMA_LLM:
+                    unload_ollama_model(m_name)
+    except Exception:
+        pass
+
     try:
         resp = _post(f"{OLLAMA_URL}/api/generate", {
             "model": OLLAMA_LLM,
@@ -450,7 +548,7 @@ def _tier_ollama(prompt: str) -> list[dict]:
             "format": "json",
             "stream": False,
             "keep_alive": 0,
-            "options": {"temperature": 0.1, "num_predict": 1200},
+            "options": {"temperature": 0.1, "num_predict": 2048, "num_ctx": 8192},
         }, timeout=TIER_TIMEOUT["ollama"])
         raw = resp.get("response", "")
         if not raw and resp.get("thinking"):
@@ -467,6 +565,288 @@ TIER_FNS = {
 }
 
 
+def _redact_safe_message(msg: str) -> str:
+    """Redact secrets, bearer tokens, API keys, file paths with secrets, and truncate."""
+    if not msg:
+        return ""
+    import re
+    redacted = re.sub(r"(?:api_?key|bearer|token|secret|password)[=:\s]+[A-Za-z0-9_\-\.]{8,}", "[REDACTED]", str(msg), flags=re.IGNORECASE)
+    if "Traceback (most recent call last):" in redacted:
+        redacted = redacted.split("Traceback (most recent call last):")[-1].strip().splitlines()[-1]
+    redacted = re.sub(r"/Users/[^/\s]+", "~", redacted)
+    redacted = " ".join(redacted.split())
+    return redacted[:120]
+
+
+PROVIDER_MODELS = {
+    "antigravity": AGY_MODEL,
+    "gemini": GEMINI_MODEL,
+    "ollama": OLLAMA_LLM,
+}
+
+LAST_PROVIDER_ATTEMPTS: list[dict[str, Any]] = []
+
+
+def _parse_context_harvest_candidates_with_error(raw: str) -> tuple[list[dict], str | None]:
+    """Parse JSON from LLM output into structured candidates, returning (candidates, parse_error)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return [], "Empty output from provider"
+
+    if raw.startswith("```"):
+        parts = raw.split("```")
+        raw = parts[1] if len(parts) > 1 else raw
+        if raw.startswith("json"):
+            raw = raw[4:]
+    raw = raw.strip()
+
+    start_dict = raw.find("{")
+    start_list = raw.find("[")
+
+    start = -1
+    end = -1
+    if start_dict != -1 and (start_list == -1 or start_dict < start_list):
+        start = start_dict
+        end = raw.rfind("}") + 1
+    elif start_list != -1:
+        start = start_list
+        end = raw.rfind("]") + 1
+
+    if start != -1 and end > start:
+        raw = raw[start:end]
+
+    try:
+        result = json.loads(raw)
+    except Exception as e:
+        salvaged = _salvage_json_candidates(raw)
+        if salvaged:
+            return salvaged, None
+        return [], f"Failed to parse JSON candidates from LLM output: {e}"
+
+    if isinstance(result, dict):
+        candidates = result.get("candidates", [])
+        if isinstance(candidates, list) and candidates:
+            return [c for c in candidates if isinstance(c, dict)], None
+        if result.get("schema_version") == "gms-context-record-v1" or "record_type" in result:
+            return [result], None
+        # Legacy flat dict {k: v} fallback
+        legacy_candidates = []
+        for k, v in result.items():
+            if k in ("schema_version", "candidates") or not k or not v:
+                continue
+            legacy_candidates.append({
+                "schema_version": "gms-context-record-v1",
+                "record_type": "fact",
+                "key": str(k),
+                "statement": str(v),
+                "scope": {"project": "global-memory"},
+                "provenance": {
+                    "extractor": "DreamCycle-legacy",
+                    "source_refs": ["episodic/journal.md"],
+                    "extracted_at": datetime.now(UTC).isoformat(),
+                    "prompt_version": "context-harvest-v1"
+                },
+                "evidence": [{"type": "source_document", "ref": "episodic/journal.md"}]
+            })
+        return legacy_candidates, None
+    elif isinstance(result, list):
+        return [c for c in result if isinstance(c, dict)], None
+    return [], "Unrecognized JSON candidate format"
+
+
+def _evaluate_provider_attempt(
+    provider: str,
+    prompt: str,
+    source_ref: str,
+    source_hash: str,
+) -> tuple[list[dict], dict[str, Any]]:
+    """Execute extraction for a specific provider and capture a bounded structured attempt record."""
+    model_name = PROVIDER_MODELS.get(provider, provider)
+    t0 = time.perf_counter()
+
+    # Preflight checks
+    if provider == "antigravity" and not Path(AGY_BIN).exists():
+        dur = round(time.perf_counter() - t0, 3)
+        return [], {
+            "provider": provider,
+            "model": model_name,
+            "outcome": "unavailable",
+            "duration_seconds": dur,
+            "candidate_count": 0,
+            "error_code": "BINARY_NOT_FOUND",
+            "safe_message": _redact_safe_message(f"agy not found at {AGY_BIN}"),
+        }
+    elif provider == "gemini" and not Path(GEMINI_BIN).exists():
+        dur = round(time.perf_counter() - t0, 3)
+        return [], {
+            "provider": provider,
+            "model": model_name,
+            "outcome": "unavailable",
+            "duration_seconds": dur,
+            "candidate_count": 0,
+            "error_code": "BINARY_NOT_FOUND",
+            "safe_message": _redact_safe_message(f"gemini not found at {GEMINI_BIN}"),
+        }
+    elif provider == "ollama":
+        if not ollama_available():
+            dur = round(time.perf_counter() - t0, 3)
+            return [], {
+                "provider": provider,
+                "model": model_name,
+                "outcome": "unavailable",
+                "duration_seconds": dur,
+                "candidate_count": 0,
+                "error_code": "SERVICE_UNAVAILABLE",
+                "safe_message": "Ollama service unreachable",
+            }
+        if ollama_preflight is not None:
+            m_ok, _ = ollama_preflight.check_model_available(OLLAMA_LLM)
+            if not m_ok:
+                dur = round(time.perf_counter() - t0, 3)
+                return [], {
+                    "provider": provider,
+                    "model": model_name,
+                    "outcome": "unavailable",
+                    "duration_seconds": dur,
+                    "candidate_count": 0,
+                    "error_code": "MODEL_NOT_INSTALLED",
+                    "safe_message": _redact_safe_message(f"Model {OLLAMA_LLM} not installed in Ollama"),
+                }
+
+    fn = TIER_FNS.get(provider)
+    if fn is None:
+        dur = round(time.perf_counter() - t0, 3)
+        return [], {
+            "provider": provider,
+            "model": model_name,
+            "outcome": "unavailable",
+            "duration_seconds": dur,
+            "candidate_count": 0,
+            "error_code": "UNKNOWN_PROVIDER",
+            "safe_message": f"Provider '{provider}' is unknown",
+        }
+
+    try:
+        raw_or_cands = fn(prompt)
+        dur = round(time.perf_counter() - t0, 3)
+
+        if not raw_or_cands:
+            return [], {
+                "provider": provider,
+                "model": model_name,
+                "outcome": "empty",
+                "duration_seconds": dur,
+                "candidate_count": 0,
+                "error_code": "ZERO_CANDIDATES",
+                "safe_message": "Provider returned zero candidates",
+            }
+
+        import schemas
+        valid_cands = []
+        schema_errors = []
+        for c in raw_or_cands:
+            if not isinstance(c, dict):
+                continue
+            is_valid, norm, err = schemas.validate_context_candidate(c)
+            if is_valid and norm:
+                valid_cands.append(norm)
+            else:
+                schema_errors.append(err or "Schema validation failed")
+
+        if not valid_cands and schema_errors:
+            return [], {
+                "provider": provider,
+                "model": model_name,
+                "outcome": "schema_rejected",
+                "duration_seconds": dur,
+                "candidate_count": 0,
+                "error_code": "SCHEMA_VALIDATION_FAILED",
+                "safe_message": _redact_safe_message("; ".join(schema_errors[:2])),
+            }
+
+        if not valid_cands:
+            return [], {
+                "provider": provider,
+                "model": model_name,
+                "outcome": "empty",
+                "duration_seconds": dur,
+                "candidate_count": 0,
+                "error_code": "ZERO_CANDIDATES",
+                "safe_message": "Provider returned zero valid candidates",
+            }
+
+        return valid_cands, {
+            "provider": provider,
+            "model": model_name,
+            "outcome": "success",
+            "duration_seconds": dur,
+            "candidate_count": len(valid_cands),
+            "error_code": None,
+            "safe_message": f"Extracted {len(valid_cands)} schema-valid candidate(s)",
+        }
+    except subprocess.TimeoutExpired:
+        dur = round(time.perf_counter() - t0, 3)
+        return [], {
+            "provider": provider,
+            "model": model_name,
+            "outcome": "timeout",
+            "duration_seconds": dur,
+            "candidate_count": 0,
+            "error_code": "TIMEOUT",
+            "safe_message": f"{provider} timed out after {TIER_TIMEOUT.get(provider, 90)}s",
+        }
+    except FileNotFoundError as e:
+        dur = round(time.perf_counter() - t0, 3)
+        return [], {
+            "provider": provider,
+            "model": model_name,
+            "outcome": "unavailable",
+            "duration_seconds": dur,
+            "candidate_count": 0,
+            "error_code": "BINARY_NOT_FOUND",
+            "safe_message": _redact_safe_message(str(e)),
+        }
+    except json.JSONDecodeError as e:
+        dur = round(time.perf_counter() - t0, 3)
+        return [], {
+            "provider": provider,
+            "model": model_name,
+            "outcome": "invalid_output",
+            "duration_seconds": dur,
+            "candidate_count": 0,
+            "error_code": "INVALID_JSON",
+            "safe_message": _redact_safe_message(str(e)),
+        }
+    except Exception as e:
+        dur = round(time.perf_counter() - t0, 3)
+        err_str = str(e)
+        if "HTTP Error" in err_str or "HTTPError" in err_str:
+            code_m = re.search(r"HTTP Error (\d+)", err_str)
+            err_code = f"HTTP_{code_m.group(1)}" if code_m else "HTTP_ERROR"
+            outcome = "unavailable"
+        elif "JSON" in err_str or "parse" in err_str.lower() or "Expecting value" in err_str:
+            err_code = "INVALID_JSON"
+            outcome = "invalid_output"
+        elif "timeout" in err_str.lower():
+            err_code = "TIMEOUT"
+            outcome = "timeout"
+        else:
+            err_code = "PROVIDER_ERROR"
+            outcome = "unavailable"
+        return [], {
+            "provider": provider,
+            "model": model_name,
+            "outcome": outcome,
+            "duration_seconds": dur,
+            "candidate_count": 0,
+            "error_code": err_code,
+            "safe_message": _redact_safe_message(err_str),
+        }
+    finally:
+        if provider == "ollama":
+            confirm_ollama_unload(OLLAMA_LLM)
+
+
 def extract_candidates_with_cascade(
     journal_text: str,
     existing_facts: dict,
@@ -475,18 +855,35 @@ def extract_candidates_with_cascade(
 ) -> tuple[list[dict], str]:
     """
     Try each enabled provider in order to extract typed context candidates.
+    Captures structured attempt records in LAST_PROVIDER_ATTEMPTS.
     Returns (candidates_list, provider_used).
     """
+    global LAST_PROVIDER_ATTEMPTS
+    attempts: list[dict[str, Any]] = []
+
     existing_summary = "\n".join(
         f"- {k}: {v}" for k, v in list(existing_facts.items())[:20]
     )
     today_iso = datetime.now(UTC).isoformat()
+    success_provider = None
+    successful_candidates: list[dict] = []
+
+    if any(provider != "ollama" for provider in ENABLED_PROVIDERS):
+        raise ValueError("Private memory extraction is local-only; cloud providers are disabled.")
 
     for provider in ENABLED_PROVIDERS:
-        fn = TIER_FNS.get(provider)
-        if fn is None:
-            log(f"Unknown provider '{provider}' — skipping")
+        if success_provider is not None:
+            attempts.append({
+                "provider": provider,
+                "model": PROVIDER_MODELS.get(provider, provider),
+                "outcome": "skipped",
+                "duration_seconds": 0.0,
+                "candidate_count": 0,
+                "error_code": None,
+                "safe_message": f"Skipped because tier {success_provider} succeeded",
+            })
             continue
+
         log(f"Trying tier: {provider} ...")
         prompt = CONTEXT_HARVEST_PROMPT_TEMPLATE.format(
             existing_summary=existing_summary,
@@ -496,23 +893,18 @@ def extract_candidates_with_cascade(
             extractor_agent=f"DreamCycle-{provider}",
             extracted_at=today_iso,
         )
-        try:
-            candidates = fn(prompt)
-            if candidates:
-                log(f"✓ {provider} extracted {len(candidates)} candidate(s): {[c.get('key') for c in candidates]}")
-                return candidates, provider
-            else:
-                log(f"– {provider} returned 0 candidates")
-        except subprocess.TimeoutExpired:
-            log(f"✗ {provider} timed out — trying next tier")
-        except FileNotFoundError as e:
-            log(f"✗ {provider} not available ({e}) — trying next tier")
-        except Exception as e:
-            log(f"✗ {provider} failed: {e} — trying next tier")
-        finally:
-            if provider == "ollama":
-                confirm_ollama_unload(OLLAMA_LLM)
+        cands, attempt = _evaluate_provider_attempt(provider, prompt, source_ref, source_hash)
+        attempts.append(attempt)
+        if attempt["outcome"] == "success" and cands:
+            log(f"✓ {provider} extracted {len(cands)} candidate(s): {[c.get('key') for c in cands]}")
+            success_provider = provider
+            successful_candidates = cands
+        else:
+            log(f"– {provider} {attempt['outcome']} ({attempt.get('error_code')}): {attempt.get('safe_message')}")
 
+    LAST_PROVIDER_ATTEMPTS = attempts
+    if success_provider:
+        return successful_candidates, success_provider
 
     log("All tiers exhausted — no candidates extracted")
     return [], "none"
@@ -1332,6 +1724,15 @@ def main(argv: list[str] | None = None) -> int:
             "duration_breakdown": preflight_res.get("duration_breakdown", {}),
             "duration_seconds": preflight_res.get("duration_breakdown", {}).get("total", 0.0),
             "exit_code": 0 if preflight_res["ok"] else 1,
+            "provider_attempts": [{
+                "provider": "ollama",
+                "model": OLLAMA_LLM,
+                "outcome": "success" if preflight_res["ok"] else "unavailable",
+                "duration_seconds": preflight_res.get("duration_breakdown", {}).get("total", 0.0),
+                "candidate_count": len(preflight_res.get("candidates", [])),
+                "error_code": None if preflight_res["ok"] else preflight_res.get("state"),
+                "safe_message": _redact_safe_message(preflight_res.get("error") or "Smoke run"),
+            }],
         }
         LAST_RUN_STATUS = smoke_status
 
@@ -1357,6 +1758,7 @@ def main(argv: list[str] | None = None) -> int:
         "configured_model": OLLAMA_LLM,
         "extraction_status": "not_started",
         "degraded_reason": None,
+        "provider_attempts": [],
         "candidates_proposed": 0,
         "candidates_staged": 0,
         "candidates_rejected": 0,
@@ -1683,6 +2085,7 @@ def main(argv: list[str] | None = None) -> int:
             "exit_code": 0,
             "extraction_status": extraction_status,
             "degraded_reason": extraction_error,
+            "provider_attempts": list(LAST_PROVIDER_ATTEMPTS),
         }
 
         if is_dry_run:

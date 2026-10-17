@@ -23,6 +23,11 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib import request
 
+try:
+    from schemas import detect_secret_in_payload
+except ImportError:
+    detect_secret_in_payload = None
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MEM_ROOT = Path(os.environ.get("MEMORY_ROOT", Path.home() / "memories")).expanduser()
 DEFAULT_DB_PATH = DEFAULT_MEM_ROOT / "gms_trust.sqlite"
@@ -30,7 +35,7 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 CONCEPT_PROVIDER = os.environ.get("CONCEPT_PROVIDER", "ollama")
 # Keep enrichment on the same locally verified reasoning baseline as Dream
 # Cycle. Embeddings remain independently configured.
-CONCEPT_MODEL = os.environ.get("CONCEPT_MODEL", "qwen3:8b")
+CONCEPT_MODEL = os.environ.get("CONCEPT_MODEL", "qwen2.5-coder:7b")
 PROMPT_VERSION = "concept-enrichment-v1"
 
 
@@ -252,6 +257,11 @@ def validate_enrichment_output(payload: dict[str, Any], source_text: str) -> tup
         if "=" in canon or len(canon_low) < 2 or canon_low in {"only", "helper", "test", "null", "undefined"}:
             continue
 
+        # Secret protection guard
+        if detect_secret_in_payload is not None:
+            if detect_secret_in_payload(e):
+                continue
+
         if canon:
             valid_entities.append({
                 "surface_form": e.get("surface_form", canon),
@@ -273,6 +283,12 @@ def validate_enrichment_output(payload: dict[str, Any], source_text: str) -> tup
         subj = str(r.get("subject", "")).strip()
         pred = str(r.get("predicate", "")).strip()
         obj = str(r.get("object", "")).strip()
+
+        # Secret protection guard
+        if detect_secret_in_payload is not None:
+            if detect_secret_in_payload(r):
+                continue
+
         if subj and pred and obj and subj.lower() != obj.lower():
             valid_relationships.append({
                 "subject": subj,
@@ -308,7 +324,7 @@ def unload_ollama_model(model: str = CONCEPT_MODEL, url: str = OLLAMA_URL) -> bo
         return False
 
 
-def run_ollama_enrichment(text: str, model: str = CONCEPT_MODEL, url: str = OLLAMA_URL) -> dict[str, Any]:
+def run_ollama_enrichment(text: str, model: str = CONCEPT_MODEL, url: str = OLLAMA_URL, timeout: int = 120) -> dict[str, Any]:
     """Invoke local Ollama with concept extraction prompt and keep_alive: 0."""
     prompt = f"""You are an expert Knowledge Graph Extraction Engine.
 Extract entities and relationships from the text below according to schema version 'concept-enrichment-v1'.
@@ -352,6 +368,7 @@ Return ONLY valid JSON with this exact structure:
         "stream": False,
         "format": "json",
         "keep_alive": 0,  # Unload immediately after generation
+        "options": {"temperature": 0.1, "num_predict": 2048, "num_ctx": 8192},
     }
     req = request.Request(
         f"{url}/api/generate",
@@ -359,7 +376,7 @@ Return ONLY valid JSON with this exact structure:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with request.urlopen(req, timeout=45) as resp:
+    with request.urlopen(req, timeout=timeout) as resp:
         res = json.loads(resp.read().decode("utf-8"))
         raw_response = res.get("response", "{}")
         return json.loads(raw_response)

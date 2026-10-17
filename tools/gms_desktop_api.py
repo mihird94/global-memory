@@ -2773,6 +2773,7 @@ class GMSDesktopAPI:
             "confirmed": False,
             "active_models": [],
         })
+        data.setdefault("provider_attempts", [])
 
         # Acceptance: The report cannot call a provider:none run successful
         if data.get("provider") in (None, "none") and data.get("status") == "completed":
@@ -2991,6 +2992,7 @@ class GMSDesktopAPI:
             "deferred_count": deferred_count,
             "total_awaiting_review": total_awaiting,
             "last_run": dream_status,
+            "provider_attempts": dream_status.get("provider_attempts", []),
             "next_scheduled_run": self.get_effective_launchd_schedule(),
         }
 
@@ -3130,6 +3132,10 @@ class GMSDesktopAPI:
 
     def get_resume_bundle(self, project_id: str, target_format: str = "antigravity", as_of: str | None = None, task_id: str | None = None) -> dict[str, Any]:
         return build_resume_bundle(self.mem_root, project_id, target_format=target_format, as_of=as_of, task_id=task_id)
+
+    def get_project_reconciliation(self, project_id: str) -> dict[str, Any]:
+        from project_context_reconciliation import build_project_context_reconciliation
+        return build_project_context_reconciliation(self.mem_root, project_id)
 
     def get_decisions(self, project: str = "", include_superseded: bool = False) -> dict[str, Any]:
         return list_decisions(self.mem_root, project=project, include_superseded=include_superseded)
@@ -3296,6 +3302,9 @@ class GMSHTTPHandler(BaseHTTPRequestHandler):
                 pid = parts[2]
                 as_of = qs.get("as_of", [None])[0]
                 self._send_json(self.api.get_morning_briefing(pid, as_of=as_of))
+            elif len(parts) == 4 and parts[3] == "reconciliation":
+                pid = parts[2]
+                self._send_json(self.api.get_project_reconciliation(pid))
             elif len(parts) == 4 and parts[3] == "activity":
                 pid = parts[2]
                 limit = int(qs.get("limit", [50])[0])

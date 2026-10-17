@@ -1,0 +1,98 @@
+{
+  "timestamp": "2026-10-17T22:59:29Z",
+  "environment": {
+    "python_executable": "/Users/mihirdeshpande/projects/global-memory/.venv/bin/python",
+    "is_venv": true,
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "python_version": "3.13.5",
+    "packages": {
+      "pytest": {
+        "available": true,
+        "version": "9.1.1"
+      },
+      "flashrank": {
+        "available": true,
+        "version": "available"
+      },
+      "fastembed": {
+        "available": true,
+        "version": "0.8.1"
+      },
+      "faiss": {
+        "available": true,
+        "version": "1.14.2"
+      },
+      "sqlite3": {
+        "available": true,
+        "version": "available"
+      },
+      "pydantic": {
+        "available": true,
+        "version": "2.13.5"
+      }
+    }
+  },
+  "verdict": "ALL_TESTS_AND_ARTIFACT_INTEGRITY_VERIFIED",
+  "overall_success": true,
+  "total_duration_sec": 11.57,
+  "steps": [
+    {
+      "step": "Paper 1 (Table 1): 5-Method Retrieval Ablation",
+      "status": "PASS",
+      "duration_sec": 1.865,
+      "strategies_evaluated": 5,
+      "error": null
+    },
+    {
+      "step": "Paper 1 (Table 2): 142-Case Retrieval & Sufficiency Suite",
+      "status": "PASS",
+      "duration_sec": 1.676,
+      "passed_cases": 142,
+      "total_cases": 142,
+      "error": null
+    },
+    {
+      "step": "Paper 1 (Table 3): Harvesting Evaluator & Boundary Tests (11 passed)",
+      "status": "PASS",
+      "duration_sec": 0.65,
+      "tests_passed": 11,
+      "tests_failed": 0,
+      "error": null
+    },
+    {
+      "step": "Paper 1 (Table 3): Admission Firewall & Regex Baseline CLI",
+      "status": "PASS",
+      "duration_sec": 0.242,
+      "error": null
+    },
+    {
+      "step": "Paper 1: Research Harness Isolation Suite (101 passed)",
+      "status": "PASS",
+      "duration_sec": 6.155,
+      "tests_passed": 101,
+      "tests_failed": 0,
+      "error": null
+    },
+    {
+      "step": "Paper 2: CCMP-Bench v1.2 Verification Suite (34 passed)",
+      "status": "PASS",
+      "duration_sec": 0.931,
+      "tests_passed": 34,
+      "tests_total": 34,
+      "error": null
+    },
+    {
+      "step": "Saved Artifact Reconciliation & Checksums",
+      "status": "PASS",
+      "duration_sec": 0.05,
+      "error": null,
+      "artifacts_checked": [
+        "ablation_run",
+        "regression_run",
+        "gold_harvest_pilot",
+        "thinking_intervention",
+        "harvest_pilot_v1"
+      ]
+    }
+  ]
+}

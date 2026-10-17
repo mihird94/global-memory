@@ -20,6 +20,55 @@ from memory_authority import authority_label
 PROFILE_BUDGETS = {"small": 900, "standard": 2400, "deep": 6000}
 
 
+def _project_affinity_tokens(project_id: str) -> set[str]:
+    """Return conservative identifiers which demonstrate a fact belongs to a project.
+
+    Retrieval lanes deliberately make broadly useful facts available to a project
+    query. That is appropriate for a context packet, but an unstructured legacy
+    fact must not become *current truth* merely because it matched generic words
+    such as ``current`` or ``status``. Keep the compatibility aliases narrow so
+    that this gate removes cross-project pollution without inventing a scope for
+    otherwise useful general memories.
+    """
+    tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]+", project_id.lower())
+        if len(token) > 2
+    }
+    compact = re.sub(r"[^a-z0-9]", "", project_id.lower())
+    if compact:
+        tokens.add(compact)
+    if project_id == "global-memory":
+        # "memory" and "global" alone are intentionally omitted: both are too
+        # broad to establish project provenance for a legacy record.
+        tokens.update({"gms", "mbrain", "memoryctl", "globalmemory"})
+        tokens.discard("global")
+        tokens.discard("memory")
+    return tokens
+
+
+def _legacy_fact_is_project_affine(item: dict[str, Any], project_id: str) -> bool:
+    """Whether a legacy flat fact has independent evidence of project affinity.
+
+    A legacy record has no provenance-bearing schema. Its retrieval-time scope
+    can be the requested project (rather than source evidence), so it is not a
+    sufficient reason to present it as current truth. Project-bank source paths
+    and explicit identifiers in the key/value are sufficient; all other legacy
+    records remain retrievable context but are omitted from this high-impact
+    briefing section.
+    """
+    source = str(item.get("source") or "").replace("\\", "/").lower()
+    project_path = f"projects/{project_id.lower()}/"
+    if project_path in source:
+        return True
+
+    terms = _project_affinity_tokens(project_id)
+    text = f"{item.get('key', '')} {item.get('statement', '')}".lower()
+    item_tokens = set(re.findall(r"[a-z0-9]+", text))
+    compact_text = re.sub(r"[^a-z0-9]", "", text)
+    return bool(terms & item_tokens) or any(term in compact_text for term in terms if len(term) >= 5)
+
+
 def _extract_project_goal(root: Path, project_id: str) -> dict[str, Any]:
     brief_file = root / "projects" / project_id / "projectBrief.md"
     if brief_file.exists():
@@ -196,6 +245,15 @@ def generate_project_briefing(
             statement = str(it.get("statement") or "").lstrip()
             if lane == "bm25" and re.match(r"^###\s+Update\s*\(", statement, re.IGNORECASE):
                 continue
+            # Legacy flat facts are intentionally available to retrieval, but
+            # their scope is assigned by the query planner and is not durable
+            # project provenance. Do not allow a generic lexical match from
+            # another project to masquerade as this project's current truth.
+            if (
+                it.get("record_shape") == "legacy_flat"
+                or it.get("authority") == "imported_legacy"
+            ) and not _legacy_fact_is_project_affine(it, project_id):
+                continue
             # Mark stale facts
             if it.get("freshness_state") == "stale":
                 it["stale_warning"] = "Stale operational truth; requires revalidation before driving action"
@@ -299,6 +357,17 @@ def generate_project_briefing(
         for it in (current_truth + active_work + binding_decisions + constraints + procedures + blocking_issues)
     ]
 
+    context_freshness_warning = None
+    try:
+        from project_context_reconciliation import build_project_context_reconciliation
+        reconcil = build_project_context_reconciliation(root, project_id)
+        if reconcil.get("freshness") == "behind":
+            b_at = reconcil.get("bank_effective_at")
+            e_at = reconcil.get("latest_evidence_at")
+            context_freshness_warning = f"Project bank effective time ({b_at}) lags newer verified evidence ({e_at})."
+    except Exception:
+        pass
+
     briefing = {
         "schema_version": "gms-project-briefing-v1",
         "project_id": project_id,
@@ -318,6 +387,7 @@ def generate_project_briefing(
         "verification": verification,
         "next_action": next_action,
         "candidates_awaiting_review": awaiting_review,
+        "context_freshness_warning": context_freshness_warning,
         "inclusion_manifest": inclusion_manifest,
         "omission_manifest": omitted,
     }

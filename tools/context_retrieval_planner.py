@@ -308,8 +308,16 @@ def make_plan(
         tokens = [token for token in tokens if token not in project_terms]
     intent = "context"
     q_lower = query.lower()
-    if any(w in q_lower for w in ("resume", "continue", "next action", "handoff")):
+    if any(w in q_lower for w in ("resume", "continue")):
         intent = "resume"
+    elif any(w in q_lower for w in ("next action", "next_action")):
+        intent = "next_action"
+    elif any(w in q_lower for w in ("handoff",)):
+        intent = "handoff"
+    elif any(w in q_lower for w in ("status",)):
+        intent = "status"
+    elif any(w in q_lower for w in ("current", "active context", "latest", "now", "today")):
+        intent = "current"
     elif any(w in q_lower for w in ("why", "rationale", "because", "decide", "decision")):
         intent = "decision"
     elif any(w in q_lower for w in ("how", "procedure", "runbook", "steps", "command")):
@@ -791,15 +799,16 @@ def _run_lane_decisions(root: Path, query_tokens: list[str], project: str, as_of
 
                 extracted_candidates.sort(
                     key=lambda x: (
-                        _effective_timestamp(x[1]),
+                        x[2] > 0,
                         x[2],
+                        _effective_timestamp(x[1]),
                         -x[3],
                     ),
                     reverse=True,
                 )
 
                 for p, p_date, _, _ in extracted_candidates:
-                    items.append(_make_item("decisions", f"{project}.decision.{rank}", p,
+                    items.append(_make_item("decisions", f"{project}.activeContext.md.decision.{rank}", p,
                                             "source_document", str(fp), rank,
                                             component_score=0.9,
                                             scope={"project": project},
@@ -834,6 +843,11 @@ def _run_lane_decisions(root: Path, query_tokens: list[str], project: str, as_of
                     continue
                 k = r["memory_key"]
                 val = r["value"]
+                if project:
+                    k_tokens = set(_tokenize(k))
+                    p_tokens = set(_tokenize(project))
+                    if not (k_tokens & set(query_tokens) or k_tokens & p_tokens or "policy" in k):
+                        continue
                 items.append(_make_item("decisions", k, val, "user_instruction" if "preference" in k else "source_document",
                                         f"claim:{r['claim_id']}", rank, component_score=0.85,
                                         scope={"project": project} if project else {},
@@ -867,8 +881,26 @@ def _run_lane_procedures(root: Path, query_tokens: list[str], project: str, as_o
                             ctx = json.loads(r["context"])
                         except Exception:
                             ctx = {}
-                    scope = ctx.get("scope") or {}
+                    scope = ctx.get("scope") if isinstance(ctx, dict) else {}
+                    if not isinstance(scope, dict):
+                        scope = {}
+
+                    # Project isolation check
+                    scope_proj = scope.get("project")
+                    if project:
+                        if scope_proj and scope_proj != project:
+                            continue
+                        if "." in r["name"]:
+                            p_prefix = r["name"].split(".", 1)[0]
+                            if p_prefix != project and (p_prefix in ("alphaos", "global-memory") or (root / "projects" / p_prefix).exists()):
+                                continue
+
+                    # Query token matching if query tokens are present
                     statement = f"Procedure {r['name']}: trigger={r['trigger']} action={r['action']}"
+                    check_text = f"{r['name']} {r['trigger']} {r['action']}".lower()
+                    if query_tokens and not any(t in check_text for t in query_tokens):
+                        continue
+
                     items.append(_make_item(
                         "procedures",
                         f"procedure.{r['name']}",
@@ -1035,15 +1067,16 @@ def _run_lane_conflicts(root: Path, query_tokens: list[str], project: str, as_of
     except Exception:
         pass
 
-    # 2. Superseded claims
+    # 2. Superseded / archived_opaque / quarantined / contested claims
     db = root / "gms_trust.sqlite"
     if db.exists() and rank <= candidate_limit:
         try:
             conn = sqlite3.connect(db)
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT claim_id, memory_key, value, created_at FROM gms_claims WHERE status='superseded' ORDER BY claim_id DESC LIMIT ?",
-                (max(1, candidate_limit - rank + 1),)
+                "SELECT claim_id, memory_key, value, status, created_at FROM gms_claims "
+                "WHERE status IN ('superseded', 'archived_opaque', 'archived', 'quarantined', 'contested') "
+                "ORDER BY claim_id DESC LIMIT 50"
             ).fetchall()
             for r in rows:
                 k_tokens = set(_tokenize(r["memory_key"]))
@@ -1052,12 +1085,19 @@ def _run_lane_conflicts(root: Path, query_tokens: list[str], project: str, as_of
                     continue
                 overlap = len(k_tokens & set(query_tokens)) if query_tokens else 0
                 if not query_tokens or (overlap >= 2 or (overlap == 1 and len(query_tokens) <= 2)):
-                    items.append(_make_item("conflicts", r["memory_key"], r["value"], "imported_legacy",
-                                            f"claim:{r['claim_id']}", rank,
-                                            component_score=0.35, contradiction_flag=False,
-                                            warning="superseded record",
-                                            effective_at=r["created_at"],
-                                            inclusion_reason="Superseded claim in conflict chain"))
+                    is_opaque = "opaque" in str(r["status"])
+                    is_superseded = r["status"] == "superseded"
+                    warning_lbl = "opaque status record" if is_opaque else ("superseded record" if is_superseded else f"{r['status']} record")
+                    items.append(_make_item(
+                        "conflicts", r["memory_key"], r["value"], "imported_legacy",
+                        f"claim:{r['claim_id']}", rank,
+                        component_score=0.45 if is_opaque else 0.35,
+                        contradiction_flag=r["status"] in ("quarantined", "contested"),
+                        warning=warning_lbl,
+                        lifecycle_status=r["status"],
+                        effective_at=r["created_at"],
+                        inclusion_reason=f"{warning_lbl.capitalize()} in conflict/stale records"
+                    ))
                     rank += 1
                     if rank > candidate_limit:
                         break
@@ -1309,7 +1349,7 @@ def _run_lane_graph(
             norm_comp_score = round(min(1.0, max(0.5, score)), 3)
             items.append(_make_item(
                 "graph", f"graph:{r['source_id']}_{r['target_id']}", stmt,
-                "verified_system_output", "sqlite:gms_relationships", rank,
+                "verified_system_output", f"sqlite:gms_relationships#{r.get('relationship_id') or r['source_id']}", rank,
                 component_score=norm_comp_score,
                 graph_path=path,
                 effective_at=r["valid_from"],
@@ -1341,7 +1381,7 @@ def _run_lane_graph(
                     stmt2 = f"2-hop: {t_node} —[{path2[1]}]→ {succ}: {e_data.get('summary', '')}"
                     items.append(_make_item(
                         "graph", f"graph_2hop:{t_node}_{succ}", stmt2,
-                        "verified_system_output", "sqlite:gms_relationships", rank2,
+                        "verified_system_output", f"sqlite:gms_relationships#{t_node}_{succ}", rank2,
                         component_score=0.85,
                         graph_path=path2,
                         effective_at=e_data.get("valid_from"),
@@ -1514,14 +1554,6 @@ def retrieve(
             boost *= 1.12
         elif it.get("record_shape") == "legacy_flat":
             boost *= 0.88
-
-        # Effective-time-aware recency boost for non-historical context / resume queries
-        if is_current_context_query and it.get("effective_at"):
-            eff_ts = _effective_timestamp(it.get("effective_at"))
-            if eff_ts > 0.0:
-                days_diff = max(0.0, (ref_ts - eff_ts) / 86400.0)
-                recency_boost = max(0.85, min(1.20, 1.15 * math.exp(-0.008 * days_diff)))
-                boost *= recency_boost
 
         lane_w = float(cfg.lane_weights.get(it["lane"], 1.0))
         rrf_contrib = (1.0 / (float(cfg.rrf_k) + c_rank)) * boost * lane_w
@@ -1739,12 +1771,10 @@ def retrieve(
             })
         ranked_keys = [canonicalize(item["key"]) for item in fused]
 
-    selected: list[dict[str, Any]] = []
+    # STAGE 1: Authority, scope, and lifecycle filtering
+    stage1_candidates: list[str] = []
     lifecycle_evidence: list[dict[str, Any]] = []
     omitted: list[dict[str, Any]] = []
-    spent = 0
-    source_counts: dict[str, int] = {}
-    used_lanes = set()
 
     for k in ranked_keys:
         item = grouped_items[k]
@@ -1774,7 +1804,7 @@ def retrieve(
             omitted.append({"key": item["key"], "reason": "Invalid or missing source evidence"})
             continue
 
-        if item.get("lifecycle_status") in {"archived", "superseded", "discarded", "expired"}:
+        if item.get("lifecycle_status") in {"archived", "superseded", "discarded", "expired", "archived_opaque"}:
             lifecycle_evidence.append(item)
             omitted.append({
                 "key": item["key"],
@@ -1783,6 +1813,67 @@ def retrieve(
                 "source": item.get("source"),
             })
             continue
+
+        stage1_candidates.append(k)
+
+    # STAGE 2: Bounded effective-time boost (after Stage 1 filtering, before diversification)
+    is_boost_intent = (
+        not as_of
+        and (
+            plan.get("intent") in {"resume", "current", "status", "next_action", "handoff"}
+            or any(w in query.lower() for w in ("resume", "current", "status", "next action", "handoff", "active context", "latest"))
+        )
+    )
+
+    recency_boosted_items: list[str] = []
+    for k in stage1_candidates:
+        item = grouped_items[k]
+        eff_boost = 1.0
+
+        if is_boost_intent and item.get("effective_at"):
+            # Never boost superseded, archived, expired, stale, or unresolved-conflict records
+            is_stale_or_conflict = bool(
+                item.get("contradiction_flag")
+                or item.get("warning")
+                or item.get("lifecycle_status") in {"stale", "quarantined", "contested", "archived", "superseded", "archived_opaque"}
+            )
+            # Never boost lower-authority inference over user instruction or verified output
+            is_low_authority = item.get("authority") in {"llm_inference", "imported_legacy"}
+
+            if not is_stale_or_conflict and not is_low_authority:
+                eff_ts = _effective_timestamp(item.get("effective_at"))
+                if eff_ts > 0.0:
+                    days_diff = max(0.0, (ref_ts - eff_ts) / 86400.0)
+                    eff_boost = round(min(1.25, max(1.0, 1.0 + 0.25 * math.exp(-0.01 * days_diff))), 4)
+                    if eff_boost > 1.0:
+                        recency_boosted_items.append(k)
+                        orig_reason = item.get("inclusion_reason", "")
+                        item["inclusion_reason"] = f"{orig_reason}; recency boost x{eff_boost:.2f}"
+
+        item["effective_recency_boost"] = eff_boost
+        item["boosted_score"] = round(item.get("rrf_score", 0.0) * eff_boost, 6)
+
+    # Deterministic tie-breaking re-sort
+    stage2_keys = sorted(
+        stage1_candidates,
+        key=lambda k: (
+            -grouped_items[k].get("boosted_score", grouped_items[k].get("rrf_score", 0.0)),
+            -len(item_lanes.get(k, set())),
+            -_item_query_overlap(k),
+            -_effective_timestamp(grouped_items[k].get("effective_at")),
+            -grouped_items[k].get("component_score", 0.0),
+            canonicalize(grouped_items[k]["key"]),
+        ),
+    )
+
+    # STAGE 3: Final diversification (per-source cap & token budget)
+    selected: list[dict[str, Any]] = []
+    spent = 0
+    source_counts: dict[str, int] = {}
+    used_lanes = set()
+
+    for k in stage2_keys:
+        item = grouped_items[k]
 
         # Per-source diversity cap (max 3 items per exact source file)
         src = item["source"]
@@ -1805,6 +1896,11 @@ def retrieve(
     # Only report lanes that returned at least 1 candidate in lane_candidates
     real_lanes_used = sorted([lane for lane, count in lane_candidates.items() if count > 0])
 
+    has_active_task = any(
+        item.get("lane") == "tasks" or "task" in item.get("key", "").lower()
+        for item in selected
+    )
+
     manifest = {
         "item_count": len(selected),
         "token_estimate": spent,
@@ -1820,9 +1916,16 @@ def retrieve(
         ),
         "requested_lanes": sorted(enabled_lanes),
         "disabled_lanes": sorted(set(LANES) - enabled_lanes),
+        "recency_boost_applied": bool(is_boost_intent),
+        "recency_boosted_items": recency_boosted_items,
+        "active_task_continuity": has_active_task,
         "config": cfg.to_dict(),
         "profile": cfg.profile,
     }
+
+    if not has_active_task:
+        manifest["task_continuity_status"] = "missing_active_task"
+        manifest["next_action_fallback"] = "No active task, checkpoint, or handoff exists to resume."
 
     evidence_status, evidence_reasons = _classify_evidence(
         selected + lifecycle_evidence,
@@ -1830,6 +1933,8 @@ def retrieve(
         intent=plan["intent"],
         project=project,
     )
+    if not has_active_task and plan.get("intent") in {"resume", "next_action", "handoff"}:
+        evidence_reasons.append("Project has no active task, checkpoint, or handoff.")
 
     # Calibrated Abstention & Retrieval Confidence Calculation
     if not selected:
@@ -1897,21 +2002,36 @@ def _classify_evidence(
     if not items:
         return "insufficient", ["No source-valid evidence survived retrieval and budget filters."]
 
-    meta_terms = {
+    strict_meta_terms = {
         "using", "only", "recorded", "evidence", "check", "guess", "within",
+        "without", "what", "was", "were", "the",
+    }
+    contextual_framing_terms = {
         "current", "memory", "state", "stale", "records", "record",
+        "limiting", "retrieval", "historical", "snapshot", "retrieve", "point", "time",
+        "post", "dated", "leakage",
     }
     non_substantive = {"mihir", "user", "agent", "system"}
-    q_terms = {
-        t for t in (set(query_tokens) - meta_terms - set(_tokenize(project)))
+    base_terms = {
+        t for t in (set(query_tokens) - strict_meta_terms - set(_tokenize(project)))
         if not (t.isdigit() or t in non_substantive)
     }
+    stripped_terms = base_terms - contextual_framing_terms
+    q_terms = stripped_terms if stripped_terms else base_terms
+    dates_in_query = set(re.findall(r"\b\d{4}-\d{2}-\d{2}\b", " ".join(query_tokens)))
     scored: list[tuple[int, dict[str, Any]]] = []
     for item in items:
-        item_terms = set(_tokenize(f"{item.get('key', '')} {item.get('statement', '')}"))
-        scored.append((len(q_terms & item_terms), item))
+        raw_text = f"{item.get('key', '')} {item.get('statement', '')}"
+        split_text = re.sub(r"([a-z])([A-Z])", r"\1 \2", raw_text)
+        item_terms = set(_tokenize(split_text))
+        score = len(q_terms & item_terms)
+        if dates_in_query and any(d in str(item.get("effective_at") or item.get("date") or item.get("key") or item.get("source_refs")) for d in dates_in_query):
+            score += 1
+        scored.append((score, item))
     max_overlap = max((score for score, _ in scored), default=0)
     minimum_overlap = min(2, max(1, len(q_terms)))
+    if not q_terms and not dates_in_query:
+        return "insufficient", ["Query contains no substantive content terms to match against records."]
     if q_terms and max_overlap < minimum_overlap:
         return "insufficient", ["Retrieved records do not sufficiently overlap the material query terms."]
 

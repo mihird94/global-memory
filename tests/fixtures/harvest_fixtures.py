@@ -312,3 +312,80 @@ HARVEST_EVAL_CORPUS: Dict[str, Dict[str, Any]] = {
         }
     }
 }
+
+GOLD_HARVEST_CORPUS = [
+    {
+        "id": "gold_1_architecture_decision",
+        "description": "Architectural decision extraction with rationale, constraints, and negative noise control",
+        "excerpt": (
+            "2026-09-08 [10:00] - Mihir: We must retire global agent trust in Mbrain. "
+            "A single score collapses task domain, evidence quality, and failure severity into false certainty. "
+            "Instead, show separate provenance, recency, disputes, and task-scoped outcomes. "
+            "SQLite connection must use WAL mode and busy_timeout=5000 to prevent database lockouts. "
+            "Note: API key sk-live-99238481923849182391283912839128 was refreshed. "
+            "Personal: Had tea and walked the dog around the park."
+        ),
+        "expected_candidates": [
+            {
+                "key_pattern": r"(agent_trust|trust_architecture|retire_global_trust)",
+                "expected_type": "decision",
+                "required_keywords": ["retire", "trust"],
+                "rationale_keywords": ["collapses", "certainty"],
+            },
+            {
+                "key_pattern": r"(sqlite|wal_mode|busy_timeout)",
+                "expected_type": "procedure",
+                "required_keywords": ["wal", "busy_timeout"],
+            }
+        ],
+        "prohibited_extracts": ["sk-live-99238481923849182391283912839128", "walked the dog", "tea"],
+        "expected_triples": [
+            ("agent trust", "retired_in", "mbrain"),
+            ("sqlite", "uses", "wal mode"),
+        ]
+    },
+    {
+        "id": "gold_2_operational_procedure",
+        "description": "Operational CLI workflow and environment precondition extraction",
+        "excerpt": (
+            "2026-10-12: Resolved AlphaOS workspace path migration. "
+            "When developing AlphaOS swing components on macOS arm64, always point the active workspace to "
+            "~/projects/alphaos-swing/ rather than legacy home scratch. "
+            "Precondition: ensure Robinhood credentials are loaded via environment variables before running scan. "
+            "Conversation: Discussed dinner options with family."
+        ),
+        "expected_candidates": [
+            {
+                "key_pattern": r"(alphaos_workspace|workspace_path|alphaos_mac)",
+                "expected_type": "procedure",
+                "required_keywords": ["alphaos", "workspace"],
+            }
+        ],
+        "prohibited_extracts": ["dinner options", "family"],
+        "expected_triples": [
+            ("alphaos workspace", "located_at", "~/projects/alphaos-swing/"),
+        ]
+    },
+    {
+        "id": "gold_3_quantitative_policy",
+        "description": "Quantitative risk policy with downstream trade enforcement",
+        "excerpt": (
+            "2026-10-13 [14:00]: Enforced AlphaOS protective stop invariant. "
+            "Never emit order quantities or size additions without fresh broker positions and protective trailing stops. "
+            "Rationale: Unchecked discretionary sizing causes unmanaged portfolio heat and drawdown risk. "
+            "Downstream rule: Trading controller must reject order tickets that lack registered stop orders."
+        ),
+        "expected_candidates": [
+            {
+                "key_pattern": r"(alphaos_stop|protective_stop|sizing_policy|order_sizing)",
+                "expected_type": "policy",
+                "required_keywords": ["stop", "size", "order"],
+                "rationale_keywords": ["heat", "drawdown", "risk"],
+            }
+        ],
+        "prohibited_extracts": [],
+        "expected_triples": [
+            ("alphaos order sizing", "requires", "protective stops"),
+        ]
+    }
+]

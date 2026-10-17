@@ -38,7 +38,7 @@ if str(REPO_ROOT / "tools") not in sys.path:
 import schemas
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
-DEFAULT_MODEL = os.environ.get("DREAM_LLM_MODEL", "qwen3:8b")
+DEFAULT_MODEL = os.environ.get("DREAM_LLM_MODEL", "qwen2.5-coder:7b")
 
 DEFAULT_PREFLIGHT_PROMPT = """\
 You are a rationale-first context harvesting engine for GMS.
@@ -287,7 +287,7 @@ def run_ollama_preflight(
         "format": "json",
         "stream": False,
         "keep_alive": 0,
-        "options": {"temperature": 0.1, "num_predict": 1200},
+        "options": {"temperature": 0.1, "num_predict": 2048},
     }
 
     resp_data: Optional[Dict[str, Any]] = None
