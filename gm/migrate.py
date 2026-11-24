@@ -35,10 +35,6 @@ V2_ARCHIVE_ITEMS = (
 
 def _domain_for_key(key: str) -> str:
     k = key.lower()
-    if k.startswith("birthday_"):
-        return "birthdays"
-    if k.startswith("alphaos"):
-        return "alphaos"
     if k.startswith("agent_memory") or k.startswith("gms"):
         return "agent-memory"
     if "." in k:
@@ -128,9 +124,9 @@ def migrate_v2(root: Path, dry_run: bool = False) -> dict[str, Any]:
             summary["lessons"] = len(bullets)
             if not dry_run:
                 fm = render_frontmatter(
-                    {"title": "Global Engineering & Trading Lessons", "kind": "lesson", "tags": ["migrated"], "updated_at": ts}
+                    {"title": "Global Lessons", "kind": "lesson", "tags": ["migrated"], "updated_at": ts}
                 )
-                body = "# Global Engineering & Trading Lessons\n\n" + "\n".join(f"- {b}" for b in bullets) + "\n"
+                body = "# Global Lessons\n\n" + "\n".join(f"- {b}" for b in bullets) + "\n"
                 atomic_write_text(root / "notes" / "lessons" / "global-lessons.md", fm + body)
 
     # 4. semantic/operational/procedural facts.json -> grouped notes/facts/<domain>.md
@@ -145,7 +141,7 @@ def migrate_v2(root: Path, dry_run: bool = False) -> dict[str, Any]:
     # Merge tiny 1-item groups into general
     merged: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for dom, items in grouped.items():
-        if len(items) == 1 and dom not in ("alphaos", "agent-memory", "birthdays"):
+        if len(items) == 1 and dom != "agent-memory":
             merged["general"].extend(items)
         else:
             merged[dom].extend(items)
@@ -153,7 +149,7 @@ def migrate_v2(root: Path, dry_run: bool = False) -> dict[str, Any]:
     for dom, items in sorted(merged.items()):
         summary["fact_groups"].append(f"{dom} ({len(items)})")
         if not dry_run:
-            project = dom if dom in ("alphaos",) else ""
+            project = ""
             fm = render_frontmatter(
                 {
                     "title": f"Facts: {dom}",
