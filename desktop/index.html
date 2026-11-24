@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>Brain</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="node_modules/markdown-it/dist/browser/markdown-it.umd.min.js" defer></script>
+  <script src="renderer.js" defer></script>
+  <script src="board.js" defer></script>
+</head>
+<body>
+  <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-library" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 9h8M8 13h5"/></symbol>
+    <symbol id="i-fact" viewBox="0 0 24 24"><path d="m12 3 8 9-8 9-8-9 8-9Z"/><path d="M9.5 12h5"/></symbol>
+    <symbol id="i-journal" viewBox="0 0 24 24"><rect x="4.5" y="4.5" width="15" height="15" rx="2.5"/><path d="M4.5 9h15M9 3v4m6-4v4m-6 6h6m-6 3h4"/></symbol>
+    <symbol id="i-project" viewBox="0 0 24 24"><path d="M3.5 8a2 2 0 0 1 2-2h5l2 2h6a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></symbol>
+    <symbol id="i-profile" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3"/><path d="M5 19v-1a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v1"/></symbol>
+    <symbol id="i-decision" viewBox="0 0 24 24"><path d="M5 19h3a4 4 0 0 0 4-4V5m0 8a4 4 0 0 1 4-4h3M9 8l3-3 3 3m1-2 3 3-3 3"/></symbol>
+    <symbol id="i-lesson" viewBox="0 0 24 24"><path d="M12 4.5v15m0-12a5 5 0 0 0-4-2H4v12h4a5 5 0 0 1 4 2 5 5 0 0 1 4-2h4v-12h-4a5 5 0 0 0-4 2Z"/></symbol>
+    <symbol id="i-index" viewBox="0 0 24 24"><path d="M5 20v-5m7 5V4m7 16V9"/></symbol>
+    <symbol id="i-context" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="m8 10 2 2-2 2m5 0h3"/></symbol>
+    <symbol id="i-board" viewBox="0 0 24 24"><path d="M4 6h13a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H9l-5 4V8a2 2 0 0 1 2-2m2 4h7m-7 3h5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4 4"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19 11a7 7 0 0 0-12-5L4 9m0-5v5h5m-4 4a7 7 0 0 0 12 5l3-3m0 5v-5h-5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h15m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M20 12H5m6-6-6 6 6 6"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M15.5 5H7a2 2 0 0 0-2 2v8.5"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="m14 6 4 4M5 19l4-.8L19 8a2.8 2.8 0 0 0-4-4L5.8 15Z"/></symbol>
+    <symbol id="i-archive" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="4" rx="1"/><path d="M5 9v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9m-9 4h4"/></symbol>
+  </svg>
+
+  <aside class="sidebar" aria-label="Workspace navigation">
+    <div class="window-space"></div>
+    <div class="wordmark"><span class="brain-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>Brain</span></div>
+    <nav class="library-nav" aria-label="Memory library">
+      <h2>Library</h2>
+      <button class="nav-item active" data-scope="all" aria-current="page"><svg><use href="#i-library"/></svg><span>All memories</span><span class="nav-count" id="count-all"></span></button>
+      <button class="nav-item" data-scope="fact"><svg><use href="#i-fact"/></svg><span>Facts</span><span class="nav-count" id="count-fact"></span></button>
+      <button class="nav-item" data-scope="episode"><svg><use href="#i-journal"/></svg><span>Episodes</span><span class="nav-count" id="count-episode"></span></button>
+      <button class="nav-item" id="board-nav"><svg><use href="#i-board"/></svg><span>Agent board</span></button>
+    </nav>
+    <nav class="project-nav" aria-label="Projects">
+      <div class="nav-section"><h2>Projects</h2><button class="icon-button sidebar-button" id="new-project" aria-label="New project" title="New project"><svg><use href="#i-plus"/></svg></button></div>
+      <div id="projects"></div>
+    </nav>
+    <div class="sidebar-bottom">
+      <button class="nav-item" id="context"><svg><use href="#i-context"/></svg><span>Session context</span></button>
+      <button class="nav-item" id="status"><svg><use href="#i-index"/></svg><span>Index &amp; usage</span></button>
+      <div class="local-label" title="Brain checks for new memories while this window is open"><span class="local-dot"></span><span>Live updates</span></div>
+    </div>
+  </aside>
+
+  <main class="workspace">
+    <header class="toolbar">
+      <form id="search-form" class="search-form" role="search">
+        <button type="submit" class="icon-button search-submit" aria-label="Search memories" title="Search memories"><svg><use href="#i-search"/></svg></button>
+        <input id="query" aria-label="Search memories" placeholder="Search memories…" maxlength="1000" autocomplete="off" spellcheck="false">
+        <button type="button" id="clear-search" class="icon-button" aria-label="Clear search" title="Clear search" hidden><svg><use href="#i-close"/></svg></button>
+        <kbd id="search-shortcut">⌘ K</kbd>
+      </form>
+      <label id="board-filter" class="search-form board-filter" hidden>
+        <svg aria-hidden="true"><use href="#i-search"/></svg><span class="sr-only">Filter by harness or session</span>
+        <input id="board-actor-filter" placeholder="Filter by harness or session…" maxlength="500" autocomplete="off" spellcheck="false">
+      </label>
+      <div class="toolbar-actions">
+        <button class="icon-button refresh-button" id="refresh" aria-label="Refresh library" title="Refresh library now"><svg><use href="#i-refresh"/></svg></button>
+        <button class="button primary" id="new-memory"><svg><use href="#i-plus"/></svg><span>New memory</span></button>
+        <button class="button primary" id="new-assignment" hidden><svg><use href="#i-plus"/></svg><span>New assignment</span></button>
+      </div>
+    </header>
+
+    <div class="workspace-panes" id="panes">
+      <section class="library-pane" aria-labelledby="library-title">
+        <div class="library-header">
+          <h1 id="library-title">All memories</h1>
+          <div class="library-subtitle" id="library-subtitle" aria-live="polite">Opening library…</div>
+          <div class="filter-bar">
+            <label class="select-field">
+              <span class="sr-only">Memory type</span>
+              <select id="kind" aria-label="Memory type"><option value="">All types</option><option value="fact">Fact</option><option value="decision">Decision</option><option value="lesson">Lesson</option><option value="project">Project</option><option value="journal">Journal</option><option value="profile">Profile</option></select>
+              <svg><use href="#i-chevron"/></svg>
+            </label>
+            <button id="dates-button" class="button filter-button" aria-expanded="false" aria-controls="date-filters"><svg><use href="#i-journal"/></svg><span>Dates</span></button>
+            <button id="clear-filters" class="text-button" hidden>Clear filters</button>
+          </div>
+          <div class="date-filters" id="date-filters" hidden>
+            <label>Updated since<input id="since" type="date"></label>
+            <label>Updated until<input id="until" type="date"></label>
+          </div>
+          <p class="search-warning" id="search-warning" hidden>Low search confidence. Check the source before relying on these matches.</p>
+        </div>
+        <div class="list-scroll" id="list-scroll">
+          <div id="results" role="list" aria-label="Memories" aria-busy="true"></div>
+          <div class="pagination" id="pagination" hidden>
+            <button class="button secondary" id="load-more">Load more</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="reader-pane" id="reader" aria-label="Memory reader">
+        <div id="reader-empty" class="reader-empty">
+          <div class="empty-icon"><svg><use href="#i-library"/></svg></div>
+          <h2 id="reader-empty-title">Open a memory</h2>
+          <p id="reader-empty-copy">Choose a memory to read its source.</p>
+        </div>
+        <div id="reader-content" class="reader-content" hidden>
+          <div class="reader-toolbar">
+            <button class="icon-button back-button" id="back" aria-label="Back to results" title="Back to results"><svg><use href="#i-back"/></svg></button>
+            <button class="source-path" id="copy-id" title="Copy memory ID"><svg><use href="#i-library"/></svg><span id="source-path"></span><svg class="source-copy"><use href="#i-copy"/></svg></button>
+            <div class="reader-actions">
+              <button class="button secondary" id="edit"><svg><use href="#i-edit"/></svg><span>Edit</span></button>
+              <button class="icon-button archive-button" id="archive" aria-label="Archive memory" title="Archive memory"><svg><use href="#i-archive"/></svg></button>
+            </div>
+          </div>
+          <div class="reader-scroll" id="reader-scroll">
+            <div class="reader-paper">
+              <div class="memory-details" id="memory-details"></div>
+              <h2 class="memory-title" id="memory-title"></h2>
+              <p class="memory-headline" id="memory-headline" hidden></p>
+              <div class="tag-list" id="tags" hidden></div>
+              <div class="read-view">
+                <div class="view-options" aria-label="Source view">
+                  <button class="active" id="read-view" aria-pressed="true">Read</button>
+                  <button id="markdown-view" aria-pressed="false">Markdown</button>
+                </div>
+                <button class="icon-button" id="copy-markdown" aria-label="Copy Markdown" title="Copy Markdown"><svg><use href="#i-copy"/></svg></button>
+              </div>
+              <div id="matched-section" class="match-box" hidden></div>
+              <article class="markdown" id="markdown"></article>
+              <pre id="source" class="raw-markdown" hidden></pre>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+    <div class="workspace-panes board-view" id="board-view" hidden>
+      <section class="library-pane" aria-labelledby="board-title">
+        <div class="library-header">
+          <h1 id="board-title">Agent board</h1>
+          <div class="library-subtitle" id="board-subtitle" aria-live="polite">Loading assignments…</div>
+          <label class="select-field">
+            <select id="board-status-filter" aria-label="Assignment status"><option value="">All states</option><option value="assigned">Assigned</option><option value="in_progress">In progress</option><option value="blocked">Blocked</option><option value="in_review">In review</option><option value="done">Done</option></select>
+            <svg aria-hidden="true"><use href="#i-chevron"/></svg>
+          </label>
+        </div>
+        <div class="list-scroll" id="board-list-scroll">
+          <div id="board-list" role="list" aria-label="Assignments"></div>
+        </div>
+      </section>
+      <section class="reader-pane" aria-label="Assignment thread">
+        <div id="thread-empty" class="reader-empty"><div class="empty-icon"><svg><use href="#i-board"/></svg></div><h2>Open an assignment</h2><p>Choose a thread to see its brief and updates.</p></div>
+        <div class="reader-content" id="thread-content" hidden>
+          <div class="reader-toolbar">
+            <button class="icon-button back-button" id="board-back" aria-label="Back to assignments"><svg><use href="#i-back"/></svg></button>
+            <span class="source-path" id="thread-id"></span>
+            <span id="thread-state"></span>
+          </div>
+          <div class="reader-scroll" id="thread-scroll">
+            <div class="reader-paper">
+              <h2 class="memory-title" id="thread-title"></h2>
+              <dl class="thread-roles" id="thread-roles"></dl>
+              <div id="thread-posts" class="thread-posts"></div>
+            </div>
+          </div>
+          <form id="board-reply-form" class="board-reply">
+            <div class="board-reply-options">
+              <label>Posting as<input name="author" list="board-identities" required maxlength="500" placeholder="Harness or session"><datalist id="board-identities"></datalist></label>
+              <label>Action<select name="status"><option value="">Reply</option></select></label>
+            </div>
+            <label class="sr-only" for="board-message">Update message</label>
+            <textarea name="message" id="board-message" rows="2" maxlength="250000" placeholder="Post progress, evidence, or a question…"></textarea>
+            <div class="board-reply-footer"><p class="form-error" id="board-reply-error" role="alert" hidden></p><button type="submit" class="button primary" id="board-post">Post update</button></div>
+          </form>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <dialog id="assignment-dialog" aria-labelledby="assignment-title">
+    <form id="assignment-form">
+      <div class="dialog-heading"><h2 id="assignment-title">New assignment</h2><button class="icon-button close-dialog" type="button" aria-label="Close"><svg><use href="#i-close"/></svg></button></div>
+      <div class="dialog-fields">
+        <label>Title<input name="title" maxlength="500" required placeholder="What work should be done?"></label>
+        <div class="fields-pair">
+          <label>Supervisor<input name="supervisor" maxlength="500" required placeholder="e.g. codex/review"></label>
+          <label>Assignee<input name="assignee" maxlength="500" required placeholder="e.g. antigravity/build"></label>
+        </div>
+        <label>Project<input name="project" maxlength="500" list="project-options" placeholder="Optional"></label>
+        <label>Brief<textarea name="brief" maxlength="250000" required placeholder="Describe the outcome, constraints, and how to verify it."></textarea></label>
+      </div>
+      <p class="form-error" id="assignment-error" role="alert" hidden></p>
+      <div class="dialog-footer"><button class="button secondary close-dialog" type="button">Cancel</button><button class="button primary" id="submit-assignment" type="submit">Assign work</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="compose-dialog" aria-labelledby="compose-title">
+    <form id="compose-form">
+      <div class="dialog-heading"><h2 id="compose-title">New memory</h2><button type="button" class="icon-button close-dialog" aria-label="Close"><svg><use href="#i-close"/></svg></button></div>
+      <div class="dialog-fields">
+        <label id="capture-kind"><span id="note-kind-label">Type</span><select id="note-kind" name="kind" aria-labelledby="note-kind-label"><option value="fact">Fact</option><option value="decision">Decision</option><option value="lesson">Lesson</option><option value="journal">Journal entry</option><option value="project">Project note</option><option value="atomic">Mutable fact</option></select></label>
+        <label id="capture-title"><span id="title-label">Title</span><input name="title" maxlength="500" placeholder="Give this memory a title"></label>
+        <label id="capture-headline"><span id="headline-label">Headline</span><input name="headline" maxlength="500" aria-labelledby="headline-label" aria-describedby="headline-hint" placeholder="Summarize the verified fact in one line"><span class="field-hint" id="headline-hint"></span></label>
+        <div class="fields-pair" id="capture-atomic" hidden>
+          <label>Subject<input name="subject" maxlength="500" placeholder="e.g. build-server"></label>
+          <label>Predicate<input name="predicate" maxlength="500" placeholder="e.g. runtime_version"></label>
+        </div>
+        <div class="fields-pair" id="capture-meta">
+          <label>Project<input name="project" maxlength="500" list="project-options" placeholder="Optional"><datalist id="project-options"></datalist></label>
+          <label>Tags<input name="tags" maxlength="3000" placeholder="Separate with commas"></label>
+        </div>
+        <p id="compose-hint" class="field-hint" hidden></p>
+        <label class="content-field"><span id="content-label">Markdown</span><textarea name="content" required maxlength="250000" placeholder="What should Brain remember?"></textarea></label>
+      </div>
+      <p class="form-error" id="compose-error" role="alert" hidden></p>
+      <div class="dialog-footer"><button type="button" class="button secondary close-dialog">Cancel</button><button type="submit" class="button primary" id="save-memory">Save memory</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="archive-dialog" aria-labelledby="archive-title">
+    <form id="archive-form">
+      <div class="dialog-heading"><h2 id="archive-title">Archive memory?</h2><button type="button" class="icon-button close-dialog" aria-label="Close"><svg><use href="#i-close"/></svg></button></div>
+      <div class="dialog-body"><p id="archive-copy"></p><p class="field-hint">The Markdown file moves to <code>_archive_v3</code> in your memory folder.</p></div>
+      <p class="form-error" id="archive-error" role="alert" hidden></p>
+      <div class="dialog-footer"><button class="button secondary close-dialog" type="button" autofocus>Cancel</button><button class="button danger" id="confirm-archive" type="submit">Archive memory</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="info-dialog" aria-labelledby="info-title">
+    <div class="dialog-heading"><h2 id="info-title"></h2><button type="button" class="icon-button close-dialog" aria-label="Close"><svg><use href="#i-close"/></svg></button></div>
+    <div class="dialog-body" id="info-body" aria-live="polite"></div>
+    <div class="dialog-footer"><button class="button secondary" id="copy-context" hidden><svg><use href="#i-copy"/></svg>Copy context</button><button class="button secondary close-dialog">Done</button></div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>

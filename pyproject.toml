@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gm"
+version = "3.2.0"
+description = "Minimal, Markdown-first, SQLite (FTS5 + Ollama embeddings + ONNX cross-encoder) multi-harness local memory."
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.2.0",
+    "numpy>=1.26.0",
+    "fastembed>=0.4.0",
+    "pydantic>=2,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+brain = "gm.cli:main"
+brain-mcp = "gm.mcp_server:main"
+gm = "gm.cli:main"
+gm-mcp = "gm.mcp_server:main"
+memoryctl = "gm.cli:compat_main"
+
+[tool.setuptools.packages.find]
+include = ["gm*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

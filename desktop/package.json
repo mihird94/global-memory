@@ -1,0 +1,17 @@
+{
+  "name": "brain-desktop",
+  "version": "3.2.0",
+  "private": true,
+  "productName": "Brain",
+  "description": "Desktop workspace for Brain's local Markdown memory store",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "markdown-it": "15.0.3"
+  },
+  "devDependencies": {
+    "electron": "45.4.1"
+  }
+}
