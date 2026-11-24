@@ -96,3 +96,10 @@ Add an external Markdown folder such as your Obsidian wiki to `~/memories/.gm/co
 ```
 
 Refresh the desktop library or run `brain search` to pick up the new source. `brain reindex` is available when the disposable index needs a full rebuild.
+
+## Verify
+
+```bash
+pip install -e ".[dev]"
+GM_NO_EMBED=1 pytest -q
+```
