@@ -329,6 +329,19 @@ def _invalidate_sync_cache(root: Path) -> None:
         pass
 
 
+def note_target(root: Path, draft: MemoryDraft) -> tuple[Path, str]:
+    """Resolve the path and title of a fact, decision or lesson draft."""
+    if draft.subject:
+        title = draft.title or f"{draft.subject} | {draft.predicate}"
+        slug = f"{slugify(draft.subject, 32)}--{slugify(draft.predicate, 32)}"
+    else:
+        title = draft.title or draft.content.splitlines()[0][:72].lstrip("#-* ").strip()
+        slug = slugify(title)
+        if draft.project:
+            slug = f"{slugify(draft.project, 24)}-{slug}"[:72].strip("-")
+    return root / "notes" / f"{draft.kind}s" / f"{slug}.md", title
+
+
 def save_memory(
     root: Path,
     content: str,
@@ -345,11 +358,18 @@ def save_memory(
     author: str = "",
     replace: bool = True,
     expected_revision: str | None = None,
+    checkpoint_operation: str = "",
+    checkpoint_journal_day: str = "",
 ) -> MemoryItem:
     draft = MemoryDraft(content=content, kind=kind, title=title, project=project, headline=headline,
                         subject=subject, predicate=predicate, source=source, epistemic=epistemic, author=author)
     content, title, project = draft.content, draft.title, draft.project
     kind = "journal" if draft.kind == "episode" else draft.kind
+    if checkpoint_operation and not re.fullmatch(r"[0-9a-f]{32}", checkpoint_operation):
+        raise ValueError("Invalid checkpoint operation or unsupported memory kind")
+    if checkpoint_journal_day and (kind != "journal" or not checkpoint_operation
+                                   or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", checkpoint_journal_day)):
+        raise ValueError("Invalid checkpoint journal date")
     headline = draft.headline
     source, author = draft.source, draft.author
     epistemic = draft.epistemic or (
@@ -362,17 +382,23 @@ def save_memory(
     tag_list = [t.strip() for t in (tags or []) if t.strip()]
 
     if kind == "journal":
-        day = today_str()
+        day = checkpoint_journal_day or today_str()
         path = root / "journal" / f"{day}.md"
         stamp = datetime.now().strftime("%H:%M")
         header = f"## {stamp}" + (f" — {title}" if title else "")
         if project:
             header += f" [{project}]"
         entry = f"\n{header}\n{content}\n"
+        marker = ""
+        if checkpoint_operation:
+            marker = f"<!-- brain-checkpoint:{checkpoint_operation} -->"
+            entry = f"\n{marker}\n{header}\n{content}\n{marker}\n"
         with memory_write_lock(root):
             if path.exists():
                 existing = path.read_text(encoding="utf-8")
                 _, body = parse_frontmatter(existing)
+                if marker and marker in body:
+                    raise FileExistsError("This checkpoint already appears in the journal.")
                 atomic_write_text(path, with_markdown_body(existing, body.rstrip() + "\n" + entry))
             else:
                 fm = render_frontmatter({"kind": "journal", "title": f"Journal {day}", "updated_at": ts})
@@ -383,14 +409,13 @@ def save_memory(
         proj_name = project or title
         if not proj_name:
             raise ValueError("project name or title is required for kind='project'")
-        return update_project(root, proj_name, content, headline=headline, replace=replace)
+        return update_project(root, proj_name, content, headline=headline, replace=replace,
+                              expected_revision=expected_revision, checkpoint_operation=checkpoint_operation)
 
     # Lightweight 3-part fact notation: (subject, predicate, value) auto-supersedes by (subject, predicate)
     subj, pred = draft.subject, draft.predicate
+    path, note_title = note_target(root, draft)
     if kind == "fact" and subj and pred:
-        note_title = title.strip() or f"{subj} | {pred}"
-        slug = f"{slugify(subj, 32)}--{slugify(pred, 32)}"
-        path = root / "notes" / "facts" / f"{slug}.md"
         fm = render_frontmatter(
             {
                 "title": note_title,
@@ -403,6 +428,7 @@ def save_memory(
                 "epistemic": epistemic,
                 "source": source,
                 "author": author,
+                "checkpoint_operation": checkpoint_operation,
                 "updated_at": ts,
             }
         )
@@ -425,13 +451,8 @@ def save_memory(
             return load_item(path, root)
 
     # Atomic note under notes/<kind>s/<slug>.md
-    note_title = title.strip() or content.splitlines()[0][:72].lstrip("#-* ").strip()
     if not headline:
         headline = infer_fact_headline(content, note_title)
-    slug = slugify(note_title)
-    if project:
-        slug = f"{slugify(project, 24)}-{slug}"[:72].strip("-")
-    path = root / "notes" / f"{kind}s" / f"{slug}.md"
 
     fm = render_frontmatter(
         {
@@ -443,11 +464,16 @@ def save_memory(
             "epistemic": epistemic,
             "source": source,
             "author": author,
+            "checkpoint_operation": checkpoint_operation,
             "updated_at": ts,
         }
     )
     body = content if content.startswith("# ") else f"# {note_title}\n\n{content}\n"
     with memory_write_lock(root):
+        if expected_revision is not None:
+            previous = path.read_text(encoding="utf-8") if path.exists() else ""
+            if markdown_revision(previous) != expected_revision:
+                raise FileExistsError("This memory changed on disk. Reopen it before editing.")
         atomic_write_text(path, fm + body, replace=replace)
         return load_item(path, root)
 
@@ -460,6 +486,8 @@ def update_project(
     repo_root: str = "",
     headline: str = "",
     replace: bool = True,
+    expected_revision: str | None = None,
+    checkpoint_operation: str = "",
 ) -> MemoryItem:
     ensure_layout(root)
     slug = slugify(name, 48)
@@ -469,30 +497,23 @@ def update_project(
             raise FileNotFoundError(f"Project '{slug}' not found")
         return load_item(path, root)
 
-    existing_meta: dict[str, Any] = {}
-    existing_body = ""
-    if path.exists():
-        existing_meta, existing_body = parse_frontmatter(path.read_text(encoding="utf-8", errors="replace"))
-
-    resolved_repo_root = repo_root.strip() or str(existing_meta.get("repo_root") or "")
-    if resolved_repo_root:
-        resolved_repo_root = str(Path(resolved_repo_root).expanduser().resolve())
-
-    ts = now_iso()
-    body = update.strip() or existing_body.strip() or f"# {name.strip()}"
-    if not body.startswith("# "):
-        body = f"# {name.strip()}\n\n{body}"
-    fm = render_frontmatter(
-        {
+    with memory_write_lock(root):
+        previous = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+        if expected_revision is not None and markdown_revision(previous) != expected_revision:
+            raise FileExistsError("This memory changed on disk. Reopen it before editing.")
+        existing_meta, existing_body = parse_frontmatter(previous)
+        resolved_repo_root = repo_root.strip() or str(existing_meta.get("repo_root") or "")
+        if resolved_repo_root:
+            resolved_repo_root = str(Path(resolved_repo_root).expanduser().resolve())
+        body = update.strip() or existing_body.strip() or f"# {name.strip()}"
+        if not body.startswith("# "):
+            body = f"# {name.strip()}\n\n{body}"
+        fm = render_frontmatter({
             "title": str(existing_meta.get("title") or name.strip()),
             "headline": headline or infer_fact_headline(body, name.strip()),
-            "kind": "project",
-            "project": slug,
-            "repo_root": resolved_repo_root,
-            "updated_at": ts,
-        }
-    )
-    with memory_write_lock(root):
+            "kind": "project", "project": slug, "repo_root": resolved_repo_root,
+            "checkpoint_operation": checkpoint_operation, "updated_at": now_iso(),
+        })
         atomic_write_text(path, fm + body + "\n", replace=replace)
         _invalidate_sync_cache(root)
         return load_item(path, root)
