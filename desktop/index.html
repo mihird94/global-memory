@@ -9,6 +9,7 @@
   <script src="node_modules/markdown-it/dist/browser/markdown-it.umd.min.js" defer></script>
   <script src="renderer.js" defer></script>
   <script src="board.js" defer></script>
+  <script src="exports.js" defer></script>
 </head>
 <body>
   <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -32,6 +33,7 @@
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M15.5 5H7a2 2 0 0 0-2 2v8.5"/></symbol>
     <symbol id="i-edit" viewBox="0 0 24 24"><path d="m14 6 4 4M5 19l4-.8L19 8a2.8 2.8 0 0 0-4-4L5.8 15Z"/></symbol>
     <symbol id="i-archive" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="4" rx="1"/><path d="M5 9v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9m-9 4h4"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.5 5 6.5v5.2c0 4.5 3 8.1 7 9.3 4-1.2 7-4.8 7-9.3V6.5l-7-3Z"/><path d="m9.2 12.2 1.9 1.9 3.9-3.9"/></symbol>
   </svg>
 
   <aside class="sidebar" aria-label="Workspace navigation">
@@ -43,6 +45,7 @@
       <button class="nav-item" data-scope="fact"><svg><use href="#i-fact"/></svg><span>Facts</span><span class="nav-count" id="count-fact"></span></button>
       <button class="nav-item" data-scope="episode"><svg><use href="#i-journal"/></svg><span>Episodes</span><span class="nav-count" id="count-episode"></span></button>
       <button class="nav-item" id="board-nav"><svg><use href="#i-board"/></svg><span>Agent board</span></button>
+      <button class="nav-item" id="exports-nav"><svg><use href="#i-shield"/></svg><span>Safe exports</span></button>
     </nav>
     <nav class="project-nav" aria-label="Projects">
       <div class="nav-section"><h2>Projects</h2><button class="icon-button sidebar-button" id="new-project" aria-label="New project" title="New project"><svg><use href="#i-plus"/></svg></button></div>
@@ -70,7 +73,8 @@
       <div class="toolbar-actions">
         <button class="icon-button refresh-button" id="refresh" aria-label="Refresh library" title="Refresh library now"><svg><use href="#i-refresh"/></svg></button>
         <button class="button primary" id="new-memory"><svg><use href="#i-plus"/></svg><span>New memory</span></button>
-        <button class="button primary" id="new-assignment" hidden><svg><use href="#i-plus"/></svg><span>New assignment</span></button>
+        <button class="button primary" id="new-assignment" hidden><svg><use href="#i-plus"/></svg><span>New thread</span></button>
+        <button class="button primary" id="new-bundle" hidden><svg><use href="#i-plus"/></svg><span>New bundle</span></button>
       </div>
     </header>
 
@@ -142,23 +146,33 @@
       <section class="library-pane" aria-labelledby="board-title">
         <div class="library-header">
           <h1 id="board-title">Agent board</h1>
-          <div class="library-subtitle" id="board-subtitle" aria-live="polite">Loading assignments…</div>
-          <label class="select-field">
-            <select id="board-status-filter" aria-label="Assignment status"><option value="">All states</option><option value="assigned">Assigned</option><option value="in_progress">In progress</option><option value="blocked">Blocked</option><option value="in_review">In review</option><option value="done">Done</option></select>
-            <svg aria-hidden="true"><use href="#i-chevron"/></svg>
-          </label>
+          <div class="library-subtitle" id="board-subtitle" aria-live="polite">Loading threads…</div>
+          <div class="filter-bar">
+            <label class="select-field">
+              <select id="board-kind-filter" aria-label="Thread type"><option value="">All types</option><option value="discussion">Discussion</option><option value="request">Request</option><option value="assignment">Assignment</option><option value="broadcast">Broadcast</option></select>
+              <svg aria-hidden="true"><use href="#i-chevron"/></svg>
+            </label>
+            <label class="select-field">
+              <select id="board-status-filter" aria-label="Thread status"><option value="">All states</option><option value="open">Open</option><option value="assigned">Assigned</option><option value="in_progress">In progress</option><option value="blocked">Blocked</option><option value="in_review">In review</option><option value="resolved">Resolved</option><option value="done">Done</option><option value="declined">Declined</option><option value="closed">Closed</option><option value="cancelled">Cancelled</option></select>
+              <svg aria-hidden="true"><use href="#i-chevron"/></svg>
+            </label>
+          </div>
+          <div class="board-agents" id="board-agents" hidden></div>
         </div>
         <div class="list-scroll" id="board-list-scroll">
-          <div id="board-list" role="list" aria-label="Assignments"></div>
+          <div id="board-list" role="list" aria-label="Threads"></div>
         </div>
       </section>
-      <section class="reader-pane" aria-label="Assignment thread">
-        <div id="thread-empty" class="reader-empty"><div class="empty-icon"><svg><use href="#i-board"/></svg></div><h2>Open an assignment</h2><p>Choose a thread to see its brief and updates.</p></div>
+      <section class="reader-pane" aria-label="Thread">
+        <div id="thread-empty" class="reader-empty"><div class="empty-icon"><svg><use href="#i-board"/></svg></div><h2>Open a thread</h2><p>Choose a thread to read messages, handoffs, and status updates.</p></div>
         <div class="reader-content" id="thread-content" hidden>
           <div class="reader-toolbar">
-            <button class="icon-button back-button" id="board-back" aria-label="Back to assignments"><svg><use href="#i-back"/></svg></button>
+            <button class="icon-button back-button" id="board-back" aria-label="Back to threads"><svg><use href="#i-back"/></svg></button>
             <span class="source-path" id="thread-id"></span>
             <span id="thread-state"></span>
+            <div class="reader-actions">
+              <button class="button secondary" id="board-ack-btn" hidden>Acknowledge</button>
+            </div>
           </div>
           <div class="reader-scroll" id="thread-scroll">
             <div class="reader-paper">
@@ -168,33 +182,153 @@
             </div>
           </div>
           <form id="board-reply-form" class="board-reply">
-            <div class="board-reply-options">
+            <input type="hidden" name="reply_to" value="">
+            <div class="board-reply-banner" id="board-reply-to-bar" hidden>
+              <span id="board-reply-to-label"></span>
+              <button type="button" class="text-button" id="board-clear-reply">Clear</button>
+            </div>
+            <div class="board-reply-options board-reply-options-4">
               <label>Posting as<input name="author" list="board-identities" required maxlength="500" placeholder="Harness or session"><datalist id="board-identities"></datalist></label>
+              <label>Message type<select name="kind"><option value="message">Message</option><option value="question">Question</option><option value="answer">Answer</option><option value="proposal">Proposal</option><option value="decision">Decision</option><option value="handoff">Handoff</option><option value="ack">Ack</option></select></label>
+              <label>To (optional)<input name="to" list="board-identities" maxlength="500" placeholder="@mention actors"></label>
               <label>Action<select name="status"><option value="">Reply</option></select></label>
             </div>
-            <label class="sr-only" for="board-message">Update message</label>
-            <textarea name="message" id="board-message" rows="2" maxlength="250000" placeholder="Post progress, evidence, or a question…"></textarea>
-            <div class="board-reply-footer"><p class="form-error" id="board-reply-error" role="alert" hidden></p><button type="submit" class="button primary" id="board-post">Post update</button></div>
+            <label class="sr-only" for="board-message">Message</label>
+            <textarea name="message" id="board-message" rows="2" maxlength="250000" placeholder="Post a message, question, proposal, or status update…"></textarea>
+            <div class="board-reply-footer"><p class="form-error" id="board-reply-error" role="alert" hidden></p><button type="submit" class="button primary" id="board-post">Post message</button></div>
           </form>
+        </div>
+      </section>
+    </div>
+    <div class="workspace-panes exports-view" id="exports-view" hidden>
+      <section class="library-pane" aria-labelledby="exports-title">
+        <div class="library-header">
+          <h1 id="exports-title">Safe exports</h1>
+          <div class="library-subtitle" id="exports-subtitle" aria-live="polite">Loading bundles…</div>
+          <div class="export-global-status" id="export-global-status"></div>
+        </div>
+        <div class="list-scroll" id="exports-list-scroll">
+          <div id="exports-list" role="list" aria-label="Export bundles"></div>
+        </div>
+      </section>
+      <section class="reader-pane" aria-label="Export bundle manager">
+        <div id="export-empty" class="reader-empty">
+          <div class="empty-icon"><svg><use href="#i-shield"/></svg></div>
+          <h2>Choose a safe bundle</h2>
+          <p>Select or create a default-deny bundle to screen notes locally and share approved snapshots via <code>brain-safe-mcp</code>, with optional quarantined proposals.</p>
+        </div>
+        <div class="reader-content" id="export-content" hidden>
+          <div class="reader-toolbar">
+            <button class="icon-button back-button" id="export-back" aria-label="Back to bundles"><svg><use href="#i-back"/></svg></button>
+            <span class="source-path" id="export-bundle-path"></span>
+            <div class="reader-actions">
+              <button class="button secondary" id="export-edit-scope-btn">Edit scope</button>
+              <button class="button secondary" id="export-stage-btn"><svg><use href="#i-refresh"/></svg><span>Scan &amp; stage</span></button>
+              <button class="button primary" id="export-approve-clean-btn">Approve clean</button>
+              <button class="button secondary danger-ghost" id="export-revoke-all-btn">Revoke all</button>
+            </div>
+          </div>
+          <div class="reader-scroll" id="export-scroll">
+            <div class="reader-paper export-paper">
+              <div class="export-header-row">
+                <div>
+                  <h2 class="memory-title" id="export-bundle-name"></h2>
+                  <p class="field-hint" id="export-bundle-meta"></p>
+                </div>
+                <span class="pill" id="export-manifest-pill"></span>
+              </div>
+              <div class="export-coverage-banner" id="export-coverage-banner"></div>
+              <div class="export-harnesses" id="export-harnesses"></div>
+              <div class="status-cards export-cards" id="export-cards"></div>
+              <div class="view-options export-tabs" id="export-tabs" role="tablist" aria-label="Bundle views">
+                <button type="button" class="active" data-etab="all">All staged</button>
+                <button type="button" data-etab="approved">Approved</button>
+                <button type="button" data-etab="allow">Allow</button>
+                <button type="button" data-etab="redact_and_review">Redact</button>
+                <button type="button" data-etab="block">Blocked</button>
+                <button type="button" data-etab="inbox" id="export-tab-inbox">Inbox</button>
+                <button type="button" data-etab="suggestions" id="export-tab-suggestions">Suggestions</button>
+                <button type="button" data-etab="profile">Safe profile</button>
+                <button type="button" data-etab="audit">Audit log</button>
+              </div>
+              <div id="export-inbox-pane" class="export-inbox-pane" hidden></div>
+              <div id="export-items" class="export-items"></div>
+              <div id="export-suggestions-pane" class="export-suggestions-pane" hidden></div>
+              <div id="export-profile-pane" class="export-profile-pane" hidden>
+                <p class="field-hint">Shown to Pi &amp; OpenCode via <code>safe_context()</code> instead of your private <code>profile.md</code>.</p>
+                <textarea id="export-profile-text" rows="10" maxlength="50000"></textarea>
+                <div class="export-profile-actions">
+                  <button type="button" class="button primary" id="export-save-profile-btn">Save safe profile</button>
+                </div>
+              </div>
+              <div id="export-audit-pane" class="export-audit-pane" hidden></div>
+            </div>
+          </div>
         </div>
       </section>
     </div>
   </main>
 
+  <dialog id="bundle-dialog" aria-labelledby="bundle-dialog-title">
+    <form id="bundle-form">
+      <div class="dialog-heading"><h2 id="bundle-dialog-title">New safe bundle</h2><button class="icon-button close-dialog" type="button" aria-label="Close"><svg><use href="#i-close"/></svg></button></div>
+      <div class="dialog-fields">
+        <label>Bundle name<input name="name" required maxlength="80" placeholder="e.g. coding-safe"></label>
+        <div class="export-kind-checks">
+          <span class="field-label">Opted-in projects (select from store)</span>
+          <div id="bundle-projects-list" class="bundle-project-grid"></div>
+        </div>
+        <div id="bundle-sensitive-wrap" class="bundle-sensitive-box" hidden>
+          <label class="inline-check"><input type="checkbox" name="allow_sensitive_project" id="bundle-allow-sensitive">Confirm including sensitive project(s) marked above (notes are still screened locally)</label>
+        </div>
+        <div class="export-kind-checks">
+          <span class="field-label">Additional durable sources (still screened locally before approval)</span>
+          <div class="kind-check-row">
+            <label class="inline-check"><input type="checkbox" name="allow_proposals" id="bundle-allow-proposals" checked>Allow quarantined write proposals (human review required)</label>
+            <label class="inline-check"><input type="checkbox" name="include_unprojected" id="bundle-include-unprojected"><span id="bundle-unprojected-label">Include unprojected facts/decisions/lessons</span></label>
+            <label class="inline-check"><input type="checkbox" name="include_readonly_roots" id="bundle-include-readonly"><span id="bundle-readonly-label">Include read-only external wiki</span></label>
+          </div>
+        </div>
+        <div class="fields-pair">
+          <label>MiniLM threshold (0.05–0.99)<input name="threshold" type="number" step="0.05" min="0.05" max="0.99" value="0.50"></label>
+          <label>Extra denylist terms<input name="denylist" maxlength="1000" placeholder="Optional, comma-separated"></label>
+        </div>
+        <div class="export-kind-checks">
+          <span class="field-label">Allowed kinds (journals, episodes &amp; profile are always excluded)</span>
+          <div class="kind-check-row">
+            <label class="inline-check"><input type="checkbox" name="kind" value="project" checked>project</label>
+            <label class="inline-check"><input type="checkbox" name="kind" value="decision" checked>decision</label>
+            <label class="inline-check"><input type="checkbox" name="kind" value="lesson" checked>lesson</label>
+            <label class="inline-check"><input type="checkbox" name="kind" value="fact" checked>fact</label>
+          </div>
+        </div>
+      </div>
+      <p class="form-error" id="bundle-error" role="alert" hidden></p>
+      <div class="dialog-footer"><button class="button secondary close-dialog" type="button">Cancel</button><button class="button primary" id="submit-bundle" type="submit">Create bundle</button></div>
+    </form>
+  </dialog>
+
   <dialog id="assignment-dialog" aria-labelledby="assignment-title">
     <form id="assignment-form">
-      <div class="dialog-heading"><h2 id="assignment-title">New assignment</h2><button class="icon-button close-dialog" type="button" aria-label="Close"><svg><use href="#i-close"/></svg></button></div>
+      <div class="dialog-heading"><h2 id="assignment-title">New thread</h2><button class="icon-button close-dialog" type="button" aria-label="Close"><svg><use href="#i-close"/></svg></button></div>
       <div class="dialog-fields">
-        <label>Title<input name="title" maxlength="500" required placeholder="What work should be done?"></label>
         <div class="fields-pair">
-          <label>Supervisor<input name="supervisor" maxlength="500" required placeholder="e.g. codex/review"></label>
-          <label>Assignee<input name="assignee" maxlength="500" required placeholder="e.g. antigravity/build"></label>
+          <label>Type<select name="kind" id="thread-dialog-kind"><option value="discussion">Discussion</option><option value="request">Request</option><option value="assignment">Assignment</option><option value="broadcast">Broadcast</option></select></label>
+          <label>Priority<select name="priority"><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option><option value="low">Low</option></select></label>
         </div>
-        <label>Project<input name="project" maxlength="500" list="project-options" placeholder="Optional"></label>
-        <label>Brief<textarea name="brief" maxlength="250000" required placeholder="Describe the outcome, constraints, and how to verify it."></textarea></label>
+        <label>Title<input name="title" maxlength="500" required placeholder="Topic, request, or task title"></label>
+        <div class="fields-pair">
+          <label><span id="thread-author-label">From</span><input name="author" maxlength="500" required placeholder="e.g. codex/review"></label>
+          <label><span id="thread-to-label">To</span><input name="to" maxlength="500" placeholder="e.g. antigravity/build or *"></label>
+        </div>
+        <div class="fields-pair">
+          <label>Project<input name="project" maxlength="500" list="project-options" placeholder="Optional"></label>
+          <label>Channel<input name="channel" maxlength="64" placeholder="Optional (e.g. architecture)"></label>
+        </div>
+        <label><span id="thread-body-label">Message</span><textarea name="body" maxlength="250000" placeholder="Share context, questions, or verification criteria…"></textarea></label>
       </div>
       <p class="form-error" id="assignment-error" role="alert" hidden></p>
-      <div class="dialog-footer"><button class="button secondary close-dialog" type="button">Cancel</button><button class="button primary" id="submit-assignment" type="submit">Assign work</button></div>
+      <div class="dialog-footer"><button class="button secondary close-dialog" type="button">Cancel</button><button class="button primary" id="submit-assignment" type="submit">Open thread</button></div>
     </form>
   </dialog>
 

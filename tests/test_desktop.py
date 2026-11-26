@@ -162,3 +162,133 @@ def test_manual_refresh_checks_markdown_during_search(desktop: Desktop) -> None:
     path = desktop.root / "notes" / "facts" / "outside-index.md"
     path.write_text("# New note\n\nA zircon term.")
     assert desktop.search({"query": "zircon", "refresh": True})["items"][0]["id"] == "notes/facts/outside-index"
+
+
+def test_desktop_export_bridge_roundtrip(desktop: Desktop, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_home = tmp_path / "home"
+    (fake_home / ".pi" / "agent").mkdir(parents=True)
+    (fake_home / ".config" / "opencode").mkdir(parents=True)
+    (fake_home / ".pi" / "agent" / "mcp.json").write_text('{"mcpServers":{}}', encoding="utf-8")
+    (fake_home / ".config" / "opencode" / "opencode.jsonc").write_text('{"mcp":{}}', encoding="utf-8")
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("BRAIN_EXPORTS_DIR", str(tmp_path / "exports"))
+    monkeypatch.setenv("BRAIN_SCREEN_DETERMINISTIC", "1")
+
+    clean = save_memory(desktop.root, "SQLite WAL mode invariant.", title="WAL Rule", kind="decision", project="demo-proj")
+    pii = save_memory(desktop.root, "Ticket from dev@example.test fixed.", title="Mail Fix", kind="lesson", project="demo-proj")
+
+    created = desktop.request("export_init", {"name": "demo-safe", "projects": "demo-proj", "threshold": 0.50})
+    assert created["name"] == "demo-safe"
+    assert created["approved_count"] == 0
+
+    listed = desktop.request("export_list", {})
+    assert [b["name"] for b in listed["bundles"]] == ["demo-safe"]
+    assert listed["harnesses"]["pi"]["state"] == "disconnected"
+
+    staged = desktop.request("export_stage", {"bundle": "demo-safe"})
+    assert staged["staged_counts"] == {"allow": 1, "redact_and_review": 1, "block": 0}
+    assert len(staged["items"]) == 2
+
+    app_clean = desktop.request("export_approve", {"bundle": "demo-safe", "all_clean": True})
+    assert app_clean["approved_count"] == 1
+
+    app_red = desktop.request("export_approve", {"bundle": "demo-safe", "doc_ids": [pii.id], "allow_redacted": True})
+    assert app_red["approved_count"] == 2
+
+    saved_prof = desktop.request("export_save_profile", {"bundle": "demo-safe", "content": "# Safe Profile\n- Python 3.12"})
+    assert "Python 3.12" in saved_prof["safe_profile"]
+
+    wired = desktop.request("export_wire", {"bundle": "demo-safe", "harness": "pi", "disconnect": False})
+    assert wired["detail"]["harnesses"]["pi"]["state"] == "wired_this"
+
+    revoked = desktop.request("export_revoke", {"bundle": "demo-safe", "doc_ids": [clean.id]})
+    assert revoked["approved_count"] == 1
+
+    rev_all = desktop.request("export_revoke", {"bundle": "demo-safe", "revoke_all": True})
+    assert rev_all["approved_count"] == 0
+
+
+def test_desktop_export_scope_and_suggestions(desktop: Desktop, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from gm.safe_mcp_server import safe_read_impl
+
+    monkeypatch.setenv("BRAIN_EXPORTS_DIR", str(tmp_path / "exports"))
+    monkeypatch.setenv("BRAIN_SCREEN_DETERMINISTIC", "1")
+
+    wiki_dir = tmp_path / "ext-wiki"
+    wiki_dir.mkdir()
+    (wiki_dir / "arch.md").write_text("# Shared Wiki Architecture\n\nStateless FTS5 read path.\n", encoding="utf-8")
+    ensure_layout(desktop.root)
+    (desktop.root / ".gm" / "config.json").write_text(f'{{"extra_roots": ["{wiki_dir}"]}}', encoding="utf-8")
+
+    save_memory(desktop.root, "SQLite WAL mode invariant.", title="WAL Rule", kind="decision", project="demo-proj")
+    save_memory(desktop.root, "Sensitive strategy notes.", title="Alpha Strat", kind="decision", project="alphaos")
+    unproj_clean = save_memory(desktop.root, "Always run pytest -q before merge.", title="Pytest Habit", kind="lesson")
+    save_memory(desktop.root, "Internal gateway 100.88.1.9 token sk-proj-secret1234567890abcd.", title="Gateway Secret", kind="fact")
+    desktop.create({"kind": "journal", "content": "Private reflection only."})
+
+    inv = desktop.request("export_inventory", {})
+    assert inv["total_notes"] == 6
+    assert inv["unprojected_count"] == 2
+    assert inv["readonly_count"] == 1
+    assert inv["excluded_private_count"] == 1
+    assert {p["slug"]: p["sensitive"] for p in inv["projects"]} == {"alphaos": True, "demo-proj": False}
+
+    created = desktop.request("export_init", {"name": "scope-test", "projects": ["demo-proj"]})
+    cov = created["skipped_breakdown"]
+    assert cov["eligible_in_scope"] == 1
+    assert cov["other_projects"] == 1
+    assert cov["unprojected"] == 2
+    assert cov["readonly_roots"] == 1
+    assert cov["private_kinds"] == 1
+
+    # Sensitive project update rejected without explicit confirmation
+    with pytest.raises(ValueError, match="Refusing sensitive"):
+        desktop.request("export_update_config", {"bundle": "scope-test", "projects": ["demo-proj", "alphaos"]})
+
+    # Store-wide classification & cache generation
+    disc = desktop.request("export_discover", {"bundle": "scope-test", "include_readonly": True})
+    sug = disc["suggestions"]
+    assert sug is not None
+    assert sug["total_scanned"] == 5
+    assert sug["tier_counts"] == {"recommended": 3, "review": 1, "blocked": 1}
+    assert (desktop.root / ".gm" / "screen_cache.json").exists()
+
+    # Cherry-pick unprojected clean lesson + read-only wiki note and auto-approve clean
+    wiki_id = "ext-wiki:arch"
+    added = desktop.request(
+        "export_add_candidates",
+        {"bundle": "scope-test", "doc_ids": [unproj_clean.id, wiki_id], "approve_if_clean": True},
+    )
+    assert added["approved_count"] == 2
+    bdir = (tmp_path / "exports" / "scope-test").resolve()
+    assert "Stateless FTS5 read path" in safe_read_impl(bdir, wiki_id)
+    assert "pytest -q" in safe_read_impl(bdir, unproj_clean.id)
+
+    # Expanding scope to include unprojected restages both unprojected notes cleanly
+    updated = desktop.request(
+        "export_update_config",
+        {"bundle": "scope-test", "include_unprojected": True, "restage": True},
+    )
+    assert updated["staged_counts"] == {"allow": 3, "redact_and_review": 0, "block": 1}
+
+
+def test_export_inbox_bridge(desktop: Desktop, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from gm.safe_mcp_server import safe_propose_impl
+    monkeypatch.setenv('BRAIN_EXPORTS_DIR', str(tmp_path / 'exports'))
+    monkeypatch.setenv('BRAIN_SCREEN_DETERMINISTIC', '1')
+    detail = desktop.export_init({'name': 'test', 'projects': ['demo']})
+    bdir = Path(detail['bundle_dir'])
+    desktop.export_update_config({'bundle': 'test', 'allow_proposals': False, 'restage': False})
+    with pytest.raises(PermissionError): safe_propose_impl(bdir, title='Note', content='Text')
+    desktop.export_update_config({'bundle': 'test', 'allow_proposals': True, 'restage': False})
+    safe_propose_impl(bdir, title='Clean note', content='Enable WAL for readers.', harness='pi')
+    safe_propose_impl(bdir, title='PII note', content='Contact jane@example.test')
+    detail = desktop.export_read({'bundle': 'test'})
+    assert detail['inbox_pending_count'] == 2
+    clean = next(x for x in detail['inbox'] if x['title'] == 'Clean note')
+    pii = next(x for x in detail['inbox'] if x['title'] == 'PII note')
+    detail = desktop.export_inbox_promote({'bundle': 'test', 'proposal_id': clean['id'], 'also_export': True})
+    assert detail['approved_count'] == 1 and detail['inbox_pending_count'] == 1
+    detail = desktop.export_inbox_discard({'bundle': 'test', 'proposal_id': pii['id']})
+    assert detail['inbox_pending_count'] == 0

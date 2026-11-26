@@ -16,7 +16,27 @@ from pydantic import ValidationError
 
 from . import __version__
 from .board import Board
+from .export import (
+    ALLOWED_EXPORT_KINDS,
+    add_bundle_candidates,
+    promote_inbox_proposal, discard_inbox_proposal, _pending_inbox_count,
+    approve_bundle,
+    discover_bundle_candidates,
+    exports_root,
+    external_harness_status,
+    init_bundle,
+    list_bundles,
+    read_bundle_detail,
+    resolve_bundle_dir,
+    revoke_bundle,
+    save_safe_profile,
+    stage_bundle,
+    store_scope_inventory,
+    update_bundle_config,
+    wire_external_harness,
+)
 from .index import _connect, _doc_filters, build_context, index_single_item, index_stats, recall, sync_index
+from .screening import PrivacyScreener
 from .store import (
     atomic_fact_value,
     atomic_write_text,
@@ -39,7 +59,7 @@ from .validation import FACT_HEADLINE_THRESHOLD, MemoryDraft, SearchFilters, nor
 PAGE_SIZE = 30
 SEARCH_LIMIT = 30
 LIVE_REFRESH_SECONDS = 5
-TOOLS = ("context", "search", "read", "store", "project", "forget")
+TOOLS = ("context", "search", "read", "store", "project", "forget", "board")
 
 
 def field(params: dict[str, Any], name: str, limit: int = 500) -> str:
@@ -76,6 +96,19 @@ class Desktop:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.board = Board(root)
+        self._screeners: dict[tuple[float, tuple[str, ...]], PrivacyScreener] = {}
+
+    def _screener_for(self, bundle_dir: Path) -> PrivacyScreener:
+        cfg = json.loads((bundle_dir / "bundle_config.json").read_text(encoding="utf-8"))
+        threshold = float(cfg.get("threshold", 0.50))
+        extra = tuple(str(x).strip() for x in cfg.get("extra_denylist", ()) if str(x).strip())
+        key = (threshold, extra)
+        sc = self._screeners.get(key)
+        if sc is None:
+            det_only = os.environ.get("BRAIN_SCREEN_DETERMINISTIC", "") == "1"
+            sc = PrivacyScreener(threshold=threshold, extra_denylist=extra, strict=not det_only, deterministic_only=det_only)
+            self._screeners[key] = sc
+        return sc
 
     def browse(self, params: dict[str, Any]) -> dict[str, Any]:
         scope = filters(params)
@@ -282,7 +315,15 @@ class Desktop:
             "browse": self.browse, "changes": self.changes, "search": self.search, "read": self.read, "create": self.create,
             "edit": self.edit, "archive": self.archive, "context": self.context, "status": self.status,
             "board_list": self.board_list, "board_read": self.board_read,
-            "board_assign": self.board_assign, "board_post": self.board_post,
+            "board_open": self.board_open, "board_assign": self.board_assign,
+            "board_post": self.board_post, "board_inbox": self.board_inbox,
+            "board_ack": self.board_ack, "board_agents": self.board_agents,
+            "export_list": self.export_list, "export_read": self.export_read, "export_init": self.export_init,
+            "export_stage": self.export_stage, "export_approve": self.export_approve, "export_revoke": self.export_revoke,
+            "export_wire": self.export_wire, "export_save_profile": self.export_save_profile,
+            "export_inventory": self.export_inventory, "export_update_config": self.export_update_config,
+            "export_inbox_promote": self.export_inbox_promote, "export_inbox_discard": self.export_inbox_discard,
+            "export_discover": self.export_discover, "export_add_candidates": self.export_add_candidates,
         }
         handler = actions.get(action)
         if handler is None or not isinstance(params, dict):
@@ -290,19 +331,259 @@ class Desktop:
         return handler(params)
 
     def board_list(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self.board.list(actor=field(params, "actor"), status=field(params, "status"), project=field(params, "project"))
+        return self.board.list(
+            actor=field(params, "actor"),
+            status=field(params, "status"),
+            project=field(params, "project"),
+            kind=field(params, "kind"),
+            channel=field(params, "channel"),
+            include_broadcasts=bool(params.get("include_broadcasts", False)),
+        )
 
     def board_read(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self.board.read(params.get("id"))
+        return self.board.read(
+            params.get("id"),
+            actor=field(params, "actor"),
+            mark_read=bool(params.get("mark_read", False)),
+        )
+
+    def board_open(self, params: dict[str, Any]) -> dict[str, Any]:
+        raw_to = params.get("to")
+        to_val = raw_to if isinstance(raw_to, list) else field(params, "to", 2000)
+        raw_refs = params.get("refs")
+        refs_val = raw_refs if isinstance(raw_refs, list) else [r.strip() for r in field(params, "refs", 2000).split(",") if r.strip()]
+        payload_val = params.get("payload") if isinstance(params.get("payload"), dict) else None
+        return self.board.open_thread(
+            kind=field(params, "kind") or "discussion",
+            title=field(params, "title"),
+            body=field(params, "body", 250_000),
+            author=field(params, "author"),
+            to=to_val,
+            supervisor=field(params, "supervisor"),
+            assignee=field(params, "assignee"),
+            project=field(params, "project"),
+            channel=field(params, "channel"),
+            priority=field(params, "priority") or "normal",
+            refs=refs_val,
+            payload=payload_val,
+        )
 
     def board_assign(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self.board.assign(title=field(params, "title"), brief=field(params, "brief", 250_000),
-                                 supervisor=field(params, "supervisor"), assignee=field(params, "assignee"),
-                                 project=field(params, "project"))
+        return self.board.assign(
+            title=field(params, "title"),
+            brief=field(params, "brief", 250_000),
+            supervisor=field(params, "supervisor"),
+            assignee=field(params, "assignee"),
+            project=field(params, "project"),
+            priority=field(params, "priority") or "normal",
+        )
 
     def board_post(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self.board.post(params.get("id"), author=field(params, "author"),
-                               message=field(params, "message", 250_000), status=field(params, "status"))
+        raw_to = params.get("to")
+        to_val = raw_to if isinstance(raw_to, list) else field(params, "to", 2000)
+        raw_refs = params.get("refs")
+        refs_val = raw_refs if isinstance(raw_refs, list) else [r.strip() for r in field(params, "refs", 2000).split(",") if r.strip()]
+        payload_val = params.get("payload") if isinstance(params.get("payload"), dict) else None
+        raw_reply = params.get("reply_to")
+        if isinstance(raw_reply, bool):
+            raise ValueError("reply_to must be a valid message ID.")
+        reply_to = int(raw_reply) if raw_reply not in (None, "") else None
+        return self.board.post(
+            params.get("id"),
+            author=field(params, "author"),
+            message=field(params, "message", 250_000),
+            status=field(params, "status"),
+            kind=field(params, "kind"),
+            reply_to=reply_to,
+            to=to_val,
+            refs=refs_val,
+            payload=payload_val,
+        )
+
+    def board_inbox(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self.board.inbox(
+            field(params, "actor"),
+            project=field(params, "project"),
+            kind=field(params, "kind"),
+            unread_only=bool(params.get("unread_only", True)),
+        )
+
+    def board_ack(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self.board.ack(
+            params.get("id"),
+            actor=field(params, "author") or field(params, "actor"),
+            message=field(params, "message", 250_000),
+            post_ack=bool(params.get("post_ack", False)),
+        )
+
+    def board_agents(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self.board.agents(
+            project=field(params, "project"),
+            include_offline=bool(params.get("include_offline", False)),
+        )
+
+    def export_list(self, _params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "bundles": list_bundles(),
+            "harnesses": external_harness_status(),
+            "exports_root": str(exports_root()),
+        }
+
+    def _export_detail(self, bdir: Path) -> dict[str, Any]:
+        return read_bundle_detail(self.root, bdir, screener=self._screener_for(bdir) if _pending_inbox_count(bdir) else None)
+
+    def export_inbox_promote(self, params: dict[str, Any]) -> dict[str, Any]:
+        bdir = resolve_bundle_dir(field(params, "bundle"))
+        edits = {k: params[k] for k in ("title", "headline", "project", "content", "tags") if k in params}
+        promote_inbox_proposal(self.root, bdir, field(params, "proposal_id"), use_scrubbed=bool(params.get("use_scrubbed")), also_export=bool(params.get("also_export")), force_blocked=bool(params.get("force_blocked")), screener=self._screener_for(bdir), **edits)
+        return self._export_detail(bdir)
+
+    def export_inbox_discard(self, params: dict[str, Any]) -> dict[str, Any]:
+        bdir = resolve_bundle_dir(field(params, "bundle"))
+        discard_inbox_proposal(bdir, field(params, "proposal_id"))
+        return self._export_detail(bdir)
+
+    def export_read(self, params: dict[str, Any]) -> dict[str, Any]:
+        bdir = resolve_bundle_dir(field(params, "bundle"))
+        return self._export_detail(bdir)
+
+    def _parse_export_scope(self, params: dict[str, Any]) -> dict[str, Any]:
+        raw_proj = params.get("projects")
+        if raw_proj is None:
+            projects: list[str] | None = None
+        elif isinstance(raw_proj, list):
+            projects = [str(p).strip() for p in raw_proj if str(p).strip()]
+        else:
+            projects = [p.strip() for p in field(params, "projects", 2000).split(",") if p.strip()]
+
+        raw_kinds = params.get("allow_kinds")
+        if raw_kinds is None:
+            allow_kinds: tuple[str, ...] | None = None
+        elif isinstance(raw_kinds, list):
+            allow_kinds = tuple(str(k).strip() for k in raw_kinds if str(k).strip())
+        elif isinstance(raw_kinds, str) and raw_kinds.strip():
+            allow_kinds = tuple(k.strip() for k in raw_kinds.split(",") if k.strip())
+        else:
+            allow_kinds = ()
+
+        denylist_raw = params.get("denylist")
+        extra_deny: tuple[str, ...] | None = None
+        if isinstance(denylist_raw, str):
+            extra_deny = tuple(x.strip() for x in denylist_raw.split(",") if x.strip())
+        elif isinstance(denylist_raw, list):
+            extra_deny = tuple(str(x).strip() for x in denylist_raw if str(x).strip())
+
+        return {
+            "allow_proposals": bool(params["allow_proposals"]) if "allow_proposals" in params else None,
+            "projects": projects,
+            "allow_kinds": allow_kinds,
+            "threshold": float(params["threshold"]) if "threshold" in params and params["threshold"] is not None else None,
+            "extra_denylist": extra_deny,
+            "allow_sensitive_project": bool(params["allow_sensitive_project"])
+            if "allow_sensitive_project" in params
+            else None,
+            "include_unprojected": bool(params["include_unprojected"]) if "include_unprojected" in params else None,
+            "include_readonly_roots": bool(params["include_readonly_roots"]) if "include_readonly_roots" in params else None,
+        }
+
+    def export_inventory(self, params: dict[str, Any]) -> dict[str, Any]:
+        bundle_name = field(params, "bundle")
+        bdir = resolve_bundle_dir(bundle_name) if bundle_name else None
+        return store_scope_inventory(self.root, bdir)
+
+    def export_init(self, params: dict[str, Any]) -> dict[str, Any]:
+        bdir = resolve_bundle_dir(field(params, "name"))
+        parsed = self._parse_export_scope(params)
+        init_bundle(
+            bdir,
+            allow_proposals=parsed["allow_proposals"] if parsed["allow_proposals"] is not None else True,
+            projects=parsed["projects"] or [],
+            allow_kinds=parsed["allow_kinds"] if parsed["allow_kinds"] is not None else ALLOWED_EXPORT_KINDS,
+            threshold=0.50 if parsed["threshold"] is None else parsed["threshold"],
+            extra_denylist=parsed["extra_denylist"] or (),
+            allow_sensitive_project=bool(parsed["allow_sensitive_project"]),
+            include_unprojected=bool(parsed["include_unprojected"]),
+            include_readonly_roots=bool(parsed["include_readonly_roots"]),
+        )
+        return self._export_detail(bdir)
+
+    def export_update_config(self, params: dict[str, Any]) -> dict[str, Any]:
+        bdir = resolve_bundle_dir(field(params, "bundle"))
+        parsed = self._parse_export_scope(params)
+        update_bundle_config(
+            bdir,
+            allow_proposals=parsed["allow_proposals"],
+            projects=parsed["projects"],
+            allow_kinds=parsed["allow_kinds"] if parsed["allow_kinds"] is not None else None,
+            threshold=parsed["threshold"],
+            extra_denylist=parsed["extra_denylist"],
+            allow_sensitive_project=parsed["allow_sensitive_project"],
+            include_unprojected=parsed["include_unprojected"],
+            include_readonly_roots=parsed["include_readonly_roots"],
+        )
+        if params.get("restage", True):
+            stage_bundle(self.root, bdir, screener=self._screener_for(bdir))
+        return self._export_detail(bdir)
+
+    def export_stage(self, params: dict[str, Any]) -> dict[str, Any]:
+        bdir = resolve_bundle_dir(field(params, "bundle"))
+        stage_bundle(self.root, bdir, screener=self._screener_for(bdir))
+        return self._export_detail(bdir)
+
+    def export_discover(self, params: dict[str, Any]) -> dict[str, Any]:
+        bdir = resolve_bundle_dir(field(params, "bundle"))
+        discover_bundle_candidates(
+            self.root,
+            bdir,
+            include_readonly=bool(params.get("include_readonly", False)),
+            screener=self._screener_for(bdir),
+        )
+        return self._export_detail(bdir)
+
+    def export_add_candidates(self, params: dict[str, Any]) -> dict[str, Any]:
+        bdir = resolve_bundle_dir(field(params, "bundle"))
+        raw_ids = params.get("doc_ids") or []
+        doc_ids = [str(x).strip() for x in raw_ids if str(x).strip()] if isinstance(raw_ids, list) else []
+        add_bundle_candidates(
+            self.root,
+            bdir,
+            doc_ids=doc_ids,
+            approve_if_clean=bool(params.get("approve_if_clean", False)),
+            screener=self._screener_for(bdir),
+        )
+        return self._export_detail(bdir)
+
+    def export_approve(self, params: dict[str, Any]) -> dict[str, Any]:
+        bdir = resolve_bundle_dir(field(params, "bundle"))
+        raw_ids = params.get("doc_ids") or []
+        doc_ids = [str(x).strip() for x in raw_ids if str(x).strip()] if isinstance(raw_ids, list) else []
+        approve_bundle(
+            self.root,
+            bdir,
+            doc_ids=doc_ids,
+            all_clean=bool(params.get("all_clean", False)),
+            allow_redacted=bool(params.get("allow_redacted", False)),
+            force_blocked=bool(params.get("force_blocked", False)),
+            screener=self._screener_for(bdir),
+        )
+        return self._export_detail(bdir)
+
+    def export_revoke(self, params: dict[str, Any]) -> dict[str, Any]:
+        bdir = resolve_bundle_dir(field(params, "bundle"))
+        raw_ids = params.get("doc_ids") or []
+        doc_ids = [str(x).strip() for x in raw_ids if str(x).strip()] if isinstance(raw_ids, list) else []
+        revoke_bundle(bdir, doc_ids=doc_ids, revoke_all=bool(params.get("revoke_all", False)))
+        return self._export_detail(bdir)
+
+    def export_wire(self, params: dict[str, Any]) -> dict[str, Any]:
+        bdir = resolve_bundle_dir(field(params, "bundle"))
+        msg = wire_external_harness(bdir, harness=field(params, "harness"), disconnect=bool(params.get("disconnect", False)))
+        return {"message": msg, "detail": self._export_detail(bdir)}
+
+    def export_save_profile(self, params: dict[str, Any]) -> dict[str, Any]:
+        bdir = resolve_bundle_dir(field(params, "bundle"))
+        save_safe_profile(bdir, field(params, "content", 50_000))
+        return self._export_detail(bdir)
 
 
 def launch(root: Path) -> int:
@@ -324,14 +605,15 @@ def main() -> None:
             request = json.loads(line)
             request_id = request["id"]
             response = {"result": service.request(request["action"], request.get("params", {}))}
-        except FileNotFoundError:
-            response = {"error": "This memory is missing. Refresh the library to update the list."}
+        except FileNotFoundError as exc:
+            response = {"error": str(exc) or "This memory is missing. Refresh the library to update the list."}
         except FileExistsError as exc:
             response = {"error": str(exc) if exc.filename is None else "A memory with this identity already exists. Open it to make changes."}
         except ValidationError as exc:
             response = {"error": validation_message(exc)}
-        except (ValueError, PermissionError) as exc:
-            response = {"error": str(exc)}
+        except (ValueError, PermissionError, KeyError, RuntimeError) as exc:
+            msg = str(exc).strip("'") if isinstance(exc, KeyError) else str(exc)
+            response = {"error": msg}
         except Exception:
             traceback.print_exc(file=sys.stderr)
             response = {"error": "Brain couldn’t complete this request. Refresh the library and try again."}

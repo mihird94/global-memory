@@ -929,8 +929,28 @@ def build_context(
     finally:
         conn.close()
 
+    board_path = root / ".gm" / "board.sqlite"
+    if board_path.exists():
+        try:
+            from .board import Board
+
+            board_rows = Board(root).list(project=active_project, limit=4)["threads"]
+            if not board_rows and active_project:
+                board_rows = Board(root).list(limit=4)["threads"]
+            active_rows = [
+                r for r in board_rows if r["status"] not in ("done", "cancelled", "closed", "resolved", "declined")
+            ]
+            if active_rows:
+                b_lines = [
+                    f"- #{r['id']} [{r['kind']}/{r['status']}] {r['title']} ({', '.join(r['participants'][:4])})"
+                    for r in active_rows[:4]
+                ]
+                sections.append("## Active Board Threads\n" + "\n".join(b_lines))
+        except Exception:
+            pass
+
     sections.append(
         "_Use `brain_search(query)` for excerpts, `brain_read(id)` for full notes, and `brain_store(...)` to save a memory. "
-        "Use `brain board list --for <session>` to find cross-harness assignments._"
+        "Use `brain_board(action=\"inbox\", actor=...)` or `brain board inbox --for <session>` for cross-agent messages._"
     )
     return "\n\n".join(sections)

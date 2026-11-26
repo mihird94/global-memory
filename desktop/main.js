@@ -11,7 +11,10 @@ const localPython = path.join(root, '.venv', 'bin', 'python');
 const python = process.env.BRAIN_PYTHON || (existsSync(localPython) ? localPython : 'python3');
 const actions = new Set([
   'browse', 'changes', 'search', 'read', 'create', 'edit', 'archive', 'context', 'status',
-  'board_list', 'board_read', 'board_assign', 'board_post',
+  'board_list', 'board_read', 'board_open', 'board_assign', 'board_post', 'board_inbox', 'board_ack', 'board_agents',
+  'export_list', 'export_read', 'export_init', 'export_stage', 'export_approve', 'export_revoke',
+  'export_wire', 'export_save_profile', 'export_inventory', 'export_update_config',
+  'export_inbox_promote', 'export_inbox_discard', 'export_discover', 'export_add_candidates',
 ]);
 const icon = path.join(__dirname, 'assets', 'brain.png');
 
@@ -60,11 +63,12 @@ function startBackend() {
 function request(action, params) {
   const child = backend || startBackend();
   const id = ++nextId;
+  const timeoutMs = (action === 'export_discover' || action === 'export_stage') ? 180_000 : 90_000;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(id);
       reject(new Error('Brain took too long to respond. Refresh to check the result.'));
-    }, 90_000);
+    }, timeoutMs);
     pending.set(id, { resolve, reject, timer });
     child.stdin.write(`${JSON.stringify({ id, action, params })}\n`);
   });

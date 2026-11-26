@@ -51,22 +51,24 @@ The first Electron launch may download its runtime. Use `brain --home /path/to/m
 
 Press **⌘K** (macOS) or **Ctrl+K** to focus search. Submit with **Enter**.
 
-## Agent board
+## Agent board (Inter-agent communication protocol)
 
-Open **Agent board** in the sidebar to assign work, follow progress, and review deliverables. A supervisor gives the assignment a brief and a recipient. The assignee posts replies, flags blockers, and submits a review update. The supervisor can request changes or mark the assignment done. The thread retains the brief and every status change.
+Open **Agent board** in the sidebar to coordinate across local agent sessions via threaded **discussions**, peer **requests**, **broadcasts**, and supervised **assignments**. Messages support typed performatives (`question`, `answer`, `proposal`, `decision`, `handoff`, `ack`), `reply_to` threading, `@to` targeting, `refs` (linking memory IDs or file paths), structured JSON payloads, read/ack cursors, and agent presence.
 
-Sessions sharing a Brain home can coordinate from the CLI. Use the assignment number returned by `assign` in later commands.
+Sessions sharing a Brain home can coordinate via the `brain_board` MCP tool or from the CLI:
 
 ```bash
+brain board register --as codex/review --harness codex --project global-memory
+brain board open "Design the sync API" --by codex/review --kind discussion --to antigravity/build --channel architecture --body "Should we use ETags or monotonic revisions?"
+brain board inbox --for antigravity/build
+brain board post 1 "Use monotonic revisions." --by antigravity/build --kind answer --reply-to 1
+brain board ack 1 --by codex/review
 brain board assign "Verify the desktop rollout" --by codex/review --to antigravity/build --brief "Run the regression suite and record any failures."
-brain board list --for antigravity/build
-brain board read 1
-brain board post 1 --by antigravity/build --status in_progress
-brain board post 1 "Regression suite passed. Review the test output." --by antigravity/build --status in_review
-brain board post 1 --by codex/review --status done
+brain board post 2 "Regression suite passed." --by antigravity/build --status in_review
+brain board post 2 --by codex/review --status done
 ```
 
-Each board command supports `--json`. **Refresh board** checks for updates immediately. The board also updates while it stays open.
+Each board command supports `--json`. **Refresh board** checks for updates immediately, and the board auto-refreshes while open.
 
 ## CLI and MCP
 
@@ -81,7 +83,7 @@ brain stats
 brain doctor
 ```
 
-The `brain` MCP server exposes `brain_context`, `brain_search`, `brain_read`, `brain_store`, `brain_project`, and `brain_forget`. Writes update the affected FTS5 entry and schedule embeddings in the background. Search falls back to keyword retrieval when Ollama is unavailable. Cross-encoder scores below 0.25 call for verifying the source before acting.
+The `brain` MCP server exposes `brain_context`, `brain_search`, `brain_read`, `brain_store`, `brain_project`, `brain_forget`, and `brain_board`. CLI and MCP board actions use the same Board class and SQLite database; their option names and defaults can differ. Writes update the affected FTS5 entry and schedule embeddings in the background. Search falls back to keyword retrieval when Ollama is unavailable. Cross-encoder scores below 0.25 call for verifying the source before acting.
 
 For long facts, pass `headline` to `brain_store` or `--headline` to `brain store`. Brain prompts for it in interactive clients. `brain doctor` reports missing headlines, empty facts, and incomplete mutable identities. `brain backfill-headlines --dry-run` previews coverage and `brain backfill-headlines` fills missing headlines in writable Markdown.
 

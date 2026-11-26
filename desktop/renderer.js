@@ -235,6 +235,10 @@ async function checkForUpdates() {
     await refreshBoard({ quiet: true });
     return;
   }
+  if (state.view === 'exports') {
+    if (typeof refreshExports === 'function') await refreshExports({ quiet: true });
+    return;
+  }
   if (checkingForUpdates || state.listing) return;
   checkingForUpdates = true;
   const serial = state.listRequest;
@@ -253,13 +257,28 @@ async function checkForUpdates() {
 function setWorkspace(view) {
   state.view = view;
   const board = view === 'board';
-  for (const id of ['panes', 'search-form', 'new-memory']) $(id).hidden = board;
-  for (const id of ['board-view', 'board-filter', 'new-assignment']) $(id).hidden = !board;
+  const exportsMode = view === 'exports';
+  const library = view === 'library';
+  $('panes').hidden = !library;
+  $('search-form').hidden = !library;
+  $('new-memory').hidden = !library;
+  $('board-view').hidden = !board;
+  $('board-filter').hidden = !board;
+  $('new-assignment').hidden = !board;
+  $('exports-view').hidden = !exportsMode;
+  $('new-bundle').hidden = !exportsMode;
+
   $('board-nav').classList.toggle('active', board);
   if (board) $('board-nav').setAttribute('aria-current', 'page');
   else $('board-nav').removeAttribute('aria-current');
-  $('refresh').setAttribute('aria-label', board ? 'Refresh board' : 'Refresh library');
-  $('refresh').title = board ? 'Refresh board now' : 'Refresh library now';
+
+  $('exports-nav').classList.toggle('active', exportsMode);
+  if (exportsMode) $('exports-nav').setAttribute('aria-current', 'page');
+  else $('exports-nav').removeAttribute('aria-current');
+
+  const label = board ? 'Refresh board' : (exportsMode ? 'Refresh exports' : 'Refresh library');
+  $('refresh').setAttribute('aria-label', label);
+  $('refresh').title = `${label} now`;
   showScope();
 }
 
@@ -548,6 +567,7 @@ $('query').addEventListener('input', updateSearchInput);
 $('clear-search').addEventListener('click', () => { resetSearch(); $('query').focus(); });
 $('refresh').addEventListener('click', () => {
   if (state.view === 'board') refreshBoard();
+  else if (state.view === 'exports' && typeof refreshExports === 'function') refreshExports();
   else loadList({ refresh: true, preferred: state.selection });
 });
 $('load-more').addEventListener('click', () => loadList({ append: true }));

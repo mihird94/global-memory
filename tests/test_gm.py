@@ -136,9 +136,15 @@ def test_migrate_v2_non_destructive(tmp_path: Path) -> None:
     assert recall(root, "May 1")
 
 
-def test_mcp_exposes_exactly_six_tools() -> None:
+def test_mcp_exposes_expected_tools() -> None:
     tools = sorted(mcp._tool_manager._tools.keys())
     assert tools == [
+        "brain_board",
+        "brain_checkpoint_observe",
+        "brain_checkpoint_pending",
+        "brain_checkpoint_revision",
+        "brain_checkpoint_save",
+        "brain_checkpoint_skip",
         "brain_context",
         "brain_forget",
         "brain_project",
