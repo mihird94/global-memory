@@ -22,6 +22,7 @@ dev = [
 [project.scripts]
 brain = "gm.cli:main"
 brain-mcp = "gm.mcp_server:main"
+brain-safe-mcp = "gm.safe_mcp_server:main"
 gm = "gm.cli:main"
 gm-mcp = "gm.mcp_server:main"
 memoryctl = "gm.cli:compat_main"
